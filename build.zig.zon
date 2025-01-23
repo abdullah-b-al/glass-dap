@@ -1,0 +1,14 @@
+.{
+    .name = "unidep",
+    .version = "0.0.1",
+    .dependencies = .{
+        .zglfw = .{ .path = "./libs/zglfw" },
+        .zopengl = .{ .path = "./libs/zopengl" },
+        .zgui = .{ .path = "./libs/zgui" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
