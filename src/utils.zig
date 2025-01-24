@@ -169,3 +169,23 @@ pub fn get_value_untyped(value: ?std.json.Value, path_to_value: []const u8) ?std
     const name = if (name_index == 0) path_to_value else path_to_value[name_index + 1 ..];
     return object.get(name);
 }
+
+pub fn is_zig_string(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .pointer => |ptr_info| {
+            switch (ptr_info.size) {
+                .one => switch (@typeInfo(ptr_info.child)) {
+                    .array => |info| return info.child == u8,
+                    else => |info| {
+                        @compileError(@typeName(info.child));
+                    },
+                },
+                .many, .c, .slice => {
+                    return ptr_info.child == u8;
+                },
+            }
+        },
+
+        else => return false,
+    }
+}
