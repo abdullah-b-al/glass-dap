@@ -73,6 +73,8 @@ const AdapterCapabilities = struct {
 
 const RawResponse = std.json.Parsed(std.json.Value);
 
+const StartKind = enum { launched, attached, not_started };
+
 allocator: std.mem.Allocator,
 adapter: std.process.Child,
 
@@ -84,6 +86,8 @@ handled_responses: std.ArrayList(RawResponse),
 
 events: std.ArrayList(RawResponse),
 handled_events: std.ArrayList(RawResponse),
+
+start_kind: StartKind,
 
 /// Used for the seq field in the protocol
 seq: u32 = 1,
@@ -99,6 +103,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Sess
     adapter.stderr_behavior = .Pipe;
 
     return .{
+        .start_kind = .not_started,
         .adapter = adapter,
         .allocator = allocator,
         .responses = std.ArrayList(RawResponse).init(allocator),
@@ -155,9 +160,9 @@ pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestA
 }
 
 pub fn handle_launch_response(session: *Session, seq: i32) !void {
-    const resp = try session.get_and_parse_response(protocol.LaunchResponse, seq);
-    try validate_response(resp.value, seq, "launch");
-    session.delete_response(seq);
+    std.debug.assert(session.start_kind == .not_started);
+    session.start_kind = .launched;
+    try session.acknowledge_response(protocol.LaunchResponse, seq, "launch");
 }
 
 pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
@@ -173,9 +178,7 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
 }
 
 pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
-    const resp = try session.get_and_parse_response(protocol.ConfigurationDoneResponse, seq);
-    try validate_response(resp.value, seq, "configurationDone");
-    session.delete_response(seq);
+    try session.acknowledge_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
 }
 
 pub fn handle_initialized_event(session: *Session) !void {
@@ -349,4 +352,10 @@ fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
     if (!resp.success) return error.RequestFailed;
     if (resp.request_seq != seq) return error.RequestResponseMismatchedSeq;
     if (!std.mem.eql(u8, resp.command, command)) return error.WrongCommandForResponse;
+}
+
+fn acknowledge_response(session: *Session, comptime T: type, seq: i32, command: []const u8) !void {
+    const resp = try session.get_and_parse_response(T, seq);
+    try validate_response(resp.value, seq, command);
+    session.delete_response(seq);
 }
