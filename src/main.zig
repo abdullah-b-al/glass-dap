@@ -198,7 +198,10 @@ fn debug_ui(arena: std.mem.Allocator, session: *Session) !void {
 
     if (zgui.beginTabItem("Console Output", .{})) {
         defer zgui.endTabItem();
-        for (session.events.items) |item| {
+        while (true) {
+            session.handle_output_event() catch break;
+        }
+        for (session.handled_events.items) |item| {
             const output = utils.get_value(item.value, "body.output", .string) orelse continue;
             zgui.text("{s}", .{output});
         }

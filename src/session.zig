@@ -268,6 +268,11 @@ pub fn handle_initialized_event(session: *Session) !void {
     session.delete_event_by_index(index);
 }
 
+pub fn handle_output_event(session: *Session) !void {
+    _, const index = try session.get_event("output");
+    session.delete_event_by_index(index);
+}
+
 pub fn adapter_spawn(session: *Session) !void {
     _ = try session.adapter.spawn();
 }
@@ -289,9 +294,9 @@ pub fn new_seq(s: *Session) i32 {
 pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
     if (try io.message_exists(session.adapter.stdout.?, session.allocator, timeout_ms)) {
         try session.responses.ensureUnusedCapacity(1);
-        try session.handled_responses.ensureUnusedCapacity(1);
+        try session.handled_responses.ensureTotalCapacity(session.responses.capacity);
         try session.events.ensureUnusedCapacity(1);
-        try session.handled_events.ensureUnusedCapacity(1);
+        try session.handled_events.ensureTotalCapacity(session.events.capacity);
 
         const parsed = try io.read_message(session.adapter.stdout.?, session.allocator);
         errdefer {
@@ -361,7 +366,7 @@ fn delete_response(session: *Session, request_seq: i32) void {
     session.handled_responses.appendAssumeCapacity(raw_resp);
 }
 
-fn delete_event(session: *Session, event_seq: i32) void {
+fn delete_event_by_seq(session: *Session, event_seq: i32) void {
     _, const index = session.get_event(event_seq) catch @panic("Only call this if you got an event");
     session.delete_event_by_index(index);
 }
