@@ -125,7 +125,6 @@ pub fn send_init_request(session: *Session, arguments: protocol.InitializeReques
 }
 
 pub fn handle_init_response(session: *Session, seq: i32) !void {
-    try session.queue_messages(std.time.ms_per_s / 10);
     const resp = try session.get_and_parse_response(protocol.InitializeResponse, seq);
     defer {
         session.delete_response(seq);
@@ -156,7 +155,6 @@ pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestA
 }
 
 pub fn handle_launch_response(session: *Session, seq: i32) !void {
-    try session.queue_messages(std.time.ms_per_s / 10);
     const resp = try session.get_and_parse_response(protocol.LaunchResponse, seq);
     try validate_response(resp.value, seq, "launch");
     session.delete_response(seq);
@@ -175,7 +173,6 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
 }
 
 pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
-    try session.queue_messages(std.time.ms_per_s / 10);
     const resp = try session.get_and_parse_response(protocol.ConfigurationDoneResponse, seq);
     try validate_response(resp.value, seq, "configurationDone");
     session.delete_response(seq);
