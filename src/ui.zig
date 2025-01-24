@@ -28,6 +28,7 @@ pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
 
     // imgui
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
 
     const scale_factor = scale_factor: {
         const scale = window.getContentScale();
