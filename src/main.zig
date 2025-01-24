@@ -10,11 +10,6 @@ const Object = protocol.Object;
 const time = std.time;
 
 pub fn main() !void {
-    const init_args = protocol.InitializeRequestArguments{
-        .clientName = "unidep",
-        .adapterID = "???",
-    };
-
     const args = try parse_args();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -25,15 +20,7 @@ pub fn main() !void {
     var session = Session.init(gpa.allocator(), adapter);
 
     try session.adapter_spawn();
-
-    const init_seq = try session.send_init_request(init_args, .{});
-    try session.handle_init_response(init_seq);
-
-    var extra = Object{};
-    try extra.map.put(gpa.allocator(), "program", .{ .string = args.debugee });
-    try session.send_launch_request(.{}, extra);
-
-    try session.send_configuration_done_request(null, .{});
+    try begin_debug_sequence(&session, args);
 
     while (!window.shouldClose()) {
         session.queue_messages(1) catch |err| {
@@ -42,6 +29,33 @@ pub fn main() !void {
         ui_tick(window, session);
     }
     std.log.info("Window Closed", .{});
+}
+
+fn begin_debug_sequence(session: *Session, args: Args) !void {
+    const init_args = protocol.InitializeRequestArguments{
+        .clientName = "unidep",
+        .adapterID = "???",
+    };
+    const init_seq = try session.send_init_request(init_args, .{});
+    try session.wait_for_response(init_seq);
+    try session.handle_init_response(init_seq);
+
+    var extra = Object{};
+    defer extra.deinit(session.allocator);
+    try extra.map.put(session.allocator, "program", .{ .string = args.debugee });
+
+    const launch_seq = try session.send_launch_request(.{}, extra);
+    try session.wait_for_event("initialized");
+    try session.handle_initialized_event();
+
+    // TODO: Send configurations here
+
+    const config_seq = try session.send_configuration_done_request(null, .{});
+
+    try session.wait_for_response(launch_seq);
+    try session.handle_launch_response(launch_seq);
+    try session.wait_for_response(config_seq);
+    try session.handle_configuration_done_response(config_seq);
 }
 
 fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {

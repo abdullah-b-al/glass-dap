@@ -125,16 +125,14 @@ pub fn send_init_request(session: *Session, arguments: protocol.InitializeReques
 }
 
 pub fn handle_init_response(session: *Session, seq: i32) !void {
-    try session.queue_messages(std.time.ns_per_ms * 10);
-    const raw_resp = (try session.get_response(seq)).?;
-    defer session.delete_response(seq);
-    const parsed_resp = try std.json.parseFromValue(protocol.InitializeResponse, session.allocator, raw_resp.value, .{});
-    defer parsed_resp.deinit();
-    const resp = parsed_resp.value;
-    std.debug.assert(resp.success);
-    std.debug.assert(resp.request_seq == seq);
-    std.debug.assert(std.mem.eql(u8, resp.command, "initialize"));
-    if (resp.body) |body| {
+    try session.queue_messages(std.time.ms_per_s / 10);
+    const resp = try session.get_and_parse_response(protocol.InitializeResponse, seq);
+    defer {
+        session.delete_response(seq);
+        resp.deinit();
+    }
+    try validate_response(resp.value, seq, "initialize");
+    if (resp.value.body) |body| {
         session.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
         session.adapter_capabilities.completionTriggerCharacters = body.completionTriggerCharacters;
         session.adapter_capabilities.exceptionBreakpointFilters = body.exceptionBreakpointFilters;
@@ -145,7 +143,7 @@ pub fn handle_init_response(session: *Session, seq: i32) !void {
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !void {
+pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
     const request = protocol.LaunchRequest{
         .seq = session.new_seq(),
         .type = .request,
@@ -154,9 +152,17 @@ pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestA
     };
 
     try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+    return request.seq;
 }
 
-pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !void {
+pub fn handle_launch_response(session: *Session, seq: i32) !void {
+    try session.queue_messages(std.time.ms_per_s / 10);
+    const resp = try session.get_and_parse_response(protocol.LaunchResponse, seq);
+    try validate_response(resp.value, seq, "launch");
+    session.delete_response(seq);
+}
+
+pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
     const request = protocol.ConfigurationDoneRequest{
         .seq = session.new_seq(),
         .type = .request,
@@ -165,6 +171,16 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
     };
 
     try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+    return request.seq;
+}
+
+pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
+    try session.queue_messages(std.time.ms_per_s / 10);
+    const resp = try session.get_and_parse_response(protocol.ConfigurationDoneResponse, seq);
+    try validate_response(resp.value, seq, "configurationDone");
+    session.delete_response(seq);
+}
+
 pub fn handle_initialized_event(session: *Session) !void {
     _, const index = (try session.get_event_by_name("initialized")) orelse return error.EventDoseNotExist;
     session.delete_event_by_index(index);
@@ -188,8 +204,8 @@ pub fn new_seq(s: *Session) i32 {
     return @intCast(seq);
 }
 
-pub fn queue_messages(session: *Session, timeout: u64) !void {
-    if (try io.message_exists(session.adapter.stdout.?, session.allocator, timeout)) {
+pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
+    if (try io.message_exists(session.adapter.stdout.?, session.allocator, timeout_ms)) {
         try session.responses.ensureUnusedCapacity(1);
         try session.handled_responses.ensureUnusedCapacity(1);
         try session.events.ensureUnusedCapacity(1);
@@ -298,6 +314,19 @@ fn value_to_object_then_inject_then_write(session: *Session, value: anytype, anc
     const message = try io.create_message(session.allocator, object);
     try session.adapter_write_all(message);
 }
+
+pub fn wait_for_response(session: *Session, seq: i32) !void {
+    while (true) {
+        for (session.responses.items) |item| {
+            const request_seq = utils.pull_value(item.value.object.get("request_seq"), .integer) orelse continue;
+            if (request_seq == seq) {
+                return;
+            }
+        }
+        try session.queue_messages(std.time.ms_per_s);
+    }
+}
+
 pub fn wait_for_event(session: *Session, name: []const u8) !void {
     while (true) {
         try session.queue_messages(std.time.ms_per_s);
@@ -314,3 +343,13 @@ pub fn wait_for_event(session: *Session, name: []const u8) !void {
     }
 }
 
+fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !std.json.Parsed(T) {
+    const raw_resp = (try session.get_response(seq)) orelse return error.ResponseDoesNotExist;
+    return try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
+}
+
+fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
+    if (!resp.success) return error.RequestFailed;
+    if (resp.request_seq != seq) return error.RequestResponseMismatchedSeq;
+    if (!std.mem.eql(u8, resp.command, command)) return error.WrongCommandForResponse;
+}
