@@ -89,6 +89,12 @@ handled_events: std.ArrayList(RawResponse),
 
 start_kind: StartKind,
 
+/// From the protocol:
+/// Arbitrary data from the previous, restarted session.
+/// The data is sent as the `restart` attribute of the `terminated` event.
+/// The client should leave the data intact.
+terminated_restart_data: ?std.json.Value = null,
+
 /// Used for the seq field in the protocol
 seq: u32 = 1,
 
@@ -111,6 +117,19 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Sess
         .events = std.ArrayList(RawResponse).init(allocator),
         .handled_events = std.ArrayList(RawResponse).init(allocator),
     };
+}
+
+pub fn end_session(session: *Session, how: enum { terminate, disconnect }) !i32 {
+    switch (session.start_kind) {
+        .not_started => return error.SessionNotStarted,
+        .attached => @panic("TODO"),
+        .launched => {
+            switch (how) {
+                .terminate => return try session.send_terminate_request(false),
+                .disconnect => return try session.send_disconnect_request(false),
+            }
+        },
+    }
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
@@ -166,6 +185,10 @@ pub fn handle_launch_response(session: *Session, seq: i32) !void {
 }
 
 pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
+    if (!session.adapter_capabilities.support.contains(.supportsConfigurationDoneRequest)) {
+        return error.AdapterDoesNotSupportConfigurationDone;
+    }
+
     const request = protocol.ConfigurationDoneRequest{
         .seq = session.new_seq(),
         .type = .request,
@@ -179,6 +202,65 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
 
 pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
     try session.acknowledge_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
+}
+
+fn send_terminate_request(session: *Session, restart: ?bool) !i32 {
+    if (!session.adapter_capabilities.support.contains(.supportsTerminateRequest)) {
+        return error.AdapterDoesNotSupportTerminate;
+    }
+
+    const request = protocol.TerminateRequest{
+        .seq = session.new_seq(),
+        .type = .request,
+        .command = .terminate,
+        .arguments = .{
+            .restart = restart,
+        },
+    };
+
+    try session.value_to_object_then_write(request);
+
+    return request.seq;
+}
+
+fn send_disconnect_request(session: *Session, restart: ?bool) !i32 {
+    const request = protocol.DisconnectRequest{
+        .seq = session.new_seq(),
+        .type = .request,
+        .command = .disconnect,
+        .arguments = .{
+            .restart = restart,
+            // TODO: figure out when to set all of these
+            .terminateDebuggee = null,
+            .suspendDebuggee = null,
+        },
+    };
+
+    try session.value_to_object_then_write(request);
+
+    return request.seq;
+}
+
+pub fn handle_disconnect_response(session: *Session, seq: i32) !void {
+    const resp = try session.get_and_parse_response(protocol.DisconnectResponse, seq);
+    try validate_response(resp.value, seq, "disconnect");
+
+    if (resp.value.success) {
+        session.start_kind = .not_started;
+    }
+
+    session.delete_response(seq);
+}
+
+pub fn handle_terminated_event(session: *Session) !void {
+    const parsed, const index = (try session.get_event_by_name("terminated")) orelse return error.EventDoseNotExist;
+    const restart = utils.get_value_untyped(parsed.value, "body.restart");
+
+    // FIXME: Clone this!
+    // This will cause a segfault if the data in handled_events is freed.
+    session.terminated_restart_data = restart;
+
+    session.delete_event_by_index(index);
 }
 
 pub fn handle_initialized_event(session: *Session) !void {
@@ -296,6 +378,10 @@ fn delete_event(session: *Session, event_seq: i32) void {
 fn delete_event_by_index(session: *Session, index: usize) void {
     const raw_event = session.events.swapRemove(index);
     session.handled_events.appendAssumeCapacity(raw_event);
+}
+
+fn value_to_object_then_write(session: *Session, value: anytype) !void {
+    try session.value_to_object_then_inject_then_write(value, &.{}, .{});
 }
 
 fn value_to_object_then_inject_then_write(session: *Session, value: anytype, ancestors: []const []const u8, extra: protocol.Object) !void {

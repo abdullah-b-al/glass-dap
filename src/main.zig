@@ -26,7 +26,10 @@ pub fn main() !void {
         session.queue_messages(1) catch |err| {
             std.debug.print("{}\n", .{err});
         };
-        ui_tick(window, session);
+
+        ui_tick(window, &session) catch |err| {
+            std.log.err("ui_tick:{}", .{err});
+        };
     }
     std.log.info("Window Closed", .{});
 }
@@ -70,7 +73,7 @@ fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
 
-    const window = try glfw.Window.create(1000, 1000, "TestWindow", null);
+    const window = try glfw.Window.create(1000, 1000, "TestWindow:unidep", null);
     window.setSizeLimits(400, 400, -1, -1);
 
     glfw.makeContextCurrent(window);
@@ -106,7 +109,7 @@ fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-fn ui_tick(window: *glfw.Window, session: Session) void {
+fn ui_tick(window: *glfw.Window, session: *Session) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -123,14 +126,16 @@ fn ui_tick(window: *glfw.Window, session: Session) void {
     zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
     zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
 
-    debug_ui(arena.allocator(), session);
+    const err = debug_ui(arena.allocator(), session);
 
     zgui.backend.draw();
 
     window.swapBuffers();
+
+    return err;
 }
 
-fn debug_ui(arena: std.mem.Allocator, session: Session) void {
+fn debug_ui(arena: std.mem.Allocator, session: *Session) !void {
     const table = .{
         .{ .name = "Queued Responses", .items = session.responses.items },
         .{ .name = "Handled Responses", .items = session.handled_responses.items },
@@ -147,24 +152,56 @@ fn debug_ui(arena: std.mem.Allocator, session: Session) void {
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Debug Tabs", .{})) return;
 
+    if (zgui.beginTabItem("Manully Send Requests", .{})) {
+        defer zgui.endTabItem();
+
+        if (zgui.button("end session: disconnect", .{})) {
+            const seq = try session.end_session(.disconnect);
+            try session.wait_for_response(seq);
+            try session.handle_disconnect_response(seq);
+        }
+
+        if (zgui.button("end session: terminate", .{})) {
+            _ = try session.end_session(.terminate);
+        }
+
+        session.handle_terminated_event() catch |err| switch (err) {
+            error.EventDoseNotExist => {},
+            else => |e| std.log.err("debug_ui:{}", .{e}),
+        };
+    }
+
+    if (zgui.beginTabItem("Adapter Capabilities", .{})) {
+        defer zgui.endTabItem();
+        var iter = session.adapter_capabilities.support.iterator();
+        while (iter.next()) |e| {
+            const name = @tagName(e);
+            var color = [4]f32{ 1, 1, 1, 1 };
+            if (std.mem.endsWith(u8, name, "Request")) {
+                color = .{ 0, 0, 1, 1 };
+            }
+            zgui.textColored(color, "{s}", .{name});
+        }
+    }
+
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
+            defer zgui.endTabItem();
             for (element.items) |resp| {
                 const seq = resp.value.object.get("seq").?.integer;
                 var buf: [512]u8 = undefined;
                 const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
                 recursively_draw_object(arena, slice, slice, resp.value);
             }
-            zgui.endTabItem();
         }
     }
 
     if (zgui.beginTabItem("Console Output", .{})) {
+        defer zgui.endTabItem();
         for (session.events.items) |item| {
             const output = utils.get_value(item.value, "body.output", .string) orelse continue;
             zgui.text("{s}", .{output});
         }
-        zgui.endTabItem();
     }
 }
 
