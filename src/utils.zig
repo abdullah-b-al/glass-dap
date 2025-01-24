@@ -155,6 +155,11 @@ pub fn get_value(value: ?std.json.Value, path_to_value: []const u8, comptime wan
         object = pull_value(object.get(key), .object) orelse break;
     }
 
+    if (iter.next() != null) {
+        // path_to_value is invalid. One of the middle fields is not an object
+        return null;
+    }
+
     const name_index = std.mem.lastIndexOfScalar(u8, path_to_value, '.') orelse 0;
     const name = if (name_index == 0) path_to_value else path_to_value[name_index + 1 ..];
     return pull_value(object.get(name) orelse return null, wanted);
