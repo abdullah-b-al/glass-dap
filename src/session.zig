@@ -3,6 +3,8 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const io = @import("io.zig");
 
+const log = std.log.scoped(.session);
+
 const Session = @This();
 
 const ClientCapabilitiesKind = enum {
@@ -81,6 +83,7 @@ responses: std.ArrayList(RawResponse),
 handled_responses: std.ArrayList(RawResponse),
 
 events: std.ArrayList(RawResponse),
+handled_events: std.ArrayList(RawResponse),
 
 /// Used for the seq field in the protocol
 seq: u32 = 1,
@@ -101,6 +104,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Sess
         .responses = std.ArrayList(RawResponse).init(allocator),
         .handled_responses = std.ArrayList(RawResponse).init(allocator),
         .events = std.ArrayList(RawResponse).init(allocator),
+        .handled_events = std.ArrayList(RawResponse).init(allocator),
     };
 }
 
@@ -161,6 +165,9 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
     };
 
     try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+pub fn handle_initialized_event(session: *Session) !void {
+    _, const index = (try session.get_event_by_name("initialized")) orelse return error.EventDoseNotExist;
+    session.delete_event_by_index(index);
 }
 
 pub fn adapter_spawn(session: *Session) !void {
@@ -186,20 +193,25 @@ pub fn queue_messages(session: *Session, timeout: u64) !void {
         try session.responses.ensureUnusedCapacity(1);
         try session.handled_responses.ensureUnusedCapacity(1);
         try session.events.ensureUnusedCapacity(1);
+        try session.handled_events.ensureUnusedCapacity(1);
 
         const parsed = try io.read_message(session.adapter.stdout.?, session.allocator);
         errdefer {
             std.log.err("{}\n", .{parsed});
             parsed.deinit();
         }
-        if (parsed.value != .object) return error.InvalidMessage;
-        const t = parsed.value.object.get("type") orelse return error.InvalidMessage;
+        const object = if (parsed.value == .object) parsed.value.object else return error.InvalidMessage;
+        const t = object.get("type") orelse return error.InvalidMessage;
         if (t != .string) return error.InvalidMessage;
         const string = t.string;
 
         if (std.mem.eql(u8, string, "response")) {
+            const name = utils.pull_value(object.get("command"), .string) orelse "";
+            log.debug("New response \"{s}\"", .{name});
             session.responses.appendAssumeCapacity(parsed);
         } else if (std.mem.eql(u8, string, "event")) {
+            const name = utils.pull_value(object.get("event"), .string) orelse "";
+            log.debug("New event \"{s}\"", .{name});
             session.events.appendAssumeCapacity(parsed);
         } else {
             return error.UnknownMessage;
@@ -215,12 +227,40 @@ fn get_response(session: *Session, request_seq: i32) !?RawResponse {
 fn get_response_index(session: *Session, request_seq: i32) !?usize {
     for (session.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
-        const raw_seq = object.get("request_seq") orelse return null;
+        const raw_seq = object.get("request_seq") orelse continue;
         const seq = switch (raw_seq) {
             .integer => |int| int,
-            else => return error.InvalidSaqFromAdapter,
+            else => return error.InvalidSeqFromAdapter,
         };
         if (seq == request_seq) return i;
+    }
+
+    return null;
+}
+
+fn get_event_by_name(session: *Session, event_name: []const u8) !?struct { RawResponse, usize } {
+    for (session.events.items, 0..) |event, i| {
+        const object = event.value.object; // messages shouldn't be queued up unless they're an object
+        const raw_seq = object.get("event") orelse continue;
+        const name = switch (raw_seq) {
+            .string => |string| string,
+            else => return error.InvalidSeqFromAdapter,
+        };
+        if (std.mem.eql(u8, name, event_name)) return .{ event, i };
+    }
+
+    return null;
+}
+
+fn get_event_index(session: *Session, event_seq: i32) !?usize {
+    for (session.events.items, 0..) |event, i| {
+        const object = event.value.object; // messages shouldn't be queued up unless they're an object
+        const raw_seq = object.get("seq") orelse continue;
+        const seq = switch (raw_seq) {
+            .integer => |int| int,
+            else => return error.InvalidSeqFromAdapter,
+        };
+        if (seq == event_seq) return i;
     }
 
     return null;
@@ -230,6 +270,16 @@ fn delete_response(session: *Session, request_seq: i32) void {
     const i = (session.get_response_index(request_seq) catch unreachable).?;
     const raw_resp = session.responses.swapRemove(i);
     session.handled_responses.appendAssumeCapacity(raw_resp);
+}
+
+fn delete_event(session: *Session, event_seq: i32) void {
+    const i = (session.get_event_index(event_seq) catch unreachable).?;
+    session.delete_event_by_index(i);
+}
+
+fn delete_event_by_index(session: *Session, index: usize) void {
+    const raw_event = session.events.swapRemove(index);
+    session.handled_events.appendAssumeCapacity(raw_event);
 }
 
 fn value_to_object_then_inject_then_write(session: *Session, value: anytype, ancestors: []const []const u8, extra: protocol.Object) !void {
@@ -248,3 +298,19 @@ fn value_to_object_then_inject_then_write(session: *Session, value: anytype, anc
     const message = try io.create_message(session.allocator, object);
     try session.adapter_write_all(message);
 }
+pub fn wait_for_event(session: *Session, name: []const u8) !void {
+    while (true) {
+        try session.queue_messages(std.time.ms_per_s);
+        for (session.events.items) |item| {
+            const value_event = item.value.object.get("event").?;
+            const event = switch (value_event) {
+                .string => |string| string,
+                else => unreachable, // this shouldn't run unless the message is invalid
+            };
+            if (std.mem.eql(u8, name, event)) {
+                return;
+            }
+        }
+    }
+}
+

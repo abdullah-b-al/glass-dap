@@ -56,7 +56,7 @@ fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
 
-    const window = try glfw.Window.create(800, 500, "TestWindow", null);
+    const window = try glfw.Window.create(1000, 1000, "TestWindow", null);
     window.setSizeLimits(400, 400, -1, -1);
 
     glfw.makeContextCurrent(window);
@@ -121,6 +121,7 @@ fn debug_ui(arena: std.mem.Allocator, session: Session) void {
         .{ .name = "Queued Responses", .items = session.responses.items },
         .{ .name = "Handled Responses", .items = session.handled_responses.items },
         .{ .name = "Events", .items = session.events.items },
+        .{ .name = "Handled Events", .items = session.handled_events.items },
     };
 
     var open: bool = true;
@@ -146,8 +147,8 @@ fn debug_ui(arena: std.mem.Allocator, session: Session) void {
 
     if (zgui.beginTabItem("Console Output", .{})) {
         for (session.events.items) |item| {
-            const parsed = std.json.parseFromValue(protocol.OutputEvent, arena, item.value, .{}) catch continue;
-            zgui.text("{s}", .{parsed.value.body.output});
+            const output = utils.get_value(item.value, "body.output", .string) orelse continue;
+            zgui.text("{s}", .{output});
         }
         zgui.endTabItem();
     }
@@ -190,7 +191,7 @@ fn recursively_draw_object(allocator: std.mem.Allocator, parent: []const u8, nam
         .number_string, .string => |v| {
             var color = [4]f32{ 1, 1, 1, 1 };
             if (std.mem.endsWith(u8, name, "event") or std.mem.endsWith(u8, name, "command")) {
-                color = .{ 1, 0, 0, 1 };
+                color = .{ 0.5, 0.5, 1, 1 };
             }
             zgui.textColored(color, "{s} = \"{s}\"", .{ name, v });
         },
