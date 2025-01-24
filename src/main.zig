@@ -167,7 +167,7 @@ fn debug_ui(arena: std.mem.Allocator, session: *Session) !void {
 
         session.handle_terminated_event() catch |err| switch (err) {
             error.EventDoseNotExist => {},
-            else => |e| std.log.err("debug_ui:{}", .{e}),
+            // else => |e| std.log.err("debug_ui:{}", .{e}),
         };
     }
 

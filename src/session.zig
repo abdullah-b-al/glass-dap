@@ -253,7 +253,7 @@ pub fn handle_disconnect_response(session: *Session, seq: i32) !void {
 }
 
 pub fn handle_terminated_event(session: *Session) !void {
-    const parsed, const index = (try session.get_event_by_name("terminated")) orelse return error.EventDoseNotExist;
+    const parsed, const index = try session.get_event("terminated");
     const restart = utils.get_value_untyped(parsed.value, "body.restart");
 
     // FIXME: Clone this!
@@ -264,7 +264,7 @@ pub fn handle_terminated_event(session: *Session) !void {
 }
 
 pub fn handle_initialized_event(session: *Session) !void {
-    _, const index = (try session.get_event_by_name("initialized")) orelse return error.EventDoseNotExist;
+    _, const index = try session.get_event("initialized");
     session.delete_event_by_index(index);
 }
 
@@ -317,12 +317,7 @@ pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
     }
 }
 
-fn get_response(session: *Session, request_seq: i32) !?RawResponse {
-    const i = try session.get_response_index(request_seq) orelse return null;
-    return session.responses.items[i];
-}
-
-fn get_response_index(session: *Session, request_seq: i32) !?usize {
+fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usize } {
     for (session.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
@@ -330,49 +325,45 @@ fn get_response_index(session: *Session, request_seq: i32) !?usize {
             .integer => |int| int,
             else => return error.InvalidSeqFromAdapter,
         };
-        if (seq == request_seq) return i;
+        if (seq == request_seq) {
+            return .{ resp, i };
+        }
     }
 
-    return null;
+    return error.ResponseDoesNotExist;
 }
 
-fn get_event_by_name(session: *Session, event_name: []const u8) !?struct { RawResponse, usize } {
-    for (session.events.items, 0..) |event, i| {
-        const object = event.value.object; // messages shouldn't be queued up unless they're an object
-        const raw_seq = object.get("event") orelse continue;
-        const name = switch (raw_seq) {
-            .string => |string| string,
-            else => return error.InvalidSeqFromAdapter,
-        };
-        if (std.mem.eql(u8, name, event_name)) return .{ event, i };
+fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usize } {
+    const T = @TypeOf(name_or_seq);
+    const is_string = comptime utils.is_zig_string(@TypeOf(name_or_seq));
+    if (T != i32 and !is_string) {
+        @compileError("Event name_or_seq must be a []const u8 or an i32 found " ++ @typeName(T));
     }
 
-    return null;
-}
-
-fn get_event_index(session: *Session, event_seq: i32) !?usize {
+    const key = if (T == i32) "seq" else "event";
+    const wanted = if (T == i32) .integer else .string;
     for (session.events.items, 0..) |event, i| {
-        const object = event.value.object; // messages shouldn't be queued up unless they're an object
-        const raw_seq = object.get("seq") orelse continue;
-        const seq = switch (raw_seq) {
-            .integer => |int| int,
-            else => return error.InvalidSeqFromAdapter,
-        };
-        if (seq == event_seq) return i;
+        // messages shouldn't be queued up unless they're an object
+        const value = utils.get_value(event.value, key, wanted) orelse continue;
+        if (T == i32) {
+            if (name_or_seq == value) return i;
+        } else {
+            if (std.mem.eql(u8, value, name_or_seq)) return .{ event, i };
+        }
     }
 
-    return null;
+    return error.EventDoseNotExist;
 }
 
 fn delete_response(session: *Session, request_seq: i32) void {
-    const i = (session.get_response_index(request_seq) catch unreachable).?;
-    const raw_resp = session.responses.swapRemove(i);
+    _, const index = session.get_response(request_seq) catch @panic("Only call this if you got a response");
+    const raw_resp = session.responses.swapRemove(index);
     session.handled_responses.appendAssumeCapacity(raw_resp);
 }
 
 fn delete_event(session: *Session, event_seq: i32) void {
-    const i = (session.get_event_index(event_seq) catch unreachable).?;
-    session.delete_event_by_index(i);
+    _, const index = session.get_event(event_seq) catch @panic("Only call this if you got an event");
+    session.delete_event_by_index(index);
 }
 
 fn delete_event_by_index(session: *Session, index: usize) void {
@@ -430,7 +421,7 @@ pub fn wait_for_event(session: *Session, name: []const u8) !void {
 }
 
 fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !std.json.Parsed(T) {
-    const raw_resp = (try session.get_response(seq)) orelse return error.ResponseDoesNotExist;
+    const raw_resp, _ = try session.get_response(seq);
     return try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
 }
 
