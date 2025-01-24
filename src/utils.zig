@@ -149,6 +149,11 @@ pub fn pull_value(value: ?std.json.Value, comptime wanted: std.meta.Tag(std.json
 /// Given a `std.json.Value` traverses the objects to find the wanted value.
 /// use a `.` as a separator for path_to_value.
 pub fn get_value(value: ?std.json.Value, path_to_value: []const u8, comptime wanted: std.meta.Tag(std.json.Value)) ?std.meta.TagPayload(std.json.Value, wanted) {
+    const v = get_value_untyped(value, path_to_value);
+    return pull_value(v, wanted);
+}
+
+pub fn get_value_untyped(value: ?std.json.Value, path_to_value: []const u8) ?std.json.Value {
     var object = pull_value(value, .object) orelse return null;
     var iter = std.mem.splitScalar(u8, path_to_value, '.');
     while (iter.next()) |key| {
@@ -162,5 +167,5 @@ pub fn get_value(value: ?std.json.Value, path_to_value: []const u8, comptime wan
 
     const name_index = std.mem.lastIndexOfScalar(u8, path_to_value, '.') orelse 0;
     const name = if (name_index == 0) path_to_value else path_to_value[name_index + 1 ..];
-    return pull_value(object.get(name) orelse return null, wanted);
+    return object.get(name);
 }
