@@ -140,3 +140,22 @@ pub fn bit_set_from_struct(source: anytype, comptime Set: type, comptime Kind: t
 
     return set;
 }
+
+pub fn pull_value(value: ?std.json.Value, comptime wanted: std.meta.Tag(std.json.Value)) ?std.meta.TagPayload(std.json.Value, wanted) {
+    const v = value orelse return null;
+    return if (v == wanted) @field(value.?, @tagName(wanted)) else null;
+}
+
+/// Given a `std.json.Value` traverses the objects to find the wanted value.
+/// use a `.` as a separator for path_to_value.
+pub fn get_value(value: ?std.json.Value, path_to_value: []const u8, comptime wanted: std.meta.Tag(std.json.Value)) ?std.meta.TagPayload(std.json.Value, wanted) {
+    var object = pull_value(value, .object) orelse return null;
+    var iter = std.mem.splitScalar(u8, path_to_value, '.');
+    while (iter.next()) |key| {
+        object = pull_value(object.get(key), .object) orelse break;
+    }
+
+    const name_index = std.mem.lastIndexOfScalar(u8, path_to_value, '.') orelse 0;
+    const name = if (name_index == 0) path_to_value else path_to_value[name_index + 1 ..];
+    return pull_value(object.get(name) orelse return null, wanted);
+}
