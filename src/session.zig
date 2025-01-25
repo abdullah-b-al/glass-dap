@@ -254,6 +254,22 @@ pub fn handle_disconnect_response(session: *Session, seq: i32) !void {
     session.delete_response(seq);
 }
 
+pub fn send_threads_request(session: *Session, arguments: ?protocol.Value) !i32 {
+    const request = protocol.ThreadsRequest{
+        .seq = session.new_seq(),
+        .type = .request,
+        .command = .threads,
+        .arguments = arguments,
+    };
+
+    try session.value_to_object_then_write(request);
+    return request.seq;
+}
+
+pub fn handle_threads_response(session: *Session, seq: i32) !void {
+    try session.acknowledge_response(protocol.ThreadsResponse, seq, "threads");
+}
+
 pub fn handle_terminated_event(session: *Session) !void {
     const parsed, const index = try session.get_event("terminated");
     const restart = utils.get_value_untyped(parsed.value, "body.restart");
