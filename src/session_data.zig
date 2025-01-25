@@ -1,6 +1,6 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
-const Session = @import("session.zig");
+const Connection = @import("connection.zig");
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
 
@@ -16,7 +16,7 @@ pub const SessionData = struct {
     output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 
     /// From the protocol:
-    /// Arbitrary data from the previous, restarted session.
+    /// Arbitrary data from the previous, restarted connection.
     /// The data is sent as the `restart` attribute of the `terminated` event.
     /// The client should leave the data intact.
     terminated_restart_data: ?protocol.Value = null,
@@ -28,41 +28,41 @@ pub const SessionData = struct {
         };
     }
 
-    pub fn handle_event_output(data: *SessionData, session: *Session) !void {
-        const event = try session.get_and_parse_event(protocol.OutputEvent, "output");
+    pub fn handle_event_output(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.OutputEvent, "output");
         defer event.deinit();
         try data.output.ensureUnusedCapacity(data.allocator, 1);
         const output = try data.clone_anytype(event.value);
         data.output.appendAssumeCapacity(output);
 
-        try session.event_handled_output(event.value.seq);
+        try connection.event_handled_output(event.value.seq);
     }
 
-    pub fn handle_event_modules(data: *SessionData, session: *Session) !void {
-        const event = try session.get_and_parse_event(protocol.ModuleEvent, "module");
+    pub fn handle_event_modules(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.ModuleEvent, "module");
         defer event.deinit();
         try data.add_module(event.value.body.module);
-        try session.event_handled_modules(event.value.seq);
+        try connection.event_handled_modules(event.value.seq);
     }
 
-    pub fn handle_event_terminated(data: *SessionData, session: *Session) !void {
-        const event = try session.get_and_parse_event(protocol.TerminatedEvent, "terminated");
+    pub fn handle_event_terminated(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.TerminatedEvent, "terminated");
         defer event.deinit();
 
         if (event.value.body) |body| {
             data.terminated_restart_data = body.restart;
         }
 
-        try session.event_handled_terminated(event.value.seq);
+        try connection.event_handled_terminated(event.value.seq);
     }
 
-    pub fn handle_response_threads(data: *SessionData, session: *Session, seq: i32) !void {
-        const parsed = try session.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
+    pub fn handle_response_threads(data: *SessionData, connection: *Connection, seq: i32) !void {
+        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
         defer parsed.deinit();
         const array = parsed.value.body.threads;
         try data.set_threads(array);
 
-        try session.response_handled_threads(seq);
+        try connection.response_handled_threads(seq);
     }
 
     pub fn add_module(data: *SessionData, module: protocol.Module) !void {

@@ -2,7 +2,7 @@ const std = @import("std");
 const protocol = @import("protocol.zig");
 const io = @import("io.zig");
 const utils = @import("utils.zig");
-const Session = @import("session.zig");
+const Connection = @import("connection.zig");
 const SessionData = @import("session_data.zig").SessionData;
 const Object = protocol.Object;
 const time = std.time;
@@ -17,9 +17,9 @@ pub fn main() !void {
 
     var data = SessionData.init(gpa.allocator());
     const adapter: []const []const u8 = &.{args.adapter};
-    var session = Session.init(gpa.allocator(), adapter);
+    var connection = Connection.init(gpa.allocator(), adapter);
 
-    try session.adapter_spawn();
+    try connection.adapter_spawn();
 
     const table = .{
         SessionData.handle_event_output,
@@ -28,12 +28,12 @@ pub fn main() !void {
     };
 
     while (!window.shouldClose()) {
-        session.queue_messages(1) catch |err| {
+        connection.queue_messages(1) catch |err| {
             std.debug.print("{}\n", .{err});
         };
 
         inline for (table) |entry| {
-            entry(&data, &session) catch |err|
+            entry(&data, &connection) catch |err|
                 switch (err) {
                 error.EventDoseNotExist => {},
                 else => {
@@ -42,36 +42,36 @@ pub fn main() !void {
             };
         }
 
-        ui.ui_tick(window, &session, &data, args);
+        ui.ui_tick(window, &connection, &data, args);
     }
     std.log.info("Window Closed", .{});
 }
 
-pub fn begin_debug_sequence(session: *Session, args: Args) !void {
+pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
     const init_args = protocol.InitializeRequestArguments{
         .clientName = "unidep",
         .adapterID = "???",
     };
-    const init_seq = try session.send_init_request(init_args, .{});
-    try session.wait_for_response(init_seq);
-    try session.handle_init_response(init_seq);
+    const init_seq = try connection.send_init_request(init_args, .{});
+    try connection.wait_for_response(init_seq);
+    try connection.handle_init_response(init_seq);
 
     var extra = Object{};
-    defer extra.deinit(session.allocator);
-    try extra.map.put(session.allocator, "program", .{ .string = args.debugee });
+    defer extra.deinit(connection.allocator);
+    try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
 
-    const launch_seq = try session.send_launch_request(.{}, extra);
-    try session.wait_for_event("initialized");
-    try session.handle_initialized_event();
+    const launch_seq = try connection.send_launch_request(.{}, extra);
+    try connection.wait_for_event("initialized");
+    try connection.handle_initialized_event();
 
     // TODO: Send configurations here
 
-    const config_seq = try session.send_configuration_done_request(null, .{});
+    const config_seq = try connection.send_configuration_done_request(null, .{});
 
-    try session.wait_for_response(launch_seq);
-    try session.handle_launch_response(launch_seq);
-    try session.wait_for_response(config_seq);
-    try session.handle_configuration_done_response(config_seq);
+    try connection.wait_for_response(launch_seq);
+    try connection.handle_launch_response(launch_seq);
+    try connection.wait_for_response(config_seq);
+    try connection.handle_configuration_done_response(config_seq);
 }
 
 pub const Args = struct {

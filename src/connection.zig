@@ -3,9 +3,9 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const io = @import("io.zig");
 
-const log = std.log.scoped(.session);
+const log = std.log.scoped(.connection);
 
-const Session = @This();
+const Connection = @This();
 
 const ClientCapabilitiesKind = enum {
     supportsVariableType,
@@ -94,7 +94,7 @@ start_kind: StartKind,
 /// Used for the seq field in the protocol
 seq: u32 = 1,
 
-pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Session {
+pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Connection {
     var adapter = std.process.Child.init(
         adapter_argv,
         allocator,
@@ -115,102 +115,102 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Sess
     };
 }
 
-pub fn end_session(session: *Session, how: enum { terminate, disconnect }) !i32 {
-    switch (session.start_kind) {
+pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !i32 {
+    switch (connection.start_kind) {
         .not_started => return error.SessionNotStarted,
         .attached => @panic("TODO"),
         .launched => {
             switch (how) {
-                .terminate => return try session.send_terminate_request(false),
-                .disconnect => return try session.send_disconnect_request(false),
+                .terminate => return try connection.send_terminate_request(false),
+                .disconnect => return try connection.send_disconnect_request(false),
             }
         },
     }
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn send_init_request(session: *Session, arguments: protocol.InitializeRequestArguments, extra_arguments: protocol.Object) !i32 {
+pub fn send_init_request(connection: *Connection, arguments: protocol.InitializeRequestArguments, extra_arguments: protocol.Object) !i32 {
     const request = protocol.InitializeRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .initialize,
         .arguments = arguments,
     };
 
-    session.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
+    connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
-    try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
 
     return request.seq;
 }
 
-pub fn handle_init_response(session: *Session, seq: i32) !void {
-    const resp = try session.get_and_parse_response(protocol.InitializeResponse, seq);
+pub fn handle_init_response(connection: *Connection, seq: i32) !void {
+    const resp = try connection.get_and_parse_response(protocol.InitializeResponse, seq);
     defer {
-        session.delete_response(seq);
+        connection.delete_response(seq);
         resp.deinit();
     }
     try validate_response(resp.value, seq, "initialize");
     if (resp.value.body) |body| {
-        session.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
-        session.adapter_capabilities.completionTriggerCharacters = body.completionTriggerCharacters;
-        session.adapter_capabilities.exceptionBreakpointFilters = body.exceptionBreakpointFilters;
-        session.adapter_capabilities.additionalModuleColumns = body.additionalModuleColumns;
-        session.adapter_capabilities.supportedChecksumAlgorithms = body.supportedChecksumAlgorithms;
-        session.adapter_capabilities.breakpointModes = body.breakpointModes;
+        connection.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
+        connection.adapter_capabilities.completionTriggerCharacters = body.completionTriggerCharacters;
+        connection.adapter_capabilities.exceptionBreakpointFilters = body.exceptionBreakpointFilters;
+        connection.adapter_capabilities.additionalModuleColumns = body.additionalModuleColumns;
+        connection.adapter_capabilities.supportedChecksumAlgorithms = body.supportedChecksumAlgorithms;
+        connection.adapter_capabilities.breakpointModes = body.breakpointModes;
     }
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
+pub fn send_launch_request(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
     const request = protocol.LaunchRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .launch,
         .arguments = arguments,
     };
 
-    try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
     return request.seq;
 }
 
-pub fn handle_launch_response(session: *Session, seq: i32) !void {
-    std.debug.assert(session.start_kind == .not_started);
-    const resp = try session.get_parse_validate_response(protocol.LaunchResponse, seq, "launch");
+pub fn handle_launch_response(connection: *Connection, seq: i32) !void {
+    std.debug.assert(connection.start_kind == .not_started);
+    const resp = try connection.get_parse_validate_response(protocol.LaunchResponse, seq, "launch");
     defer resp.deinit();
-    session.start_kind = .launched;
-    session.delete_response(seq);
+    connection.start_kind = .launched;
+    connection.delete_response(seq);
 }
 
-pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
-    if (!session.adapter_capabilities.support.contains(.supportsConfigurationDoneRequest)) {
+pub fn send_configuration_done_request(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
+    if (!connection.adapter_capabilities.support.contains(.supportsConfigurationDoneRequest)) {
         return error.AdapterDoesNotSupportConfigurationDone;
     }
 
     const request = protocol.ConfigurationDoneRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .configurationDone,
         .arguments = arguments,
     };
 
-    try session.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
+    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
     return request.seq;
 }
 
-pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
-    const resp = try session.get_parse_validate_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
+pub fn handle_configuration_done_response(connection: *Connection, seq: i32) !void {
+    const resp = try connection.get_parse_validate_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
     defer resp.deinit();
-    session.delete_response(seq);
+    connection.delete_response(seq);
 }
 
-fn send_terminate_request(session: *Session, restart: ?bool) !i32 {
-    if (!session.adapter_capabilities.support.contains(.supportsTerminateRequest)) {
+fn send_terminate_request(connection: *Connection, restart: ?bool) !i32 {
+    if (!connection.adapter_capabilities.support.contains(.supportsTerminateRequest)) {
         return error.AdapterDoesNotSupportTerminate;
     }
 
     const request = protocol.TerminateRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .terminate,
         .arguments = .{
@@ -218,14 +218,14 @@ fn send_terminate_request(session: *Session, restart: ?bool) !i32 {
         },
     };
 
-    try session.value_to_object_then_write(request);
+    try connection.value_to_object_then_write(request);
 
     return request.seq;
 }
 
-fn send_disconnect_request(session: *Session, restart: ?bool) !i32 {
+fn send_disconnect_request(connection: *Connection, restart: ?bool) !i32 {
     const request = protocol.DisconnectRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .disconnect,
         .arguments = .{
@@ -236,88 +236,88 @@ fn send_disconnect_request(session: *Session, restart: ?bool) !i32 {
         },
     };
 
-    try session.value_to_object_then_write(request);
+    try connection.value_to_object_then_write(request);
 
     return request.seq;
 }
 
-pub fn handle_disconnect_response(session: *Session, seq: i32) !void {
-    const resp = try session.get_and_parse_response(protocol.DisconnectResponse, seq);
+pub fn handle_disconnect_response(connection: *Connection, seq: i32) !void {
+    const resp = try connection.get_and_parse_response(protocol.DisconnectResponse, seq);
     try validate_response(resp.value, seq, "disconnect");
 
     if (resp.value.success) {
-        session.start_kind = .not_started;
+        connection.start_kind = .not_started;
     }
 
-    session.delete_response(seq);
+    connection.delete_response(seq);
 }
 
-pub fn send_threads_request(session: *Session, arguments: ?protocol.Value) !i32 {
+pub fn send_threads_request(connection: *Connection, arguments: ?protocol.Value) !i32 {
     const request = protocol.ThreadsRequest{
-        .seq = session.new_seq(),
+        .seq = connection.new_seq(),
         .type = .request,
         .command = .threads,
         .arguments = arguments,
     };
 
-    try session.value_to_object_then_write(request);
+    try connection.value_to_object_then_write(request);
     return request.seq;
 }
 
-pub fn response_handled_threads(session: *Session, seq: i32) !void {
-    const resp = try session.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
+pub fn response_handled_threads(connection: *Connection, seq: i32) !void {
+    const resp = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
     defer resp.deinit();
-    session.delete_response(seq);
+    connection.delete_response(seq);
 }
 
-pub fn event_handled_terminated(session: *Session, seq: i32) !void {
-    _, const index = try session.get_event(seq);
-    session.delete_event_by_index(index);
+pub fn event_handled_terminated(connection: *Connection, seq: i32) !void {
+    _, const index = try connection.get_event(seq);
+    connection.delete_event_by_index(index);
 }
 
-pub fn event_handled_modules(session: *Session, seq: i32) !void {
-    _, const index = try session.get_event(seq);
-    session.delete_event_by_index(index);
+pub fn event_handled_modules(connection: *Connection, seq: i32) !void {
+    _, const index = try connection.get_event(seq);
+    connection.delete_event_by_index(index);
 }
 
-pub fn handle_initialized_event(session: *Session) !void {
-    _, const index = try session.get_event("initialized");
-    session.delete_event_by_index(index);
+pub fn handle_initialized_event(connection: *Connection) !void {
+    _, const index = try connection.get_event("initialized");
+    connection.delete_event_by_index(index);
 }
 
-pub fn event_handled_output(session: *Session, seq: i32) !void {
-    _, const index = try session.get_event(seq);
-    session.delete_event_by_index(index);
+pub fn event_handled_output(connection: *Connection, seq: i32) !void {
+    _, const index = try connection.get_event(seq);
+    connection.delete_event_by_index(index);
 }
 
-pub fn adapter_spawn(session: *Session) !void {
-    _ = try session.adapter.spawn();
+pub fn adapter_spawn(connection: *Connection) !void {
+    _ = try connection.adapter.spawn();
 }
 
-pub fn adapter_wait(session: *Session) !void {
-    _ = try session.adapter.wait();
+pub fn adapter_wait(connection: *Connection) !void {
+    _ = try connection.adapter.wait();
 }
 
-pub fn adapter_write_all(session: *Session, message: []const u8) !void {
-    try session.adapter.stdin.?.writer().writeAll(message);
+pub fn adapter_write_all(connection: *Connection, message: []const u8) !void {
+    try connection.adapter.stdin.?.writer().writeAll(message);
 }
 
-pub fn new_seq(s: *Session) i32 {
+pub fn new_seq(s: *Connection) i32 {
     const seq = s.seq;
     s.seq += 1;
     return @intCast(seq);
 }
 
-pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
-    const stdout = session.adapter.stdout orelse return;
-    if (try io.message_exists(stdout, session.allocator, timeout_ms)) {
-        try session.responses.ensureUnusedCapacity(1);
-        try session.handled_responses.ensureTotalCapacity(session.total_responses_received + 1);
+pub fn queue_messages(connection: *Connection, timeout_ms: u64) !void {
+    const stdout = connection.adapter.stdout orelse return;
+    if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
+        try connection.responses.ensureUnusedCapacity(1);
+        try connection.handled_responses.ensureTotalCapacity(connection.total_responses_received + 1);
 
-        try session.events.ensureUnusedCapacity(1);
-        try session.handled_events.ensureTotalCapacity(session.total_events_received + 1);
+        try connection.events.ensureUnusedCapacity(1);
+        try connection.handled_events.ensureTotalCapacity(connection.total_events_received + 1);
 
-        const parsed = try io.read_message(stdout, session.allocator);
+        const parsed = try io.read_message(stdout, connection.allocator);
         errdefer {
             std.log.err("{}\n", .{parsed});
             parsed.deinit();
@@ -330,21 +330,21 @@ pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
         if (std.mem.eql(u8, string, "response")) {
             const name = utils.pull_value(object.get("command"), .string) orelse "";
             log.debug("New response \"{s}\"", .{name});
-            session.responses.appendAssumeCapacity(parsed);
-            session.total_responses_received += 1;
+            connection.responses.appendAssumeCapacity(parsed);
+            connection.total_responses_received += 1;
         } else if (std.mem.eql(u8, string, "event")) {
             const name = utils.pull_value(object.get("event"), .string) orelse "";
             log.debug("New event \"{s}\"", .{name});
-            session.events.appendAssumeCapacity(parsed);
-            session.total_events_received += 1;
+            connection.events.appendAssumeCapacity(parsed);
+            connection.total_events_received += 1;
         } else {
             return error.UnknownMessage;
         }
     }
 }
 
-pub fn get_response(session: *Session, request_seq: i32) !struct { RawMessage, usize } {
-    for (session.responses.items, 0..) |resp, i| {
+pub fn get_response(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
+    for (connection.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
         const seq = switch (raw_seq) {
@@ -359,7 +359,7 @@ pub fn get_response(session: *Session, request_seq: i32) !struct { RawMessage, u
     return error.ResponseDoesNotExist;
 }
 
-pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawMessage, usize } {
+pub fn get_event(connection: *Connection, name_or_seq: anytype) !struct { RawMessage, usize } {
     const T = @TypeOf(name_or_seq);
     const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
@@ -368,7 +368,7 @@ pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawMessage, 
 
     const key = if (T == i32) "seq" else "event";
     const wanted = if (T == i32) .integer else .string;
-    for (session.events.items, 0..) |event, i| {
+    for (connection.events.items, 0..) |event, i| {
         // messages shouldn't be queued up unless they're an object
         std.debug.assert(event.value == .object);
         const value = utils.get_value(event.value, key, wanted) orelse continue;
@@ -382,27 +382,27 @@ pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawMessage, 
     return error.EventDoseNotExist;
 }
 
-fn delete_response(session: *Session, request_seq: i32) void {
-    _, const index = session.get_response(request_seq) catch @panic("Only call this if you got a response");
-    const raw_resp = session.responses.swapRemove(index);
-    session.handled_responses.appendAssumeCapacity(raw_resp);
+fn delete_response(connection: *Connection, request_seq: i32) void {
+    _, const index = connection.get_response(request_seq) catch @panic("Only call this if you got a response");
+    const raw_resp = connection.responses.swapRemove(index);
+    connection.handled_responses.appendAssumeCapacity(raw_resp);
 }
 
-fn delete_event_by_seq(session: *Session, event_seq: i32) void {
-    _, const index = session.get_event(event_seq) catch @panic("Only call this if you got an event");
-    session.delete_event_by_index(index);
+fn delete_event_by_seq(connection: *Connection, event_seq: i32) void {
+    _, const index = connection.get_event(event_seq) catch @panic("Only call this if you got an event");
+    connection.delete_event_by_index(index);
 }
 
-fn delete_event_by_index(session: *Session, index: usize) void {
-    const raw_event = session.events.swapRemove(index);
-    session.handled_events.appendAssumeCapacity(raw_event);
+fn delete_event_by_index(connection: *Connection, index: usize) void {
+    const raw_event = connection.events.swapRemove(index);
+    connection.handled_events.appendAssumeCapacity(raw_event);
 }
 
-fn value_to_object_then_write(session: *Session, value: anytype) !void {
-    try session.value_to_object_then_inject_then_write(value, &.{}, .{});
+fn value_to_object_then_write(connection: *Connection, value: anytype) !void {
+    try connection.value_to_object_then_inject_then_write(value, &.{}, .{});
 }
 
-fn value_to_object_then_inject_then_write(session: *Session, value: anytype, ancestors: []const []const u8, extra: protocol.Object) !void {
+fn value_to_object_then_inject_then_write(connection: *Connection, value: anytype, ancestors: []const []const u8, extra: protocol.Object) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -415,26 +415,26 @@ fn value_to_object_then_inject_then_write(session: *Session, value: anytype, anc
         }
     }
 
-    const message = try io.create_message(session.allocator, object);
-    try session.adapter_write_all(message);
+    const message = try io.create_message(connection.allocator, object);
+    try connection.adapter_write_all(message);
 }
 
-pub fn wait_for_response(session: *Session, seq: i32) !void {
+pub fn wait_for_response(connection: *Connection, seq: i32) !void {
     while (true) {
-        for (session.responses.items) |item| {
+        for (connection.responses.items) |item| {
             const request_seq = utils.pull_value(item.value.object.get("request_seq"), .integer) orelse continue;
             if (request_seq == seq) {
                 return;
             }
         }
-        try session.queue_messages(std.time.ms_per_s);
+        try connection.queue_messages(std.time.ms_per_s);
     }
 }
 
-pub fn wait_for_event(session: *Session, name: []const u8) !void {
+pub fn wait_for_event(connection: *Connection, name: []const u8) !void {
     while (true) {
-        try session.queue_messages(std.time.ms_per_s);
-        for (session.events.items) |item| {
+        try connection.queue_messages(std.time.ms_per_s);
+        for (connection.events.items) |item| {
             const value_event = item.value.object.get("event").?;
             const event = switch (value_event) {
                 .string => |string| string,
@@ -447,23 +447,23 @@ pub fn wait_for_event(session: *Session, name: []const u8) !void {
     }
 }
 
-pub fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !std.json.Parsed(T) {
-    const raw_resp, _ = try session.get_response(seq);
-    return try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
+pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
+    const raw_resp, _ = try connection.get_response(seq);
+    return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
 }
 
-pub fn get_parse_validate_response(session: *Session, comptime T: type, seq: i32, command: []const u8) !std.json.Parsed(T) {
-    const raw_resp, _ = try session.get_response(seq);
-    const resp = try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
+pub fn get_parse_validate_response(connection: *Connection, comptime T: type, seq: i32, command: []const u8) !std.json.Parsed(T) {
+    const raw_resp, _ = try connection.get_response(seq);
+    const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
     try validate_response(resp.value, seq, command);
 
     return resp;
 }
 
-pub fn get_and_parse_event(session: *Session, comptime T: type, name: []const u8) !std.json.Parsed(T) {
-    const raw_event, _ = try session.get_event(name);
+pub fn get_and_parse_event(connection: *Connection, comptime T: type, name: []const u8) !std.json.Parsed(T) {
+    const raw_event, _ = try connection.get_event(name);
     // this clones everything in the raw_event
-    return try std.json.parseFromValue(T, session.allocator, raw_event.value, .{});
+    return try std.json.parseFromValue(T, connection.allocator, raw_event.value, .{});
 }
 
 fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {

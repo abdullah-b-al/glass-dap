@@ -1,6 +1,5 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
-const Session = @import("session.zig");
 const utils = @import("utils.zig");
 
 pub const Header = struct {

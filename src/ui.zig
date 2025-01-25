@@ -1,5 +1,5 @@
 const std = @import("std");
-const Session = @import("session.zig");
+const Connection = @import("connection.zig");
 const SessionData = @import("session_data.zig").SessionData;
 const zgui = @import("zgui");
 const glfw = @import("zglfw");
@@ -58,7 +58,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, session: *Session, data: *SessionData, args: Args) void {
+pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData, args: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -98,7 +98,7 @@ pub fn ui_tick(window: *glfw.Window, session: *Session, data: *SessionData, args
 
     modules(arena.allocator(), "Modules", data.*);
     threads(arena.allocator(), "Threads", data.*);
-    debug_ui(arena.allocator(), "Debug", session, data, args) catch |err| std.log.err("{}", .{err});
+    debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
@@ -172,7 +172,7 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
     }
 }
 
-fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session, data: *SessionData, args: Args) !void {
+fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
     var open: bool = true;
     zgui.showDemoWindow(&open);
 
@@ -184,19 +184,19 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session, dat
 
     if (zgui.beginTabItem("Manully Send Requests", .{})) {
         defer zgui.endTabItem();
-        try manual_requests(session, data, args);
+        try manual_requests(connection, data, args);
     }
 
     if (zgui.beginTabItem("Adapter Capabilities", .{})) {
         defer zgui.endTabItem();
-        adapter_capabilities(session.*);
+        adapter_capabilities(connection.*);
     }
 
     const table = .{
-        .{ .name = "Queued Responses", .items = session.responses.items },
-        .{ .name = "Handled Responses", .items = session.handled_responses.items },
-        .{ .name = "Events", .items = session.events.items },
-        .{ .name = "Handled Events", .items = session.handled_events.items },
+        .{ .name = "Queued Responses", .items = connection.responses.items },
+        .{ .name = "Handled Responses", .items = connection.handled_responses.items },
+        .{ .name = "Events", .items = connection.events.items },
+        .{ .name = "Handled Events", .items = connection.handled_events.items },
     };
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
@@ -222,8 +222,8 @@ fn console(data: SessionData) void {
     }
 }
 
-fn adapter_capabilities(session: Session) void {
-    var iter = session.adapter_capabilities.support.iterator();
+fn adapter_capabilities(connection: Connection) void {
+    var iter = connection.adapter_capabilities.support.iterator();
     while (iter.next()) |e| {
         const name = @tagName(e);
         var color = [4]f32{ 1, 1, 1, 1 };
@@ -234,25 +234,25 @@ fn adapter_capabilities(session: Session) void {
     }
 }
 
-fn manual_requests(session: *Session, data: *SessionData, args: Args) !void {
-    if (zgui.button("Begin session", .{})) {
-        try begin_debug_sequence(session, args);
+fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
+    if (zgui.button("Begin connection", .{})) {
+        try begin_debug_sequence(connection, args);
     }
 
-    if (zgui.button("end session: disconnect", .{})) {
-        const seq = try session.end_session(.disconnect);
-        try session.wait_for_response(seq);
-        try session.handle_disconnect_response(seq);
+    if (zgui.button("end connection: disconnect", .{})) {
+        const seq = try connection.end_session(.disconnect);
+        try connection.wait_for_response(seq);
+        try connection.handle_disconnect_response(seq);
     }
 
-    if (zgui.button("end session: terminate", .{})) {
-        _ = try session.end_session(.terminate);
+    if (zgui.button("end connection: terminate", .{})) {
+        _ = try connection.end_session(.terminate);
     }
 
     if (zgui.button("Threads", .{})) {
-        const seq = try session.send_threads_request(null);
-        try session.wait_for_response(seq);
-        try data.handle_response_threads(session, seq);
+        const seq = try connection.send_threads_request(null);
+        try connection.wait_for_response(seq);
+        try data.handle_response_threads(connection, seq);
     }
 }
 
