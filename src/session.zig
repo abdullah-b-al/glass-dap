@@ -81,9 +81,11 @@ adapter: std.process.Child,
 client_capabilities: ClientCapabilitiesSet = .{},
 adapter_capabilities: AdapterCapabilities = .{},
 
+total_responses_received: u32 = 0,
 responses: std.ArrayList(RawResponse),
 handled_responses: std.ArrayList(RawResponse),
 
+total_events_received: u32 = 0,
 events: std.ArrayList(RawResponse),
 handled_events: std.ArrayList(RawResponse),
 
@@ -263,6 +265,11 @@ pub fn handle_terminated_event(session: *Session) !void {
     session.delete_event_by_index(index);
 }
 
+pub fn handle_module_event(session: *Session) !void {
+    _, const index = try session.get_event("module");
+    session.delete_event_by_index(index);
+}
+
 pub fn handle_initialized_event(session: *Session) !void {
     _, const index = try session.get_event("initialized");
     session.delete_event_by_index(index);
@@ -294,9 +301,10 @@ pub fn new_seq(s: *Session) i32 {
 pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
     if (try io.message_exists(session.adapter.stdout.?, session.allocator, timeout_ms)) {
         try session.responses.ensureUnusedCapacity(1);
-        try session.handled_responses.ensureTotalCapacity(session.responses.capacity);
+        try session.handled_responses.ensureTotalCapacity(session.total_responses_received + 1);
+
         try session.events.ensureUnusedCapacity(1);
-        try session.handled_events.ensureTotalCapacity(session.events.capacity);
+        try session.handled_events.ensureTotalCapacity(session.total_events_received + 1);
 
         const parsed = try io.read_message(session.adapter.stdout.?, session.allocator);
         errdefer {
@@ -312,10 +320,12 @@ pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
             const name = utils.pull_value(object.get("command"), .string) orelse "";
             log.debug("New response \"{s}\"", .{name});
             session.responses.appendAssumeCapacity(parsed);
+            session.total_responses_received += 1;
         } else if (std.mem.eql(u8, string, "event")) {
             const name = utils.pull_value(object.get("event"), .string) orelse "";
             log.debug("New event \"{s}\"", .{name});
             session.events.appendAssumeCapacity(parsed);
+            session.total_events_received += 1;
         } else {
             return error.UnknownMessage;
         }
@@ -340,7 +350,7 @@ fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usiz
 
 fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usize } {
     const T = @TypeOf(name_or_seq);
-    const is_string = comptime utils.is_zig_string(@TypeOf(name_or_seq));
+    const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
         @compileError("Event name_or_seq must be a []const u8 or an i32 found " ++ @typeName(T));
     }
@@ -349,6 +359,7 @@ fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usi
     const wanted = if (T == i32) .integer else .string;
     for (session.events.items, 0..) |event, i| {
         // messages shouldn't be queued up unless they're an object
+        std.debug.assert(event.value == .object);
         const value = utils.get_value(event.value, key, wanted) orelse continue;
         if (T == i32) {
             if (name_or_seq == value) return i;
