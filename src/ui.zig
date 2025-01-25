@@ -3,6 +3,7 @@ const Session = @import("session.zig");
 const zgui = @import("zgui");
 const glfw = @import("zglfw");
 const zopengl = @import("zopengl");
+const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
@@ -37,7 +38,7 @@ pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
 
     _ = zgui.io.addFontFromFile(
         "/home/ab55al/.local/share/fonts/JetBrainsMono-Regular.ttf",
-        std.math.floor(32.0 * scale_factor),
+        std.math.floor(24.0 * scale_factor),
     );
 
     zgui.getStyle().scaleAllSizes(scale_factor);
@@ -54,7 +55,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, session: *Session) !void {
+pub fn ui_tick(window: *glfw.Window, session: *Session) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -67,25 +68,89 @@ pub fn ui_tick(window: *glfw.Window, session: *Session) !void {
 
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
-    // Set the starting window position and size to custom values
-    zgui.setNextWindowPos(.{ .x = 20.0, .y = 20.0, .cond = .first_use_ever });
-    zgui.setNextWindowSize(.{ .w = -1.0, .h = -1.0, .cond = .first_use_ever });
+    const static = struct {
+        var built_layout = false;
+    };
+    if (!static.built_layout) {
+        static.built_layout = true;
+        var dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
 
-    const err = debug_ui(arena.allocator(), session);
+        zgui.dockBuilderRemoveNode(dockspace_id);
+        const viewport = zgui.getMainViewport();
+        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
+        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
+
+        const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
+        const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
+        // const right = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.50, null, dock_main_id);
+
+        zgui.dockBuilderDockWindow("Modules", left);
+        // zgui.dockBuilderDockWindow("Debug", right);
+
+        zgui.dockBuilderFinish(dockspace_id);
+
+        _ = zgui.DockSpace("MyDockSpace", viewport.getSize(), .{});
+    }
+
+    modules(arena.allocator(), "Modules", session);
+    debug_ui(arena.allocator(), "Debug", session) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
     window.swapBuffers();
-
-    return err;
 }
 
-fn debug_ui(arena: std.mem.Allocator, session: *Session) !void {
+fn modules(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void {
+    _ = arena;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const table = .{
+        .{ .name = "ID", .field = "id" },
+        .{ .name = "Name", .field = "name" },
+        .{ .name = "Path", .field = "path" },
+        .{ .name = "Address Range", .field = "addressRange" },
+        .{ .name = "Optimized", .field = "isOptimized" },
+        .{ .name = "Is User Code", .field = "isUserCode" },
+        .{ .name = "Version", .field = "version" },
+        .{ .name = "Symbol Status", .field = "symbolStatus" },
+        .{ .name = "Symbol File Path", .field = "symbolFilePath" },
+        .{ .name = "Date Timestamp", .field = "dateTimeStamp" },
+    };
+    const columns_count = std.meta.fields(@TypeOf(table)).len;
+
+    if (zgui.beginTable("Modules Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        inline for (table) |entry| {
+            zgui.tableSetupColumn(entry.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (session.handled_events.items) |item| {
+            if (!utils.value_is(item.value, "event", .{ .string = "module" })) {
+                continue;
+            }
+
+            const raw_module = utils.get_value_untyped(item.value, "body.module") orelse continue;
+            const parsed = std.json.parseFromValue(protocol.Module, session.allocator, raw_module, .{ .ignore_unknown_fields = true }) catch continue;
+            defer parsed.deinit();
+
+            zgui.tableNextRow(.{});
+            inline for (table) |entry| {
+                _ = zgui.tableNextColumn();
+                const value = @field(parsed.value, entry.field);
+                zgui.text("{s}", .{anytype_to_string(value)});
+            }
+        }
+        zgui.endTable();
+    }
+}
+
+fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) !void {
     var open: bool = true;
     zgui.showDemoWindow(&open);
 
     defer zgui.end();
-    if (!zgui.begin("Debug", .{})) return;
+    if (!zgui.begin(name, .{})) return;
 
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Debug Tabs", .{})) return;
@@ -205,4 +270,29 @@ fn recursively_draw_object(allocator: std.mem.Allocator, parent: []const u8, nam
             zgui.text("{s} = {}", .{ name, v });
         },
     }
+}
+
+fn bool_to_string(opt_bool: ?bool) []const u8 {
+    const result = opt_bool orelse return "Unknown";
+    return if (result) "True" else "False";
+}
+
+fn mabye_string_to_string(string: ?[]const u8) []const u8 {
+    return string orelse "";
+}
+
+fn protocol_value_to_string(value: protocol.Value) []const u8 {
+    switch (value) {
+        .string => |string| return string,
+        else => @panic("TODO"),
+    }
+}
+
+fn anytype_to_string(value: anytype) []const u8 {
+    return switch (@TypeOf(value)) {
+        ?bool, bool => bool_to_string(value),
+        ?[]const u8, []const u8 => mabye_string_to_string(value),
+        protocol.Value => protocol_value_to_string(value),
+        inline else => @compileError(@typeName(@TypeOf(value))),
+    };
 }
