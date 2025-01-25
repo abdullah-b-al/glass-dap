@@ -71,7 +71,7 @@ const AdapterCapabilities = struct {
     breakpointModes: ?[]protocol.BreakpointMode = null,
 };
 
-const RawResponse = std.json.Parsed(std.json.Value);
+const RawMessage = std.json.Parsed(std.json.Value);
 
 const StartKind = enum { launched, attached, not_started };
 
@@ -82,12 +82,12 @@ client_capabilities: ClientCapabilitiesSet = .{},
 adapter_capabilities: AdapterCapabilities = .{},
 
 total_responses_received: u32 = 0,
-responses: std.ArrayList(RawResponse),
-handled_responses: std.ArrayList(RawResponse),
+responses: std.ArrayList(RawMessage),
+handled_responses: std.ArrayList(RawMessage),
 
 total_events_received: u32 = 0,
-events: std.ArrayList(RawResponse),
-handled_events: std.ArrayList(RawResponse),
+events: std.ArrayList(RawMessage),
+handled_events: std.ArrayList(RawMessage),
 
 start_kind: StartKind,
 
@@ -108,10 +108,10 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Sess
         .start_kind = .not_started,
         .adapter = adapter,
         .allocator = allocator,
-        .responses = std.ArrayList(RawResponse).init(allocator),
-        .handled_responses = std.ArrayList(RawResponse).init(allocator),
-        .events = std.ArrayList(RawResponse).init(allocator),
-        .handled_events = std.ArrayList(RawResponse).init(allocator),
+        .responses = std.ArrayList(RawMessage).init(allocator),
+        .handled_responses = std.ArrayList(RawMessage).init(allocator),
+        .events = std.ArrayList(RawMessage).init(allocator),
+        .handled_events = std.ArrayList(RawMessage).init(allocator),
     };
 }
 
@@ -343,7 +343,7 @@ pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
     }
 }
 
-pub fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usize } {
+pub fn get_response(session: *Session, request_seq: i32) !struct { RawMessage, usize } {
     for (session.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
@@ -359,7 +359,7 @@ pub fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, 
     return error.ResponseDoesNotExist;
 }
 
-pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usize } {
+pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawMessage, usize } {
     const T = @TypeOf(name_or_seq);
     const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
