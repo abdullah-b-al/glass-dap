@@ -1,5 +1,6 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const log = std.log.scoped(.utils);
 
 pub fn object_inject(allocator: std.mem.Allocator, object: *protocol.Object, ancestors: []const []const u8, key: []const u8, value: protocol.Value) !void {
     var obj = try object_ancestor_get(object, ancestors);
@@ -175,6 +176,13 @@ pub fn get_value_untyped(value: ?std.json.Value, path_to_value: []const u8) ?std
     }
 }
 
+pub fn value_is(value: std.json.Value, path_to_value: []const u8, eql_to: std.json.Value) bool {
+    const v = get_value_untyped(value, path_to_value) orelse return false;
+    if (std.meta.activeTag(v) != std.meta.activeTag(eql_to)) return false;
+    return switch (v) {
+        .number_string, .string => std.mem.eql(u8, v.string, eql_to.string),
+        else => std.meta.eql(v, eql_to),
+    };
 }
 
 pub fn is_zig_string(comptime T: type) bool {
