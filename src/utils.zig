@@ -155,19 +155,26 @@ pub fn get_value(value: ?std.json.Value, path_to_value: []const u8, comptime wan
 
 pub fn get_value_untyped(value: ?std.json.Value, path_to_value: []const u8) ?std.json.Value {
     var object = pull_value(value, .object) orelse return null;
-    var iter = std.mem.splitScalar(u8, path_to_value, '.');
-    while (iter.next()) |key| {
-        object = pull_value(object.get(key), .object) orelse break;
-    }
 
-    if (iter.next() != null) {
-        // path_to_value is invalid. One of the middle fields is not an object
-        return null;
-    }
+    if (std.mem.lastIndexOfScalar(u8, path_to_value, '.')) |index| {
+        const value_name = path_to_value[index + 1 ..];
 
-    const name_index = std.mem.lastIndexOfScalar(u8, path_to_value, '.') orelse 0;
-    const name = if (name_index == 0) path_to_value else path_to_value[name_index + 1 ..];
-    return object.get(name);
+        var iter = std.mem.splitScalar(u8, path_to_value[0..index], '.');
+        while (iter.next()) |key| {
+            object = pull_value(object.get(key), .object) orelse break;
+        }
+
+        if (iter.next() != null) {
+            // path_to_value is invalid. One of the middle fields is not an object
+            return null;
+        }
+
+        return object.get(value_name);
+    } else {
+        return object.get(path_to_value);
+    }
+}
+
 }
 
 pub fn is_zig_string(comptime T: type) bool {
