@@ -176,8 +176,10 @@ pub fn send_launch_request(session: *Session, arguments: protocol.LaunchRequestA
 
 pub fn handle_launch_response(session: *Session, seq: i32) !void {
     std.debug.assert(session.start_kind == .not_started);
+    const resp = try session.get_parse_validate_response(protocol.LaunchResponse, seq, "launch");
+    defer resp.deinit();
     session.start_kind = .launched;
-    try session.acknowledge_response(protocol.LaunchResponse, seq, "launch");
+    session.delete_response(seq);
 }
 
 pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
@@ -197,7 +199,9 @@ pub fn send_configuration_done_request(session: *Session, arguments: ?protocol.C
 }
 
 pub fn handle_configuration_done_response(session: *Session, seq: i32) !void {
-    try session.acknowledge_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
+    const resp = try session.get_parse_validate_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
+    defer resp.deinit();
+    session.delete_response(seq);
 }
 
 fn send_terminate_request(session: *Session, restart: ?bool) !i32 {
@@ -261,7 +265,9 @@ pub fn send_threads_request(session: *Session, arguments: ?protocol.Value) !i32 
 }
 
 pub fn response_handled_threads(session: *Session, seq: i32) !void {
-    try session.acknowledge_response(protocol.ThreadsResponse, seq, "threads");
+    const resp = try session.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
+    defer resp.deinit();
+    session.delete_response(seq);
 }
 
 pub fn event_handled_terminated(session: *Session, seq: i32) !void {
@@ -446,6 +452,14 @@ pub fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !st
     return try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
 }
 
+pub fn get_parse_validate_response(session: *Session, comptime T: type, seq: i32, command: []const u8) !std.json.Parsed(T) {
+    const raw_resp, _ = try session.get_response(seq);
+    const resp = try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
+    try validate_response(resp.value, seq, command);
+
+    return resp;
+}
+
 pub fn get_and_parse_event(session: *Session, comptime T: type, name: []const u8) !std.json.Parsed(T) {
     const raw_event, _ = try session.get_event(name);
     // this clones everything in the raw_event
@@ -456,11 +470,4 @@ fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
     if (!resp.success) return error.RequestFailed;
     if (resp.request_seq != seq) return error.RequestResponseMismatchedSeq;
     if (!std.mem.eql(u8, resp.command, command)) return error.WrongCommandForResponse;
-}
-
-fn acknowledge_response(session: *Session, comptime T: type, seq: i32, command: []const u8) !void {
-    const resp = try session.get_and_parse_response(T, seq);
-    defer resp.deinit();
-    try validate_response(resp.value, seq, command);
-    session.delete_response(seq);
 }

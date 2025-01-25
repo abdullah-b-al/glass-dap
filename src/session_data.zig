@@ -57,16 +57,10 @@ pub const SessionData = struct {
     }
 
     pub fn handle_response_threads(data: *SessionData, session: *Session, seq: i32) !void {
-        const raw_thread, _ = try session.get_response(seq);
-        const array = utils.get_value_untyped(raw_thread.value, "body.threads") orelse return;
-        const parsed = try std.json.parseFromValue(
-            []protocol.Thread,
-            session.allocator,
-            array,
-            .{},
-        );
+        const parsed = try session.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
         defer parsed.deinit();
-        try data.set_threads(parsed.value);
+        const array = parsed.value.body.threads;
+        try data.set_threads(array);
 
         try session.response_handled_threads(seq);
     }
