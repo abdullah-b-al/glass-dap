@@ -25,9 +25,14 @@ pub fn main() !void {
             std.debug.print("{}\n", .{err});
         };
 
-        ui.ui_tick(window, &session) catch |err| {
-            std.log.err("ui_tick:{}", .{err});
+        session.handle_output_event() catch |err|
+            switch (err) {
+            error.EventDoseNotExist => {},
         };
+        session.handle_module_event() catch |err| switch (err) {
+            error.EventDoseNotExist => {},
+        };
+        ui.ui_tick(window, &session);
     }
     std.log.info("Window Closed", .{});
 }

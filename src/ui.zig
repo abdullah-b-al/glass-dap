@@ -125,9 +125,6 @@ fn debug_ui(arena: std.mem.Allocator, session: *Session) !void {
 }
 
 fn console(session: *Session) void {
-    while (true) {
-        session.handle_output_event() catch break;
-    }
     for (session.handled_events.items) |item| {
         const output = utils.get_value(item.value, "body.output", .string) orelse continue;
         zgui.text("{s}", .{output});
