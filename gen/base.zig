@@ -92,6 +92,27 @@ pub const Value = union(enum) {
     array: Array,
     object: Object,
 
+    pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!Value {
+        switch (source) {
+            .null => return @unionInit(Value, "null", {}),
+            .string => |string| return @unionInit(Value, "string", string),
+            .integer => |integer| return @unionInit(Value, "integer", integer),
+            .bool => |b| return @unionInit(Value, "bool", b),
+            .float => |float| return @unionInit(Value, "float", float),
+            .number_string => |number_string| return @unionInit(Value, "number_string", number_string),
+            .object => {
+                const result = try std.json.parseFromValueLeaky(Object, allocator, source, options);
+                return @unionInit(Value, "object", result);
+            },
+            .array => {
+                const result = try std.json.parseFromValueLeaky(Array, allocator, source, options);
+                return @unionInit(Value, "array", result);
+            },
+        }
+
+        return error.UnexpectedToken;
+    }
+
     pub fn jsonStringify(value: @This(), jws: anytype) !void {
         switch (value) {
             .null => try jws.write(null),
