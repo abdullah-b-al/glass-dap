@@ -91,12 +91,6 @@ handled_events: std.ArrayList(RawResponse),
 
 start_kind: StartKind,
 
-/// From the protocol:
-/// Arbitrary data from the previous, restarted session.
-/// The data is sent as the `restart` attribute of the `terminated` event.
-/// The client should leave the data intact.
-terminated_restart_data: ?std.json.Value = null,
-
 /// Used for the seq field in the protocol
 seq: u32 = 1,
 
@@ -270,14 +264,8 @@ pub fn response_handled_threads(session: *Session, seq: i32) !void {
     try session.acknowledge_response(protocol.ThreadsResponse, seq, "threads");
 }
 
-pub fn handle_terminated_event(session: *Session) !void {
-    const parsed, const index = try session.get_event("terminated");
-    const restart = utils.get_value_untyped(parsed.value, "body.restart");
-
-    // FIXME: Clone this!
-    // This will cause a segfault if the data in handled_events is freed.
-    session.terminated_restart_data = restart;
-
+pub fn event_handled_terminated(session: *Session, seq: i32) !void {
+    _, const index = try session.get_event(seq);
     session.delete_event_by_index(index);
 }
 

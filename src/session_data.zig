@@ -10,6 +10,12 @@ pub const SessionData = struct {
     threads: std.ArrayListUnmanaged(protocol.Thread) = .{},
     modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 
+    /// From the protocol:
+    /// Arbitrary data from the previous, restarted session.
+    /// The data is sent as the `restart` attribute of the `terminated` event.
+    /// The client should leave the data intact.
+    terminated_restart_data: ?protocol.Value = null,
+
     pub fn init(allocator: std.mem.Allocator) SessionData {
         return .{ .allocator = allocator };
     }
@@ -19,6 +25,17 @@ pub const SessionData = struct {
         defer event.deinit();
         try data.add_module(event.value.body.module);
         try session.event_handled_modules(event.value.seq);
+    }
+
+    pub fn handle_event_terminated(data: *SessionData, session: *Session) !void {
+        const event = try session.get_and_parse_event(protocol.TerminatedEvent, "terminated");
+        defer event.deinit();
+
+        if (event.value.body) |body| {
+            data.terminated_restart_data = body.restart;
+        }
+
+        try session.event_handled_terminated(event.value.seq);
     }
 
     pub fn handle_response_threads(data: *SessionData, session: *Session, seq: i32) !void {

@@ -23,11 +23,11 @@ pub fn main() !void {
 
     const table = .{
         Session.handle_output_event,
-        Session.handle_terminated_event,
     };
 
     const data_table = .{
         SessionData.handle_event_modules,
+        SessionData.handle_event_terminated,
     };
 
     while (!window.shouldClose()) {
