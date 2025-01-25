@@ -266,7 +266,7 @@ pub fn send_threads_request(session: *Session, arguments: ?protocol.Value) !i32 
     return request.seq;
 }
 
-pub fn handle_threads_response(session: *Session, seq: i32) !void {
+pub fn response_handled_threads(session: *Session, seq: i32) !void {
     try session.acknowledge_response(protocol.ThreadsResponse, seq, "threads");
 }
 
@@ -281,8 +281,8 @@ pub fn handle_terminated_event(session: *Session) !void {
     session.delete_event_by_index(index);
 }
 
-pub fn handle_module_event(session: *Session) !void {
-    _, const index = try session.get_event("module");
+pub fn event_handled_modules(session: *Session, seq: i32) !void {
+    _, const index = try session.get_event(seq);
     session.delete_event_by_index(index);
 }
 
@@ -315,14 +315,15 @@ pub fn new_seq(s: *Session) i32 {
 }
 
 pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
-    if (try io.message_exists(session.adapter.stdout.?, session.allocator, timeout_ms)) {
+    const stdout = session.adapter.stdout orelse return;
+    if (try io.message_exists(stdout, session.allocator, timeout_ms)) {
         try session.responses.ensureUnusedCapacity(1);
         try session.handled_responses.ensureTotalCapacity(session.total_responses_received + 1);
 
         try session.events.ensureUnusedCapacity(1);
         try session.handled_events.ensureTotalCapacity(session.total_events_received + 1);
 
-        const parsed = try io.read_message(session.adapter.stdout.?, session.allocator);
+        const parsed = try io.read_message(stdout, session.allocator);
         errdefer {
             std.log.err("{}\n", .{parsed});
             parsed.deinit();
@@ -348,7 +349,7 @@ pub fn queue_messages(session: *Session, timeout_ms: u64) !void {
     }
 }
 
-fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usize } {
+pub fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usize } {
     for (session.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
@@ -364,7 +365,7 @@ fn get_response(session: *Session, request_seq: i32) !struct { RawResponse, usiz
     return error.ResponseDoesNotExist;
 }
 
-fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usize } {
+pub fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usize } {
     const T = @TypeOf(name_or_seq);
     const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
@@ -378,7 +379,7 @@ fn get_event(session: *Session, name_or_seq: anytype) !struct { RawResponse, usi
         std.debug.assert(event.value == .object);
         const value = utils.get_value(event.value, key, wanted) orelse continue;
         if (T == i32) {
-            if (name_or_seq == value) return i;
+            if (name_or_seq == value) return .{ event, i };
         } else {
             if (std.mem.eql(u8, value, name_or_seq)) return .{ event, i };
         }
@@ -452,9 +453,15 @@ pub fn wait_for_event(session: *Session, name: []const u8) !void {
     }
 }
 
-fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !std.json.Parsed(T) {
+pub fn get_and_parse_response(session: *Session, comptime T: type, seq: i32) !std.json.Parsed(T) {
     const raw_resp, _ = try session.get_response(seq);
     return try std.json.parseFromValue(T, session.allocator, raw_resp.value, .{});
+}
+
+pub fn get_and_parse_event(session: *Session, comptime T: type, name: []const u8) !std.json.Parsed(T) {
+    const raw_event, _ = try session.get_event(name);
+    // this clones everything in the raw_event
+    return try std.json.parseFromValue(T, session.allocator, raw_event.value, .{});
 }
 
 fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
@@ -465,6 +472,7 @@ fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
 
 fn acknowledge_response(session: *Session, comptime T: type, seq: i32, command: []const u8) !void {
     const resp = try session.get_and_parse_response(T, seq);
+    defer resp.deinit();
     try validate_response(resp.value, seq, command);
     session.delete_response(seq);
 }

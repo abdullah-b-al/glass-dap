@@ -1,10 +1,13 @@
 const std = @import("std");
 const Session = @import("session.zig");
+const SessionData = @import("session_data.zig").SessionData;
 const zgui = @import("zgui");
 const glfw = @import("zglfw");
 const zopengl = @import("zopengl");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
+const Args = @import("main.zig").Args;
+const begin_debug_sequence = @import("main.zig").begin_debug_sequence;
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     try glfw.init();
@@ -55,7 +58,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, session: *Session) void {
+pub fn ui_tick(window: *glfw.Window, session: *Session, data: *SessionData, args: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -93,16 +96,16 @@ pub fn ui_tick(window: *glfw.Window, session: *Session) void {
         _ = zgui.DockSpace("MyDockSpace", viewport.getSize(), .{});
     }
 
-    modules(arena.allocator(), "Modules", session);
-    threads(arena.allocator(), "Threads", session);
-    debug_ui(arena.allocator(), "Debug", session) catch |err| std.log.err("{}", .{err});
+    modules(arena.allocator(), "Modules", data.*);
+    threads(arena.allocator(), "Threads", data.*);
+    debug_ui(arena.allocator(), "Debug", session, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
     window.swapBuffers();
 }
 
-fn threads(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void {
+fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -119,28 +122,12 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void
         }
         zgui.tableHeadersRow();
 
-        for (session.handled_responses.items) |item| {
-            if (!utils.value_is(item.value, "command", .{ .string = "threads" })) {
-                continue;
-            }
-
-            const raw_module = utils.get_value_untyped(item.value, "body.threads") orelse unreachable;
-            const parsed = std.json.parseFromValue(
-                []protocol.Thread,
-                session.allocator,
-                raw_module,
-                .{ .ignore_unknown_fields = true },
-            ) catch unreachable;
-
-            defer parsed.deinit();
-
+        for (data.threads.items) |thread| {
             zgui.tableNextRow(.{});
-            for (parsed.value) |thread| {
-                inline for (table) |entry| {
-                    _ = zgui.tableNextColumn();
-                    const value = @field(thread, entry.field);
-                    zgui.text("{s}", .{anytype_to_string(value)});
-                }
+            inline for (table) |entry| {
+                _ = zgui.tableNextColumn();
+                const value = @field(thread, entry.field);
+                zgui.text("{s}", .{anytype_to_string(value)});
             }
         }
 
@@ -148,7 +135,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void
     }
 }
 
-fn modules(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void {
+fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -173,19 +160,11 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void
         }
         zgui.tableHeadersRow();
 
-        for (session.handled_events.items) |item| {
-            if (!utils.value_is(item.value, "event", .{ .string = "module" })) {
-                continue;
-            }
-
-            const raw_module = utils.get_value_untyped(item.value, "body.module") orelse continue;
-            const parsed = std.json.parseFromValue(protocol.Module, session.allocator, raw_module, .{ .ignore_unknown_fields = true }) catch continue;
-            defer parsed.deinit();
-
+        for (data.modules.items) |module| {
             zgui.tableNextRow(.{});
             inline for (table) |entry| {
                 _ = zgui.tableNextColumn();
-                const value = @field(parsed.value, entry.field);
+                const value = @field(module, entry.field);
                 zgui.text("{s}", .{anytype_to_string(value)});
             }
         }
@@ -193,7 +172,7 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void
     }
 }
 
-fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) !void {
+fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session, data: *SessionData, args: Args) !void {
     var open: bool = true;
     zgui.showDemoWindow(&open);
 
@@ -205,7 +184,7 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) !vo
 
     if (zgui.beginTabItem("Manully Send Requests", .{})) {
         defer zgui.endTabItem();
-        try manual_requests(session);
+        try manual_requests(session, data, args);
     }
 
     if (zgui.beginTabItem("Adapter Capabilities", .{})) {
@@ -256,7 +235,11 @@ fn adapter_capabilities(session: Session) void {
     }
 }
 
-fn manual_requests(session: *Session) !void {
+fn manual_requests(session: *Session, data: *SessionData, args: Args) !void {
+    if (zgui.button("Begin session", .{})) {
+        try begin_debug_sequence(session, args);
+    }
+
     if (zgui.button("end session: disconnect", .{})) {
         const seq = try session.end_session(.disconnect);
         try session.wait_for_response(seq);
@@ -270,7 +253,7 @@ fn manual_requests(session: *Session) !void {
     if (zgui.button("Threads", .{})) {
         const seq = try session.send_threads_request(null);
         try session.wait_for_response(seq);
-        try session.handle_threads_response(seq);
+        try data.handle_response_threads(session, seq);
     }
 }
 
@@ -345,7 +328,7 @@ fn anytype_to_string(value: anytype) []const u8 {
         ?bool, bool => bool_to_string(value),
         ?[]const u8, []const u8 => mabye_string_to_string(value),
         protocol.Value => protocol_value_to_string(value),
-        i32 => |int| return std.fmt.bufPrint(&static.buf, "{}", .{int}) catch unreachable,
+        i32 => std.fmt.bufPrint(&static.buf, "{}", .{value}) catch unreachable,
         inline else => @compileError(@typeName(@TypeOf(value))),
     };
 }

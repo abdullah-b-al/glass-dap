@@ -3,6 +3,7 @@ const protocol = @import("protocol.zig");
 const io = @import("io.zig");
 const utils = @import("utils.zig");
 const Session = @import("session.zig");
+const SessionData = @import("session_data.zig").SessionData;
 const Object = protocol.Object;
 const time = std.time;
 const ui = @import("ui.zig");
@@ -14,16 +15,19 @@ pub fn main() !void {
     const window = try ui.init_ui(gpa.allocator());
     defer ui.deinit_ui(window);
 
+    var data = SessionData.init(gpa.allocator());
     const adapter: []const []const u8 = &.{args.adapter};
     var session = Session.init(gpa.allocator(), adapter);
 
     try session.adapter_spawn();
-    try begin_debug_sequence(&session, args);
 
     const table = .{
         Session.handle_output_event,
-        Session.handle_module_event,
         Session.handle_terminated_event,
+    };
+
+    const data_table = .{
+        SessionData.handle_event_modules,
     };
 
     while (!window.shouldClose()) {
@@ -38,12 +42,22 @@ pub fn main() !void {
             };
         }
 
-        ui.ui_tick(window, &session);
+        inline for (data_table) |entry| {
+            entry(&data, &session) catch |err|
+                switch (err) {
+                error.EventDoseNotExist => {},
+                else => {
+                    std.log.err("{}", .{err});
+                },
+            };
+        }
+
+        ui.ui_tick(window, &session, &data, args);
     }
     std.log.info("Window Closed", .{});
 }
 
-fn begin_debug_sequence(session: *Session, args: Args) !void {
+pub fn begin_debug_sequence(session: *Session, args: Args) !void {
     const init_args = protocol.InitializeRequestArguments{
         .clientName = "unidep",
         .adapterID = "???",
@@ -70,7 +84,7 @@ fn begin_debug_sequence(session: *Session, args: Args) !void {
     try session.handle_configuration_done_response(config_seq);
 }
 
-const Args = struct {
+pub const Args = struct {
     adapter: []const u8 = "",
     debugee: []const u8 = "",
 };
