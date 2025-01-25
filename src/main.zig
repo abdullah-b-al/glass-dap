@@ -20,18 +20,24 @@ pub fn main() !void {
     try session.adapter_spawn();
     try begin_debug_sequence(&session, args);
 
+    const table = .{
+        Session.handle_output_event,
+        Session.handle_module_event,
+        Session.handle_terminated_event,
+    };
+
     while (!window.shouldClose()) {
         session.queue_messages(1) catch |err| {
             std.debug.print("{}\n", .{err});
         };
 
-        session.handle_output_event() catch |err|
-            switch (err) {
-            error.EventDoseNotExist => {},
-        };
-        session.handle_module_event() catch |err| switch (err) {
-            error.EventDoseNotExist => {},
-        };
+        inline for (table) |entry| {
+            entry(&session) catch |err|
+                switch (err) {
+                error.EventDoseNotExist => {},
+            };
+        }
+
         ui.ui_tick(window, &session);
     }
     std.log.info("Window Closed", .{});

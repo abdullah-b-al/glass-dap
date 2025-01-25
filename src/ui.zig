@@ -73,19 +73,20 @@ pub fn ui_tick(window: *glfw.Window, session: *Session) void {
     };
     if (!static.built_layout) {
         static.built_layout = true;
-        var dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
+        const dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
 
         zgui.dockBuilderRemoveNode(dockspace_id);
         const viewport = zgui.getMainViewport();
         const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
         zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
 
-        const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
-        const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
+        // const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
+        // const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
         // const right = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.50, null, dock_main_id);
 
-        zgui.dockBuilderDockWindow("Modules", left);
-        // zgui.dockBuilderDockWindow("Debug", right);
+        // dock them tabbed
+        zgui.dockBuilderDockWindow("Modules", empty);
+        zgui.dockBuilderDockWindow("Threads", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -93,11 +94,58 @@ pub fn ui_tick(window: *glfw.Window, session: *Session) void {
     }
 
     modules(arena.allocator(), "Modules", session);
+    threads(arena.allocator(), "Threads", session);
     debug_ui(arena.allocator(), "Debug", session) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
     window.swapBuffers();
+}
+
+fn threads(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void {
+    _ = arena;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const table = .{
+        .{ .name = "ID", .field = "id" },
+        .{ .name = "Name", .field = "name" },
+    };
+
+    const columns_count = std.meta.fields(@TypeOf(table)).len;
+    if (zgui.beginTable("Thread Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        inline for (table) |entry| {
+            zgui.tableSetupColumn(entry.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (session.handled_responses.items) |item| {
+            if (!utils.value_is(item.value, "command", .{ .string = "threads" })) {
+                continue;
+            }
+
+            const raw_module = utils.get_value_untyped(item.value, "body.threads") orelse unreachable;
+            const parsed = std.json.parseFromValue(
+                []protocol.Thread,
+                session.allocator,
+                raw_module,
+                .{ .ignore_unknown_fields = true },
+            ) catch unreachable;
+
+            defer parsed.deinit();
+
+            zgui.tableNextRow(.{});
+            for (parsed.value) |thread| {
+                inline for (table) |entry| {
+                    _ = zgui.tableNextColumn();
+                    const value = @field(thread, entry.field);
+                    zgui.text("{s}", .{anytype_to_string(value)});
+                }
+            }
+        }
+
+        zgui.endTable();
+    }
 }
 
 fn modules(arena: std.mem.Allocator, name: [:0]const u8, session: *Session) void {
@@ -219,10 +267,11 @@ fn manual_requests(session: *Session) !void {
         _ = try session.end_session(.terminate);
     }
 
-    session.handle_terminated_event() catch |err| switch (err) {
-        error.EventDoseNotExist => {},
-        // else => |e| std.log.err("debug_ui:{}", .{e}),
-    };
+    if (zgui.button("Threads", .{})) {
+        const seq = try session.send_threads_request(null);
+        try session.wait_for_response(seq);
+        try session.handle_threads_response(seq);
+    }
 }
 
 fn recursively_draw_object(allocator: std.mem.Allocator, parent: []const u8, name: []const u8, value: std.json.Value) void {
@@ -289,10 +338,14 @@ fn protocol_value_to_string(value: protocol.Value) []const u8 {
 }
 
 fn anytype_to_string(value: anytype) []const u8 {
+    const static = struct {
+        var buf: [10_000]u8 = undefined;
+    };
     return switch (@TypeOf(value)) {
         ?bool, bool => bool_to_string(value),
         ?[]const u8, []const u8 => mabye_string_to_string(value),
         protocol.Value => protocol_value_to_string(value),
+        i32 => |int| return std.fmt.bufPrint(&static.buf, "{}", .{int}) catch unreachable,
         inline else => @compileError(@typeName(@TypeOf(value))),
     };
 }
