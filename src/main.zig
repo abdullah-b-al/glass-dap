@@ -22,10 +22,7 @@ pub fn main() !void {
     try session.adapter_spawn();
 
     const table = .{
-        Session.handle_output_event,
-    };
-
-    const data_table = .{
+        SessionData.handle_event_output,
         SessionData.handle_event_modules,
         SessionData.handle_event_terminated,
     };
@@ -36,13 +33,6 @@ pub fn main() !void {
         };
 
         inline for (table) |entry| {
-            entry(&session) catch |err|
-                switch (err) {
-                error.EventDoseNotExist => {},
-            };
-        }
-
-        inline for (data_table) |entry| {
             entry(&data, &session) catch |err|
                 switch (err) {
                 error.EventDoseNotExist => {},

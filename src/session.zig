@@ -279,8 +279,8 @@ pub fn handle_initialized_event(session: *Session) !void {
     session.delete_event_by_index(index);
 }
 
-pub fn handle_output_event(session: *Session) !void {
-    _, const index = try session.get_event("output");
+pub fn event_handled_output(session: *Session, seq: i32) !void {
+    _, const index = try session.get_event(seq);
     session.delete_event_by_index(index);
 }
 

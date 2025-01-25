@@ -212,14 +212,13 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, session: *Session, dat
 
     if (zgui.beginTabItem("Console Output", .{})) {
         defer zgui.endTabItem();
-        console(session);
+        console(data.*);
     }
 }
 
-fn console(session: *Session) void {
-    for (session.handled_events.items) |item| {
-        const output = utils.get_value(item.value, "body.output", .string) orelse continue;
-        zgui.text("{s}", .{output});
+fn console(data: SessionData) void {
+    for (data.output.items) |item| {
+        zgui.text("{s}", .{item.body.output});
     }
 }
 
