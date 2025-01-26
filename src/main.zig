@@ -23,8 +23,6 @@ pub fn main() !void {
     var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    try connection.adapter_spawn();
-
     const table = .{
         SessionData.handle_event_output,
         SessionData.handle_event_modules,
@@ -52,10 +50,21 @@ pub fn main() !void {
 }
 
 pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
+    // send and respond to initialize
+    // send launch or attach
+    // when the adapter is ready it'll send a initialized event
+    // send configuration
+    // send configuration done
+    // respond to launch or attach
     const init_args = protocol.InitializeRequestArguments{
         .clientName = "unidep",
         .adapterID = "???",
     };
+
+    if (connection.state == .not_spawned) {
+        try connection.adapter_spawn();
+    }
+
     const init_seq = try connection.send_init_request(init_args, .{});
     try connection.wait_for_response(init_seq);
     try connection.handle_init_response(init_seq);
@@ -71,11 +80,11 @@ pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
     // TODO: Send configurations here
 
     const config_seq = try connection.send_configuration_done_request(null, .{});
+    try connection.wait_for_response(config_seq);
+    try connection.handle_configuration_done_response(config_seq);
 
     try connection.wait_for_response(launch_seq);
     try connection.handle_launch_response(launch_seq);
-    try connection.wait_for_response(config_seq);
-    try connection.handle_configuration_done_response(config_seq);
 }
 
 pub const Args = struct {
