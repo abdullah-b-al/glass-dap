@@ -76,6 +76,8 @@ const RawMessage = std.json.Parsed(std.json.Value);
 const StartKind = enum { launched, attached, not_started };
 
 allocator: std.mem.Allocator,
+/// Used for deeply cloned values
+arena: std.heap.ArenaAllocator,
 adapter: std.process.Child,
 
 client_capabilities: ClientCapabilitiesSet = .{},
@@ -109,6 +111,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .start_kind = .not_started,
         .adapter = adapter,
         .allocator = allocator,
+        .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         .responses = std.ArrayList(RawMessage).init(allocator),
         .handled_responses = std.ArrayList(RawMessage).init(allocator),
         .events = std.ArrayList(RawMessage).init(allocator),
@@ -135,6 +138,8 @@ pub fn deinit(connection: *Connection) void {
     connection.handled_responses.deinit();
     connection.events.deinit();
     connection.handled_events.deinit();
+
+    connection.arena.deinit();
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !i32 {
@@ -167,6 +172,8 @@ pub fn send_init_request(connection: *Connection, arguments: protocol.Initialize
 }
 
 pub fn handle_init_response(connection: *Connection, seq: i32) !void {
+    const cloner = connection.create_cloner();
+
     const resp = try connection.get_and_parse_response(protocol.InitializeResponse, seq);
     defer {
         connection.delete_response(seq);
@@ -175,11 +182,11 @@ pub fn handle_init_response(connection: *Connection, seq: i32) !void {
     try validate_response(resp.value, seq, "initialize");
     if (resp.value.body) |body| {
         connection.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
-        connection.adapter_capabilities.completionTriggerCharacters = body.completionTriggerCharacters;
-        connection.adapter_capabilities.exceptionBreakpointFilters = body.exceptionBreakpointFilters;
-        connection.adapter_capabilities.additionalModuleColumns = body.additionalModuleColumns;
-        connection.adapter_capabilities.supportedChecksumAlgorithms = body.supportedChecksumAlgorithms;
-        connection.adapter_capabilities.breakpointModes = body.breakpointModes;
+        connection.adapter_capabilities.completionTriggerCharacters = try utils.clone_anytype(cloner, body.completionTriggerCharacters);
+        connection.adapter_capabilities.exceptionBreakpointFilters = try utils.clone_anytype(cloner, body.exceptionBreakpointFilters);
+        connection.adapter_capabilities.additionalModuleColumns = try utils.clone_anytype(cloner, body.additionalModuleColumns);
+        connection.adapter_capabilities.supportedChecksumAlgorithms = try utils.clone_anytype(cloner, body.supportedChecksumAlgorithms);
+        connection.adapter_capabilities.breakpointModes = try utils.clone_anytype(cloner, body.breakpointModes);
     }
 }
 
@@ -497,4 +504,19 @@ fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
     if (!resp.success) return error.RequestFailed;
     if (resp.request_seq != seq) return error.RequestResponseMismatchedSeq;
     if (!std.mem.eql(u8, resp.command, command)) return error.WrongCommandForResponse;
+}
+
+const Cloner = struct {
+    data: *Connection,
+    allocator: std.mem.Allocator,
+    pub fn clone_string(cloner: Cloner, string: []const u8) ![]const u8 {
+        return try cloner.allocator.dupe(u8, string);
+    }
+};
+
+fn create_cloner(connection: *Connection) Cloner {
+    return Cloner{
+        .data = connection,
+        .allocator = connection.arena.allocator(),
+    };
 }
