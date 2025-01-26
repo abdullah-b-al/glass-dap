@@ -292,23 +292,22 @@ pub fn response_handled_threads(connection: *Connection, seq: i32) !void {
 }
 
 pub fn event_handled_terminated(connection: *Connection, seq: i32) !void {
-    _, const index = try connection.get_event(seq);
-    connection.delete_event_by_index(index);
+    connection.delete_event(seq);
 }
 
 pub fn event_handled_modules(connection: *Connection, seq: i32) !void {
-    _, const index = try connection.get_event(seq);
-    connection.delete_event_by_index(index);
+    connection.delete_event(seq);
 }
 
 pub fn handle_initialized_event(connection: *Connection) !void {
-    _, const index = try connection.get_event("initialized");
-    connection.delete_event_by_index(index);
+    const event = try connection.get_and_parse_event(protocol.InitializedEvent, "initialized");
+    defer event.deinit();
+
+    connection.delete_event(event.value.seq);
 }
 
 pub fn event_handled_output(connection: *Connection, seq: i32) !void {
-    _, const index = try connection.get_event(seq);
-    connection.delete_event_by_index(index);
+    connection.delete_event(seq);
 }
 
 pub fn adapter_spawn(connection: *Connection) !void {
@@ -380,7 +379,7 @@ pub fn get_response(connection: *Connection, request_seq: i32) !struct { RawMess
     return error.ResponseDoesNotExist;
 }
 
-pub fn get_event(connection: *Connection, name_or_seq: anytype) !struct { RawMessage, usize } {
+pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoseNotExist}!struct { RawMessage, usize } {
     const T = @TypeOf(name_or_seq);
     const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
@@ -405,17 +404,13 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) !struct { RawMes
 
 fn delete_response(connection: *Connection, request_seq: i32) void {
     _, const index = connection.get_response(request_seq) catch @panic("Only call this if you got a response");
-    const raw_resp = connection.responses.swapRemove(index);
+    const raw_resp = connection.responses.orderedRemove(index);
     connection.handled_responses.appendAssumeCapacity(raw_resp);
 }
 
-fn delete_event_by_seq(connection: *Connection, event_seq: i32) void {
+fn delete_event(connection: *Connection, event_seq: i32) void {
     _, const index = connection.get_event(event_seq) catch @panic("Only call this if you got an event");
-    connection.delete_event_by_index(index);
-}
-
-fn delete_event_by_index(connection: *Connection, index: usize) void {
-    const raw_event = connection.events.swapRemove(index);
+    const raw_event = connection.events.orderedRemove(index);
     connection.handled_events.appendAssumeCapacity(raw_event);
 }
 
