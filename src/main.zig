@@ -11,13 +11,17 @@ const ui = @import("ui.zig");
 pub fn main() !void {
     const args = try parse_args();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
 
     const window = try ui.init_ui(gpa.allocator());
     defer ui.deinit_ui(window);
 
     var data = SessionData.init(gpa.allocator());
+    defer data.deinit();
+
     const adapter: []const []const u8 = &.{args.adapter};
     var connection = Connection.init(gpa.allocator(), adapter);
+    defer connection.deinit();
 
     try connection.adapter_spawn();
 

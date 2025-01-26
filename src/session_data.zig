@@ -28,6 +28,15 @@ pub const SessionData = struct {
         };
     }
 
+    pub fn deinit(data: *SessionData) void {
+        data.string_storage.deinit(data.allocator);
+        data.threads.deinit(data.allocator);
+        data.modules.deinit(data.allocator);
+        data.output.deinit(data.allocator);
+
+        data.arena.deinit();
+    }
+
     pub fn handle_event_output(data: *SessionData, connection: *Connection) !void {
         const event = try connection.get_and_parse_event(protocol.OutputEvent, "output");
         defer event.deinit();
@@ -50,6 +59,7 @@ pub const SessionData = struct {
         defer event.deinit();
 
         if (event.value.body) |body| {
+            // FIXME: clone this
             data.terminated_restart_data = body.restart;
         }
 

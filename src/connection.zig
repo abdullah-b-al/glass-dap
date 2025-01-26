@@ -115,6 +115,26 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Conn
     };
 }
 
+pub fn deinit(connection: *Connection) void {
+    const table = .{
+        connection.responses.items,
+        connection.handled_responses.items,
+        connection.events.items,
+        connection.handled_events.items,
+    };
+
+    inline for (table) |entry| {
+        for (entry) |*item| {
+            item.deinit();
+        }
+    }
+
+    connection.responses.deinit();
+    connection.handled_responses.deinit();
+    connection.events.deinit();
+    connection.handled_events.deinit();
+}
+
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !i32 {
     switch (connection.start_kind) {
         .not_started => return error.SessionNotStarted,
@@ -243,6 +263,7 @@ fn send_disconnect_request(connection: *Connection, restart: ?bool) !i32 {
 
 pub fn handle_disconnect_response(connection: *Connection, seq: i32) !void {
     const resp = try connection.get_and_parse_response(protocol.DisconnectResponse, seq);
+    defer resp.deinit();
     try validate_response(resp.value, seq, "disconnect");
 
     if (resp.value.success) {
@@ -416,6 +437,7 @@ fn value_to_object_then_inject_then_write(connection: *Connection, value: anytyp
     }
 
     const message = try io.create_message(connection.allocator, object);
+    defer connection.allocator.free(message);
     try connection.adapter_write_all(message);
 }
 

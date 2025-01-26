@@ -7,7 +7,7 @@ pub const Header = struct {
 
     pub fn read_and_parse(allocator: std.mem.Allocator, reader: anytype) !Header {
         var list = std.ArrayList(u8).init(allocator);
-        errdefer list.deinit();
+        defer list.deinit();
 
         const max_read = std.fmt.count("Content-Length: {}\r\n", .{std.math.maxInt(u64)});
         try reader.readUntilDelimiterArrayList(&list, '\n', max_read);
@@ -31,8 +31,7 @@ pub fn create_message(allocator: std.mem.Allocator, value: protocol.Object) ![]c
     var list = std.ArrayList(u8).init(allocator);
     defer list.deinit();
 
-    const writer = list.writer();
-    try std.json.stringify(value, .{}, writer);
+    try std.json.stringify(value, .{}, list.writer());
 
     var buf: [512]u8 = undefined;
     const header = try std.fmt.bufPrint(&buf, "Content-Length: {d}\r\n\r\n", .{list.items.len});
@@ -56,7 +55,7 @@ pub fn read_message(pipe: std.fs.File, allocator: std.mem.Allocator) !std.json.P
     const reader = pipe.reader();
     const header = try Header.read_and_parse(allocator, reader);
     const message_content = try read_all(allocator, header, reader);
-    errdefer allocator.free(message_content);
+    defer allocator.free(message_content);
 
     const json_options = std.json.ParseOptions{ .ignore_unknown_fields = true };
 
