@@ -255,9 +255,9 @@ fn adapter_capabilities(connection: Connection) void {
         zgui.text("No supportedChecksumAlgorithms", .{});
     }
 
-    draw_tabel_from_slice_of_struct(protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
-    draw_tabel_from_slice_of_struct(protocol.ColumnDescriptor, c.additionalModuleColumns);
-    draw_tabel_from_slice_of_struct(protocol.BreakpointMode, c.breakpointModes);
+    draw_table_from_slice_of_struct(protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
+    draw_table_from_slice_of_struct(protocol.ColumnDescriptor, c.additionalModuleColumns);
+    draw_table_from_slice_of_struct(protocol.BreakpointMode, c.breakpointModes);
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
@@ -284,7 +284,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 }
 
-fn draw_tabel_from_slice_of_struct(comptime T: type, mabye_value: ?[]T) void {
+fn draw_table_from_slice_of_struct(comptime T: type, mabye_value: ?[]T) void {
     zgui.text("== {s} len({}) ==", .{ @typeName(T), (mabye_value orelse &.{}).len });
     const table = std.meta.fields(T);
     const columns_count = std.meta.fields(T).len;
