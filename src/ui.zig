@@ -201,11 +201,15 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
             defer zgui.endTabItem();
-            for (element.items) |resp| {
-                const seq = resp.value.object.get("seq").?.integer;
-                var buf: [512]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
-                recursively_draw_object(arena, slice, slice, resp.value);
+            if (connection.debug) {
+                for (element.items) |resp| {
+                    const seq = resp.value.object.get("seq").?.integer;
+                    var buf: [512]u8 = undefined;
+                    const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
+                    recursively_draw_object(arena, slice, slice, resp.value);
+                }
+            } else {
+                zgui.text("Connection debuggin is turned off", .{});
             }
         }
     }

@@ -20,7 +20,7 @@ pub fn main() !void {
     defer data.deinit();
 
     const adapter: []const []const u8 = &.{args.adapter};
-    var connection = Connection.init(gpa.allocator(), adapter);
+    var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
     try connection.adapter_spawn();
@@ -81,6 +81,7 @@ pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
 pub const Args = struct {
     adapter: []const u8 = "",
     debugee: []const u8 = "",
+    debug_connection: bool = false,
 };
 fn parse_args() !Args {
     if (std.os.argv.len == 1) {
@@ -96,6 +97,8 @@ fn parse_args() !Args {
             result.adapter = try get_arg_without_double_dash(&iter, error.MissingAdapterPath);
         } else if (std.mem.eql(u8, arg, "--debugee")) {
             result.debugee = try get_arg_without_double_dash(&iter, error.MissingDebugeePath);
+        } else if (std.mem.eql(u8, arg, "--debug_connection")) {
+            result.debug_connection = true;
         } else {
             std.log.err("Unknow arg {s}", .{arg});
             std.process.exit(1);

@@ -90,11 +90,12 @@ events: std.ArrayList(RawMessage),
 handled_events: std.ArrayList(RawMessage),
 
 start_kind: StartKind,
+debug: bool,
 
 /// Used for the seq field in the protocol
 seq: u32 = 1,
 
-pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Connection {
+pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debug: bool) Connection {
     var adapter = std.process.Child.init(
         adapter_argv,
         allocator,
@@ -112,6 +113,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8) Conn
         .handled_responses = std.ArrayList(RawMessage).init(allocator),
         .events = std.ArrayList(RawMessage).init(allocator),
         .handled_events = std.ArrayList(RawMessage).init(allocator),
+        .debug = debug,
     };
 }
 
@@ -405,13 +407,21 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoseN
 fn delete_response(connection: *Connection, request_seq: i32) void {
     _, const index = connection.get_response(request_seq) catch @panic("Only call this if you got a response");
     const raw_resp = connection.responses.orderedRemove(index);
-    connection.handled_responses.appendAssumeCapacity(raw_resp);
+    if (connection.debug) {
+        connection.handled_responses.appendAssumeCapacity(raw_resp);
+    } else {
+        raw_resp.deinit();
+    }
 }
 
 fn delete_event(connection: *Connection, event_seq: i32) void {
     _, const index = connection.get_event(event_seq) catch @panic("Only call this if you got an event");
     const raw_event = connection.events.orderedRemove(index);
-    connection.handled_events.appendAssumeCapacity(raw_event);
+    if (connection.debug) {
+        connection.handled_events.appendAssumeCapacity(raw_event);
+    } else {
+        raw_event.deinit();
+    }
 }
 
 fn value_to_object_then_write(connection: *Connection, value: anytype) !void {
