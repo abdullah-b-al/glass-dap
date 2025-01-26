@@ -59,8 +59,7 @@ pub const SessionData = struct {
         defer event.deinit();
 
         if (event.value.body) |body| {
-            // FIXME: clone this
-            data.terminated_restart_data = body.restart;
+            data.terminated_restart_data = try data.clone_anytype(body.restart);
         }
 
         try connection.event_handled_terminated(event.value.seq);
