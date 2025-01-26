@@ -209,7 +209,7 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
                     recursively_draw_object(arena, slice, slice, resp.value);
                 }
             } else {
-                zgui.text("Connection debuggin is turned off", .{});
+                zgui.text("Connection debugging is turned off", .{});
             }
         }
     }
@@ -227,6 +227,8 @@ fn console(data: SessionData) void {
 }
 
 fn adapter_capabilities(connection: Connection) void {
+    if (connection.start_kind == .not_started) return;
+
     var iter = connection.adapter_capabilities.support.iterator();
     while (iter.next()) |e| {
         const name = @tagName(e);
@@ -236,6 +238,26 @@ fn adapter_capabilities(connection: Connection) void {
         }
         zgui.textColored(color, "{s}", .{name});
     }
+
+    const c = connection.adapter_capabilities;
+    if (c.completionTriggerCharacters) |chars| {
+        for (chars) |string| {
+            zgui.text("completionTriggerCharacters {s}", .{string});
+        }
+    } else {
+        zgui.text("No completionTriggerCharacters", .{});
+    }
+    if (c.supportedChecksumAlgorithms) |checksum| {
+        for (checksum) |kind| {
+            zgui.text("supportedChecksumAlgorithms.{s}", .{@tagName(kind)});
+        }
+    } else {
+        zgui.text("No supportedChecksumAlgorithms", .{});
+    }
+
+    draw_tabel_from_slice_of_struct(protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
+    draw_tabel_from_slice_of_struct(protocol.ColumnDescriptor, c.additionalModuleColumns);
+    draw_tabel_from_slice_of_struct(protocol.BreakpointMode, c.breakpointModes);
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
@@ -257,6 +279,43 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         const seq = try connection.send_threads_request(null);
         try connection.wait_for_response(seq);
         try data.handle_response_threads(connection, seq);
+    }
+}
+
+fn draw_tabel_from_slice_of_struct(comptime T: type, mabye_value: ?[]T) void {
+    zgui.text("== {s} len({}) ==", .{ @typeName(T), (mabye_value orelse &.{}).len });
+    const table = std.meta.fields(T);
+    const columns_count = std.meta.fields(T).len;
+    if (zgui.beginTable(@typeName(T), .{ .column = columns_count, .flags = .{ .resizable = true, .context_menu_in_body = true } })) {
+        inline for (table) |entry| {
+            zgui.tableSetupColumn(entry.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        if (mabye_value) |value| {
+            for (value) |v| {
+                zgui.tableNextRow(.{});
+                inline for (std.meta.fields(@TypeOf(v))) |field| {
+                    const info = @typeInfo(field.type);
+                    const field_value = @field(v, field.name);
+                    _ = zgui.tableNextColumn();
+                    if (info == .pointer and info.pointer.child != u8) { // assume slice
+                        for (field_value, 0..) |inner_v, i| {
+                            if (i < field_value.len - 1) {
+                                zgui.text("{s},", .{anytype_to_string(inner_v)});
+                                zgui.sameLine(.{});
+                            } else {
+                                zgui.text("{s}", .{anytype_to_string(inner_v)});
+                            }
+                        }
+                    } else {
+                        zgui.text("{s}", .{anytype_to_string(field_value)});
+                    }
+                }
+            }
+        }
+
+        zgui.endTable();
     }
 }
 
@@ -327,9 +386,17 @@ fn anytype_to_string(value: anytype) []const u8 {
     const static = struct {
         var buf: [10_000]u8 = undefined;
     };
+
+    switch (@typeInfo(@TypeOf(value))) {
+        .@"enum" => return @tagName(value),
+        .@"union" => return @tagName(std.meta.activeTag(value)),
+        .optional => return anytype_to_string(value orelse return "null"),
+        else => {},
+    }
+
     return switch (@TypeOf(value)) {
-        ?bool, bool => bool_to_string(value),
-        ?[]const u8, []const u8 => mabye_string_to_string(value),
+        bool => bool_to_string(value),
+        []const u8 => mabye_string_to_string(value),
         protocol.Value => protocol_value_to_string(value),
         i32 => std.fmt.bufPrint(&static.buf, "{}", .{value}) catch unreachable,
         inline else => @compileError(@typeName(@TypeOf(value))),
