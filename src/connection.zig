@@ -73,7 +73,16 @@ const AdapterCapabilities = struct {
 
 const RawMessage = std.json.Parsed(std.json.Value);
 
-const StartKind = enum { launched, attached, not_started };
+const State = enum {
+    /// Adapter and debugee are running
+    launched,
+    /// Adapter and debugee are running
+    attached,
+    /// Adapter is running
+    spawned,
+    /// Adapter is not running
+    not_spawned,
+};
 
 allocator: std.mem.Allocator,
 /// Used for deeply cloned values
@@ -91,7 +100,7 @@ total_events_received: u32 = 0,
 events: std.ArrayList(RawMessage),
 handled_events: std.ArrayList(RawMessage),
 
-start_kind: StartKind,
+state: State,
 debug: bool,
 
 /// Used for the seq field in the protocol
@@ -108,7 +117,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
     adapter.stderr_behavior = .Pipe;
 
     return .{
-        .start_kind = .not_started,
+        .state = .not_spawned,
         .adapter = adapter,
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
@@ -143,8 +152,8 @@ pub fn deinit(connection: *Connection) void {
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !i32 {
-    switch (connection.start_kind) {
-        .not_started => return error.SessionNotStarted,
+    switch (connection.state) {
+        .not_spawned, .spawned => return error.SessionNotStarted,
         .attached => @panic("TODO"),
         .launched => {
             switch (how) {
@@ -157,6 +166,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
 pub fn send_init_request(connection: *Connection, arguments: protocol.InitializeRequestArguments, extra_arguments: protocol.Object) !i32 {
+    std.debug.assert(connection.state == .spawned); // don't init multiple times
     const request = protocol.InitializeRequest{
         .seq = connection.new_seq(),
         .type = .request,
@@ -172,6 +182,7 @@ pub fn send_init_request(connection: *Connection, arguments: protocol.Initialize
 }
 
 pub fn handle_init_response(connection: *Connection, seq: i32) !void {
+    std.debug.assert(connection.state == .spawned);
     const cloner = connection.create_cloner();
 
     const resp = try connection.get_and_parse_response(protocol.InitializeResponse, seq);
@@ -192,6 +203,7 @@ pub fn handle_init_response(connection: *Connection, seq: i32) !void {
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
 pub fn send_launch_request(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
+    std.debug.assert(connection.state == .spawned); // don't launch multiple times
     const request = protocol.LaunchRequest{
         .seq = connection.new_seq(),
         .type = .request,
@@ -204,14 +216,15 @@ pub fn send_launch_request(connection: *Connection, arguments: protocol.LaunchRe
 }
 
 pub fn handle_launch_response(connection: *Connection, seq: i32) !void {
-    std.debug.assert(connection.start_kind == .not_started);
+    std.debug.assert(connection.state == .spawned); // don't launch multiple times
     const resp = try connection.get_parse_validate_response(protocol.LaunchResponse, seq, "launch");
     defer resp.deinit();
-    connection.start_kind = .launched;
+    connection.state = .launched;
     connection.delete_response(seq);
 }
 
 pub fn send_configuration_done_request(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
+    std.debug.assert(connection.state == .spawned); // don't launch multiple times
     if (!connection.adapter_capabilities.support.contains(.supportsConfigurationDoneRequest)) {
         return error.AdapterDoesNotSupportConfigurationDone;
     }
@@ -228,6 +241,7 @@ pub fn send_configuration_done_request(connection: *Connection, arguments: ?prot
 }
 
 pub fn handle_configuration_done_response(connection: *Connection, seq: i32) !void {
+    std.debug.assert(connection.state == .spawned); // don't launch multiple times
     const resp = try connection.get_parse_validate_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
     defer resp.deinit();
     connection.delete_response(seq);
@@ -276,7 +290,7 @@ pub fn handle_disconnect_response(connection: *Connection, seq: i32) !void {
     try validate_response(resp.value, seq, "disconnect");
 
     if (resp.value.success) {
-        connection.start_kind = .not_started;
+        connection.state = .spawned;
     }
 
     connection.delete_response(seq);
@@ -320,14 +334,27 @@ pub fn event_handled_output(connection: *Connection, seq: i32) !void {
 }
 
 pub fn adapter_spawn(connection: *Connection) !void {
-    _ = try connection.adapter.spawn();
+    std.debug.assert(connection.state == .not_spawned);
+    try connection.adapter.spawn();
+    connection.state = .spawned;
 }
 
-pub fn adapter_wait(connection: *Connection) !void {
-    _ = try connection.adapter.wait();
+pub fn adapter_wait(connection: *Connection) !std.process.Child.Term {
+    std.debug.assert(connection.state != .not_spawned);
+    const code = try connection.adapter.wait();
+    connection.state = .not_spawned;
+    return code;
+}
+
+pub fn adapter_kill(connection: *Connection) !std.process.Child.Term {
+    std.debug.assert(connection.state != .not_spawned);
+    const code = try connection.adapter.kill();
+    connection.state = .not_spawned;
+    return code;
 }
 
 pub fn adapter_write_all(connection: *Connection, message: []const u8) !void {
+    std.debug.assert(connection.state != .not_spawned);
     try connection.adapter.stdin.?.writer().writeAll(message);
 }
 

@@ -227,7 +227,7 @@ fn console(data: SessionData) void {
 }
 
 fn adapter_capabilities(connection: Connection) void {
-    if (connection.start_kind == .not_started) return;
+    if (connection.state == .not_spawned) return;
 
     var iter = connection.adapter_capabilities.support.iterator();
     while (iter.next()) |e| {
