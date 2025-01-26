@@ -204,3 +204,95 @@ pub fn is_zig_string(comptime T: type) bool {
         else => return false,
     }
 }
+
+/// Clone is {
+///     allocator: std.mem.Allocator,
+///     pub fn clone_string(Cloner, string) error{OutOfMemory}![]const u8 {}
+/// }
+pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf(value) {
+    const T = @TypeOf(value);
+
+    // these require special handling
+    if (T == protocol.Object) {
+        return try clone_protocol_object(cloner, value);
+    }
+
+    if (T == protocol.Array) {
+        return try clone_protocol_array(cloner, value);
+    }
+
+    if (T == []const u8 or T == []u8) {
+        return try cloner.clone_string(value);
+    }
+
+    switch (@typeInfo(T)) {
+        .bool, .int, .float, .@"enum" => return value,
+        .pointer => |info| {
+            if (info.size != .slice) {
+                @compileError("Only slices are supported.\nfound: " ++ @tagName(info.size) ++ " " ++ @typeName(T));
+            }
+
+            const slice = try cloner.allocator.alloc(info.child, value.len);
+            for (slice, value) |*to, from| {
+                to.* = try clone_anytype(cloner, from);
+            }
+            return slice;
+        },
+
+        .optional => {
+            const unwraped = value orelse return null;
+            return try clone_anytype(cloner, unwraped);
+        },
+        .@"struct" => |struct_info| {
+            var v: T = undefined;
+            inline for (struct_info.fields) |field| {
+                @field(v, field.name) = try clone_anytype(cloner, @field(value, field.name));
+            }
+            return v;
+        },
+        .@"union" => {
+            var v: T = undefined;
+            inline for (std.meta.fields(T)) |field| {
+                if (std.mem.eql(u8, field.name, @tagName(std.meta.activeTag(value)))) {
+                    if (field.type == void) {
+                        v = value;
+                    } else {
+                        const cloned = try clone_anytype(cloner, @field(value, field.name));
+                        v = @unionInit(T, field.name, cloned);
+                    }
+                }
+            }
+
+            return v;
+        },
+
+        // zig fmt: off
+        .noreturn, .type, .array, .void, .comptime_float, .comptime_int, .undefined,
+        .null, .error_union, .error_set, .@"fn", .@"opaque", .frame, .@"anyframe", .vector,
+        .enum_literal, => @compileError("Type not possible in a protocol type: " ++ @typeName(T))
+        // zig fmt: on
+    }
+}
+
+fn clone_protocol_object(cloner: anytype, object: protocol.Object) !protocol.Object {
+    var cloned: protocol.Object = .{};
+    var iter = object.map.iterator();
+    while (iter.next()) |entry| {
+        const key = try cloner.clone_string(entry.key_ptr.*);
+        const value = try clone_anytype(cloner, entry.value_ptr.*);
+        try cloned.map.put(cloner.allocator, key, value);
+    }
+
+    return cloned;
+}
+
+fn clone_protocol_array(cloner: anytype, array: protocol.Array) !protocol.Array {
+    var cloned: protocol.Array = .{};
+    try cloned.ensureUnusedCapacity(cloner.allocator, array.items.len);
+    for (array.items) |entry| {
+        const value = try clone_anytype(cloner, entry);
+        cloned.appendAssumeCapacity(value);
+    }
+
+    return cloned;
+}
