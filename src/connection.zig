@@ -628,12 +628,12 @@ pub fn wait_for_event(connection: *Connection, name: []const u8) !i32 {
 
 pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
     const raw_resp, _ = try connection.get_response_by_request_seq(seq);
-    return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
+    return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
 }
 
 pub fn get_parse_validate_response(connection: *Connection, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
     const raw_resp, _ = try connection.get_response_by_request_seq(request_seq);
-    const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
+    const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
     try validate_response(resp.value, request_seq, command);
 
     return resp;
