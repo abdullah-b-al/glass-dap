@@ -264,6 +264,8 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     const static = struct {
         var launch_seq: i32 = 0;
     };
+    zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
+
     if (zgui.button("Begin Debug Sequence", .{})) {
         try begin_debug_sequence(connection, args);
     }
