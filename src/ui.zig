@@ -262,9 +262,7 @@ fn adapter_capabilities(connection: Connection) void {
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
     if (zgui.button("Begin connection", .{})) {
-        if (connection.state == .not_spawned) {
-            try begin_debug_sequence(connection, args);
-        }
+        try begin_debug_sequence(connection, args);
     }
 
     if (zgui.button("end connection: disconnect", .{})) {

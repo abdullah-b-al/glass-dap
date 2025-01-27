@@ -76,7 +76,7 @@ pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
         break :blk try connection.send_request_launch(.{}, extra);
     };
     const inited_seq = try connection.wait_for_event("initialized");
-    connection.handled_event(inited_seq);
+    connection.handle_event_initialized(inited_seq);
 
     // TODO: Send configurations here
 
