@@ -27,6 +27,7 @@ pub fn main() !void {
         .output,
         .module,
         .terminated,
+        .initialized,
     };
 
     while (!window.shouldClose()) {

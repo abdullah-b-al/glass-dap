@@ -55,7 +55,11 @@ pub const SessionData = struct {
             .progressEnd => {},
             .invalidated => {},
             .memory => {},
-            .initialized => {},
+            .initialized => {
+                const parsed = try connection.get_and_parse_event(protocol.InitializedEvent, .initialized);
+                defer parsed.deinit();
+                connection.handle_event_initialized(parsed.value.seq);
+            },
         }
     }
 

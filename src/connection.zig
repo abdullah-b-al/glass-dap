@@ -464,7 +464,9 @@ fn check_request_capability(connection: *Connection, comptime command: Command) 
 }
 
 pub fn adapter_spawn(connection: *Connection) !void {
-    std.debug.assert(connection.state == .not_spawned);
+    if (connection.state != .not_spawned) {
+        return error.AdapterAlreadySpawned;
+    }
     try connection.adapter.spawn();
     connection.state = .spawned;
 }

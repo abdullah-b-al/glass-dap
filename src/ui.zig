@@ -261,8 +261,53 @@ fn adapter_capabilities(connection: Connection) void {
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
-    if (zgui.button("Begin connection", .{})) {
+    const static = struct {
+        var launch_seq: i32 = 0;
+    };
+    if (zgui.button("Begin Debug Sequence", .{})) {
         try begin_debug_sequence(connection, args);
+    }
+
+    zgui.sameLine(.{});
+    zgui.text("or", .{});
+
+    zgui.sameLine(.{});
+    if (zgui.button("Spawn Adapter", .{})) {
+        try connection.adapter_spawn();
+    }
+
+    zgui.sameLine(.{});
+    if (zgui.button("Initialize Adapter", .{})) {
+        const init_args = protocol.InitializeRequestArguments{
+            .clientName = "unidep",
+            .adapterID = "???",
+        };
+
+        const init_seq = try connection.send_request_init(init_args);
+        try connection.wait_for_response(init_seq);
+        try connection.handle_response_init(init_seq);
+    }
+
+    zgui.sameLine(.{});
+    if (zgui.button("Send Launch Request", .{})) {
+        var extra = protocol.Object{};
+        defer extra.deinit(connection.allocator);
+        try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
+        static.launch_seq = try connection.send_request_launch(.{}, extra);
+    }
+
+    zgui.sameLine(.{});
+    if (zgui.button("Send configurationDone Request", .{})) {
+        const config_seq = try connection.send_request_configuration_done(null, .{});
+        try connection.wait_for_response(config_seq);
+        try connection.handle_response_configuration_done(config_seq);
+
+        if (static.launch_seq > 0) {
+            try connection.wait_for_response(static.launch_seq);
+            try connection.handle_response_launch(static.launch_seq);
+        } else {
+            std.log.err("Launch request hasn't been sent", .{});
+        }
     }
 
     if (zgui.button("end connection: disconnect", .{})) {
