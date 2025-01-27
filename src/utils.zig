@@ -2,7 +2,23 @@ const std = @import("std");
 const protocol = @import("protocol.zig");
 const log = std.log.scoped(.utils);
 
+pub fn object_inject_merge(allocator: std.mem.Allocator, object: *protocol.Object, ancestors: []const []const u8, extra: protocol.Object) !void {
+    if (object.map.count() == 0) return;
+
+    const ancestor = try object_ancestor_get(object, ancestors);
+    try object_merge(allocator, ancestor, extra);
+}
+
+pub fn object_merge(allocator: std.mem.Allocator, object: *protocol.Object, extra: protocol.Object) !void {
+    var iter = extra.map.iterator();
+    while (iter.next()) |entry| {
+        try object.map.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+}
+
 pub fn object_inject(allocator: std.mem.Allocator, object: *protocol.Object, ancestors: []const []const u8, key: []const u8, value: protocol.Value) !void {
+    if (ancestors.len == 0) return;
+
     var obj = try object_ancestor_get(object, ancestors);
     try obj.map.put(allocator, key, value);
 }
@@ -23,13 +39,29 @@ pub fn object_ancestor_get(object: *protocol.Object, ancestors: []const []const 
 pub fn value_to_object(allocator: std.mem.Allocator, value: anytype) !protocol.Object {
     var root = protocol.Object{};
     try value_to_object_recurse(allocator, "object", value, &root);
-    const object = root.map.get("object").?.object;
-    _ = root.map.swapRemove("object");
-    root.deinit(allocator);
-    return object;
+    const maybe_object = root.map.get("object").?;
+    switch (maybe_object) {
+        .null => return root,
+        .object => |object| {
+            _ = root.map.swapRemove("object");
+            root.deinit(allocator);
+            return object;
+        },
+        else => unreachable,
+    }
 }
 
 fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value: anytype, object: *protocol.Object) error{OutOfMemory}!void {
+    if (@TypeOf(value) == protocol.Object) {
+        try object.map.put(allocator, name, .{ .object = value });
+        return;
+    }
+
+    if (@TypeOf(value) == protocol.Array) {
+        try object.map.put(allocator, name, .{ .array = value });
+        return;
+    }
+
     switch (@typeInfo(@TypeOf(value))) {
         .bool => {
             try object.map.put(allocator, name, .{ .bool = value });
@@ -41,7 +73,7 @@ fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value
             try object.map.put(allocator, name, .{ .float = value });
         },
 
-        .null => @panic("Handle in Optional"),
+        .null => @compileError("Handle in Optional"),
         .optional => {
             if (value) |v| {
                 try value_to_object_recurse(allocator, name, v, object);
@@ -65,7 +97,7 @@ fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value
             if (pointer.child == u8 and pointer.size == .slice) {
                 try object.map.put(allocator, name, .{ .string = value });
             } else {
-                @panic("Type impossible to support");
+                @panic("Type impossible to support: " ++ @typeName(@TypeOf(value)));
             }
         },
         .void => @panic("Handle in Union"),

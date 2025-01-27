@@ -74,14 +74,84 @@ const AdapterCapabilities = struct {
 const RawMessage = std.json.Parsed(std.json.Value);
 
 const State = enum {
-    /// Adapter and debugee are running
+    /// Adapter and debuggee are running
     launched,
-    /// Adapter and debugee are running
+    /// Adapter and debuggee are running
     attached,
     /// Adapter is running
     spawned,
     /// Adapter is not running
     not_spawned,
+};
+
+pub const Command = blk: {
+    @setEvalBranchQuota(10_000);
+
+    const EnumField = std.builtin.Type.EnumField;
+    var enum_fields: []const EnumField = &[_]EnumField{};
+    var enum_value: usize = 0;
+
+    for (std.meta.declarations(protocol)) |decl| {
+        const T = @field(protocol, decl.name);
+        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
+        if (!std.mem.endsWith(u8, @typeName(T), "Request")) continue;
+        if (!@hasField(T, "command")) @compileError("Request with no command!");
+
+        for (std.meta.fields(T)) |field| {
+            if (!std.mem.eql(u8, field.name, "command")) continue;
+            if (@typeInfo(field.type) != .@"enum") continue;
+
+            // fields of the type of "command"
+            for (std.meta.fields(field.type)) |f| {
+                enum_fields = enum_fields ++ &[_]EnumField{.{
+                    .name = f.name,
+                    .value = enum_value,
+                }};
+                enum_value += 1;
+            }
+        }
+    }
+    break :blk @Type(.{ .@"enum" = .{
+        .tag_type = u8,
+        .fields = enum_fields,
+        .decls = &.{},
+        .is_exhaustive = true,
+    } });
+};
+
+pub const Event = blk: {
+    @setEvalBranchQuota(10_000);
+
+    const EnumField = std.builtin.Type.EnumField;
+    var enum_fields: []const EnumField = &[_]EnumField{};
+    var enum_value: usize = 0;
+
+    for (std.meta.declarations(protocol)) |decl| {
+        const T = @field(protocol, decl.name);
+        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
+        if (!std.mem.endsWith(u8, @typeName(T), "Event")) continue;
+        if (!@hasField(T, "event")) @compileError("Event with no event!");
+
+        for (std.meta.fields(T)) |field| {
+            if (!std.mem.eql(u8, field.name, "event")) continue;
+            if (@typeInfo(field.type) != .@"enum") continue;
+
+            // fields of the type of "event"
+            for (std.meta.fields(field.type)) |f| {
+                enum_fields = enum_fields ++ &[_]EnumField{.{
+                    .name = f.name,
+                    .value = enum_value,
+                }};
+                enum_value += 1;
+            }
+        }
+    }
+    break :blk @Type(.{ .@"enum" = .{
+        .tag_type = u8,
+        .fields = enum_fields,
+        .decls = &.{},
+        .is_exhaustive = true,
+    } });
 };
 
 allocator: std.mem.Allocator,
@@ -151,46 +221,82 @@ pub fn deinit(connection: *Connection) void {
     connection.arena.deinit();
 }
 
+pub fn send_request(connection: *Connection, comptime command: Command, arguments: ?protocol.Value) !i32 {
+    try connection.check_request_capability(command);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const request = protocol.Request{
+        .seq = connection.new_seq(),
+        .type = .request,
+        .command = @tagName(command),
+        .arguments = arguments,
+    };
+
+    const request_object = try utils.value_to_object(arena.allocator(), request);
+    const message = try io.create_message(connection.allocator, request_object);
+    defer connection.allocator.free(message);
+    try connection.adapter_write_all(message);
+
+    return request.seq;
+}
+
+pub fn handled_event(connection: *Connection, seq: i32) void {
+    _, const index = connection.get_event(seq) catch @panic("Only call this if you got an event");
+    const raw_event = connection.events.orderedRemove(index);
+    if (connection.debug) {
+        connection.handled_events.appendAssumeCapacity(raw_event);
+    } else {
+        raw_event.deinit();
+    }
+}
+
+pub fn handled_response(connection: *Connection, request_seq: i32) void {
+    _, const index = connection.get_response_by_request_seq(request_seq) catch @panic("Only call this if you got a response");
+    const raw_resp = connection.responses.orderedRemove(index);
+    if (connection.debug) {
+        connection.handled_responses.appendAssumeCapacity(raw_resp);
+    } else {
+        raw_resp.deinit();
+    }
+}
+
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !i32 {
     switch (connection.state) {
         .not_spawned, .spawned => return error.SessionNotStarted,
         .attached => @panic("TODO"),
         .launched => {
             switch (how) {
-                .terminate => return try connection.send_terminate_request(false),
-                .disconnect => return try connection.send_disconnect_request(false),
+                .terminate => return try connection.send_request_terminate(.{
+                    .restart = false,
+                }),
+                .disconnect => return try connection.send_request_disconnect(.{
+                    .restart = false,
+                    .terminateDebuggee = null,
+                    .suspendDebuggee = null,
+                }),
             }
         },
     }
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn send_init_request(connection: *Connection, arguments: protocol.InitializeRequestArguments, extra_arguments: protocol.Object) !i32 {
+pub fn send_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments) !i32 {
     std.debug.assert(connection.state == .spawned); // don't init multiple times
-    const request = protocol.InitializeRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .initialize,
-        .arguments = arguments,
-    };
 
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
-    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
-
-    return request.seq;
+    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    return connection.send_request(.initialize, .{ .object = args });
 }
 
-pub fn handle_init_response(connection: *Connection, seq: i32) !void {
+pub fn handle_response_init(connection: *Connection, request_seq: i32) !void {
     std.debug.assert(connection.state == .spawned);
     const cloner = connection.create_cloner();
 
-    const resp = try connection.get_and_parse_response(protocol.InitializeResponse, seq);
-    defer {
-        connection.delete_response(seq);
-        resp.deinit();
-    }
-    try validate_response(resp.value, seq, "initialize");
+    const resp = try connection.get_parse_validate_response(protocol.InitializeResponse, request_seq, .initialize);
+    defer resp.deinit();
     if (resp.value.body) |body| {
         connection.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
         connection.adapter_capabilities.completionTriggerCharacters = try utils.clone_anytype(cloner, body.completionTriggerCharacters);
@@ -199,138 +305,123 @@ pub fn handle_init_response(connection: *Connection, seq: i32) !void {
         connection.adapter_capabilities.supportedChecksumAlgorithms = try utils.clone_anytype(cloner, body.supportedChecksumAlgorithms);
         connection.adapter_capabilities.breakpointModes = try utils.clone_anytype(cloner, body.breakpointModes);
     }
+
+    connection.handled_response(request_seq);
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn send_launch_request(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
+pub fn send_request_launch(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object) !i32 {
     std.debug.assert(connection.state == .spawned); // don't launch multiple times
-    const request = protocol.LaunchRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .launch,
-        .arguments = arguments,
-    };
-
-    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
-    return request.seq;
+    var args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
+    return connection.send_request(.launch, .{ .object = args });
 }
 
-pub fn handle_launch_response(connection: *Connection, seq: i32) !void {
+pub fn handle_response_launch(connection: *Connection, request_seq: i32) !void {
     std.debug.assert(connection.state == .spawned); // don't launch multiple times
-    const resp = try connection.get_parse_validate_response(protocol.LaunchResponse, seq, "launch");
+    const resp = try connection.get_parse_validate_response(protocol.LaunchResponse, request_seq, .launch);
     defer resp.deinit();
     connection.state = .launched;
-    connection.delete_response(seq);
+    connection.handled_response(request_seq);
 }
 
-pub fn send_configuration_done_request(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
+pub fn send_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !i32 {
     std.debug.assert(connection.state == .spawned); // don't launch multiple times
-    if (!connection.adapter_capabilities.support.contains(.supportsConfigurationDoneRequest)) {
-        return error.AdapterDoesNotSupportConfigurationDone;
-    }
-
-    const request = protocol.ConfigurationDoneRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .configurationDone,
-        .arguments = arguments,
-    };
-
-    try connection.value_to_object_then_inject_then_write(request, &.{"arguments"}, extra_arguments);
-    return request.seq;
+    var args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
+    return try connection.send_request(.configurationDone, .{ .object = args });
 }
 
-pub fn handle_configuration_done_response(connection: *Connection, seq: i32) !void {
+pub fn handle_response_configuration_done(connection: *Connection, request_seq: i32) !void {
     std.debug.assert(connection.state == .spawned); // don't launch multiple times
-    const resp = try connection.get_parse_validate_response(protocol.ConfigurationDoneResponse, seq, "configurationDone");
+    const resp = try connection.get_parse_validate_response(protocol.ConfigurationDoneResponse, request_seq, .configurationDone);
     defer resp.deinit();
-    connection.delete_response(seq);
+    connection.handled_response(request_seq);
 }
 
-fn send_terminate_request(connection: *Connection, restart: ?bool) !i32 {
-    if (!connection.adapter_capabilities.support.contains(.supportsTerminateRequest)) {
-        return error.AdapterDoesNotSupportTerminate;
-    }
-
-    const request = protocol.TerminateRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .terminate,
-        .arguments = .{
-            .restart = restart,
-        },
-    };
-
-    try connection.value_to_object_then_write(request);
-
-    return request.seq;
+fn send_request_terminate(connection: *Connection, arguments: ?protocol.TerminateArguments) !i32 {
+    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    return connection.send_request(.terminate, .{ .object = args });
 }
 
-fn send_disconnect_request(connection: *Connection, restart: ?bool) !i32 {
-    const request = protocol.DisconnectRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .disconnect,
-        .arguments = .{
-            .restart = restart,
-            // TODO: figure out when to set all of these
-            .terminateDebuggee = null,
-            .suspendDebuggee = null,
-        },
-    };
-
-    try connection.value_to_object_then_write(request);
-
-    return request.seq;
+fn send_request_disconnect(connection: *Connection, arguments: ?protocol.DisconnectArguments) !i32 {
+    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    return connection.send_request(.disconnect, .{ .object = args });
 }
 
-pub fn handle_disconnect_response(connection: *Connection, seq: i32) !void {
-    const resp = try connection.get_and_parse_response(protocol.DisconnectResponse, seq);
+pub fn handle_response_disconnect(connection: *Connection, request_seq: i32) !void {
+    const resp = try connection.get_and_parse_response(protocol.DisconnectResponse, request_seq);
     defer resp.deinit();
-    try validate_response(resp.value, seq, "disconnect");
+    try validate_response(resp.value, request_seq, .disconnect);
 
     if (resp.value.success) {
         connection.state = .spawned;
     }
 
-    connection.delete_response(seq);
+    connection.handled_response(request_seq);
 }
 
-pub fn send_threads_request(connection: *Connection, arguments: ?protocol.Value) !i32 {
-    const request = protocol.ThreadsRequest{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = .threads,
-        .arguments = arguments,
+pub fn send_request_threads(connection: *Connection, arguments: ?protocol.Value) !i32 {
+    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
+    return try connection.send_request(.threads, .{ .object = args });
+}
+
+fn check_request_capability(connection: *Connection, comptime command: Command) !void {
+    const s = connection.adapter_capabilities.support;
+    const c = connection.adapter_capabilities;
+    const result = switch (command) {
+        .dataBreakpointInfo, .setDataBreakpoints => s.contains(.supportsDataBreakpoints),
+        .stepBack, .reverseContinue => s.contains(.supportsStepBack),
+
+        .configurationDone => s.contains(.supportsConfigurationDoneRequest),
+        .setFunctionBreakpoints => s.contains(.supportsFunctionBreakpoints),
+        .setVariable => s.contains(.supportsSetVariable),
+        .restartFrame => s.contains(.supportsRestartFrame),
+        .gotoTargets => s.contains(.supportsGotoTargetsRequest),
+        .stepInTargets => s.contains(.supportsStepInTargetsRequest),
+        .completions => s.contains(.supportsCompletionsRequest),
+        .modules => s.contains(.supportsModulesRequest),
+        .restart => s.contains(.supportsRestartRequest),
+        .exceptionInfo => s.contains(.supportsExceptionInfoRequest),
+        .loadedSources => s.contains(.supportsLoadedSourcesRequest),
+        .terminateThreads => s.contains(.supportsTerminateThreadsRequest),
+        .setExpression => s.contains(.supportsSetExpression),
+        .terminate => s.contains(.supportsTerminateRequest),
+        .cancel => s.contains(.supportsCancelRequest),
+        .breakpointLocations => s.contains(.supportsBreakpointLocationsRequest),
+        .setInstructionBreakpoints => s.contains(.supportsInstructionBreakpoints),
+        .readMemory => s.contains(.supportsReadMemoryRequest),
+        .writeMemory => s.contains(.supportsWriteMemoryRequest),
+        .disassemble => s.contains(.supportsDisassembleRequest),
+        .goto => s.contains(.supportsGotoTargetsRequest),
+
+        .setExceptionBreakpoints => (c.exceptionBreakpointFilters orelse &.{}).len > 1,
+
+        .locations,
+        .evaluate,
+        .source,
+        .threads,
+        .variables,
+        .scopes,
+        .@"continue",
+        .pause,
+        .stackTrace,
+        .stepIn,
+        .stepOut,
+        .setBreakpoints,
+        .next,
+        .disconnect,
+        .launch,
+        .attach,
+        .initialize,
+        => true,
+
+        .startDebugging, .runInTerminal => @compileError("This is a reverse request"),
     };
 
-    try connection.value_to_object_then_write(request);
-    return request.seq;
-}
-
-pub fn response_handled_threads(connection: *Connection, seq: i32) !void {
-    const resp = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
-    defer resp.deinit();
-    connection.delete_response(seq);
-}
-
-pub fn event_handled_terminated(connection: *Connection, seq: i32) !void {
-    connection.delete_event(seq);
-}
-
-pub fn event_handled_modules(connection: *Connection, seq: i32) !void {
-    connection.delete_event(seq);
-}
-
-pub fn handle_initialized_event(connection: *Connection) !void {
-    const event = try connection.get_and_parse_event(protocol.InitializedEvent, "initialized");
-    defer event.deinit();
-
-    connection.delete_event(event.value.seq);
-}
-
-pub fn event_handled_output(connection: *Connection, seq: i32) !void {
-    connection.delete_event(seq);
+    if (!result) {
+        return error.AdapterDoesNotSupportRequest;
+    }
 }
 
 pub fn adapter_spawn(connection: *Connection) !void {
@@ -399,7 +490,7 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !void {
     }
 }
 
-pub fn get_response(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
+pub fn get_response_by_request_seq(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
     for (connection.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
@@ -438,26 +529,6 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoseN
     return error.EventDoseNotExist;
 }
 
-fn delete_response(connection: *Connection, request_seq: i32) void {
-    _, const index = connection.get_response(request_seq) catch @panic("Only call this if you got a response");
-    const raw_resp = connection.responses.orderedRemove(index);
-    if (connection.debug) {
-        connection.handled_responses.appendAssumeCapacity(raw_resp);
-    } else {
-        raw_resp.deinit();
-    }
-}
-
-fn delete_event(connection: *Connection, event_seq: i32) void {
-    _, const index = connection.get_event(event_seq) catch @panic("Only call this if you got an event");
-    const raw_event = connection.events.orderedRemove(index);
-    if (connection.debug) {
-        connection.handled_events.appendAssumeCapacity(raw_event);
-    } else {
-        raw_event.deinit();
-    }
-}
-
 fn value_to_object_then_write(connection: *Connection, value: anytype) !void {
     try connection.value_to_object_then_inject_then_write(value, &.{}, .{});
 }
@@ -466,7 +537,9 @@ fn value_to_object_then_inject_then_write(connection: *Connection, value: anytyp
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
+    // value to object
     var object = try utils.value_to_object(arena.allocator(), value);
+    // inject
     if (extra.map.count() > 0) {
         var ancestor = try utils.object_ancestor_get(&object, ancestors);
         var iter = extra.map.iterator();
@@ -475,6 +548,7 @@ fn value_to_object_then_inject_then_write(connection: *Connection, value: anytyp
         }
     }
 
+    // write
     const message = try io.create_message(connection.allocator, object);
     defer connection.allocator.free(message);
     try connection.adapter_write_all(message);
@@ -492,7 +566,7 @@ pub fn wait_for_response(connection: *Connection, seq: i32) !void {
     }
 }
 
-pub fn wait_for_event(connection: *Connection, name: []const u8) !void {
+pub fn wait_for_event(connection: *Connection, name: []const u8) !i32 {
     while (true) {
         try connection.queue_messages(std.time.ms_per_s);
         for (connection.events.items) |item| {
@@ -502,35 +576,38 @@ pub fn wait_for_event(connection: *Connection, name: []const u8) !void {
                 else => unreachable, // this shouldn't run unless the message is invalid
             };
             if (std.mem.eql(u8, name, event)) {
-                return;
+                const seq = utils.get_value(item.value, "seq", .integer) orelse continue;
+                return @truncate(seq);
             }
         }
     }
+
+    unreachable;
 }
 
 pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
-    const raw_resp, _ = try connection.get_response(seq);
+    const raw_resp, _ = try connection.get_response_by_request_seq(seq);
     return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
 }
 
-pub fn get_parse_validate_response(connection: *Connection, comptime T: type, seq: i32, command: []const u8) !std.json.Parsed(T) {
-    const raw_resp, _ = try connection.get_response(seq);
+pub fn get_parse_validate_response(connection: *Connection, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
+    const raw_resp, _ = try connection.get_response_by_request_seq(request_seq);
     const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{});
-    try validate_response(resp.value, seq, command);
+    try validate_response(resp.value, request_seq, command);
 
     return resp;
 }
 
-pub fn get_and_parse_event(connection: *Connection, comptime T: type, name: []const u8) !std.json.Parsed(T) {
-    const raw_event, _ = try connection.get_event(name);
+pub fn get_and_parse_event(connection: *Connection, comptime T: type, event: Event) !std.json.Parsed(T) {
+    const raw_event, _ = try connection.get_event(@tagName(event));
     // this clones everything in the raw_event
     return try std.json.parseFromValue(T, connection.allocator, raw_event.value, .{});
 }
 
-fn validate_response(resp: anytype, seq: i32, command: []const u8) !void {
+fn validate_response(resp: anytype, request_seq: i32, command: Command) !void {
     if (!resp.success) return error.RequestFailed;
-    if (resp.request_seq != seq) return error.RequestResponseMismatchedSeq;
-    if (!std.mem.eql(u8, resp.command, command)) return error.WrongCommandForResponse;
+    if (resp.request_seq != request_seq) return error.RequestResponseMismatchedRequestSeq;
+    if (!std.mem.eql(u8, resp.command, @tagName(command))) return error.WrongCommandForResponse;
 }
 
 const Cloner = struct {

@@ -23,10 +23,10 @@ pub fn main() !void {
     var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    const table = .{
-        SessionData.handle_event_output,
-        SessionData.handle_event_modules,
-        SessionData.handle_event_terminated,
+    const events = [_]Connection.Event{
+        .output,
+        .module,
+        .terminated,
     };
 
     while (!window.shouldClose()) {
@@ -34,8 +34,8 @@ pub fn main() !void {
             std.debug.print("{}\n", .{err});
         };
 
-        inline for (table) |entry| {
-            entry(&data, &connection) catch |err|
+        for (events) |event| {
+            data.handle_event(&connection, event) catch |err|
                 switch (err) {
                 error.EventDoseNotExist => {},
                 else => {
@@ -65,26 +65,27 @@ pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
         try connection.adapter_spawn();
     }
 
-    const init_seq = try connection.send_init_request(init_args, .{});
+    const init_seq = try connection.send_request_init(init_args);
     try connection.wait_for_response(init_seq);
-    try connection.handle_init_response(init_seq);
+    try connection.handle_response_init(init_seq);
 
-    var extra = Object{};
-    defer extra.deinit(connection.allocator);
-    try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-
-    const launch_seq = try connection.send_launch_request(.{}, extra);
-    try connection.wait_for_event("initialized");
-    try connection.handle_initialized_event();
+    const launch_seq = blk: {
+        var extra = Object{};
+        defer extra.deinit(connection.allocator);
+        try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
+        break :blk try connection.send_request_launch(.{}, extra);
+    };
+    const inited_seq = try connection.wait_for_event("initialized");
+    connection.handled_event(inited_seq);
 
     // TODO: Send configurations here
 
-    const config_seq = try connection.send_configuration_done_request(null, .{});
+    const config_seq = try connection.send_request_configuration_done(null, .{});
     try connection.wait_for_response(config_seq);
-    try connection.handle_configuration_done_response(config_seq);
+    try connection.handle_response_configuration_done(config_seq);
 
     try connection.wait_for_response(launch_seq);
-    try connection.handle_launch_response(launch_seq);
+    try connection.handle_response_launch(launch_seq);
 }
 
 pub const Args = struct {

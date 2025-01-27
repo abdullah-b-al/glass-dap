@@ -270,7 +270,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     if (zgui.button("end connection: disconnect", .{})) {
         const seq = try connection.end_session(.disconnect);
         try connection.wait_for_response(seq);
-        try connection.handle_disconnect_response(seq);
+        try connection.handle_response_disconnect(seq);
     }
 
     if (zgui.button("end connection: terminate", .{})) {
@@ -278,7 +278,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 
     if (zgui.button("Threads", .{})) {
-        const seq = try connection.send_threads_request(null);
+        const seq = try connection.send_request_threads(null);
         try connection.wait_for_response(seq);
         try data.handle_response_threads(connection, seq);
     }

@@ -37,41 +37,63 @@ pub const SessionData = struct {
         data.arena.deinit();
     }
 
-    pub fn handle_event_output(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.OutputEvent, "output");
+    pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !void {
+        switch (event) {
+            .stopped => {},
+            .continued => {},
+            .exited => {},
+            .terminated => try data.handle_event_terminated(connection),
+            .thread => {},
+            .output => try data.handle_event_output(connection),
+            .breakpoint => {},
+            .module => try data.handle_event_modules(connection),
+            .loadedSource => {},
+            .process => {},
+            .capabilities => {},
+            .progressStart => {},
+            .progressUpdate => {},
+            .progressEnd => {},
+            .invalidated => {},
+            .memory => {},
+            .initialized => {},
+        }
+    }
+
+    fn handle_event_output(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.OutputEvent, .output);
         defer event.deinit();
         try data.output.ensureUnusedCapacity(data.allocator, 1);
         const output = try data.clone_anytype(event.value);
         data.output.appendAssumeCapacity(output);
 
-        try connection.event_handled_output(event.value.seq);
+        connection.handled_event(event.value.seq);
     }
 
-    pub fn handle_event_modules(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.ModuleEvent, "module");
+    fn handle_event_modules(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.ModuleEvent, .module);
         defer event.deinit();
         try data.add_module(event.value.body.module);
-        try connection.event_handled_modules(event.value.seq);
+        connection.handled_event(event.value.seq);
     }
 
-    pub fn handle_event_terminated(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.TerminatedEvent, "terminated");
+    fn handle_event_terminated(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.TerminatedEvent, .terminated);
         defer event.deinit();
 
         if (event.value.body) |body| {
             data.terminated_restart_data = try data.clone_anytype(body.restart);
         }
 
-        try connection.event_handled_terminated(event.value.seq);
+        connection.handled_event(event.value.seq);
     }
 
     pub fn handle_response_threads(data: *SessionData, connection: *Connection, seq: i32) !void {
-        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, "threads");
+        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, .threads);
         defer parsed.deinit();
         const array = parsed.value.body.threads;
         try data.set_threads(array);
 
-        try connection.response_handled_threads(seq);
+        connection.handled_response(seq);
     }
 
     pub fn add_module(data: *SessionData, module: protocol.Module) !void {
