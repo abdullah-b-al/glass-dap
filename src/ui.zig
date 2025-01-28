@@ -111,8 +111,9 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
     if (!zgui.begin(name, .{})) return;
 
     const table = .{
-        .{ .name = "ID", .field = "id" },
-        .{ .name = "Name", .field = "name" },
+        .{ .name = "ID" },
+        .{ .name = "Name" },
+        .{ .name = "State" },
     };
 
     const columns_count = std.meta.fields(@TypeOf(table)).len;
@@ -124,11 +125,14 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
 
         for (data.threads.items) |thread| {
             zgui.tableNextRow(.{});
-            inline for (table) |entry| {
-                _ = zgui.tableNextColumn();
-                const value = @field(thread, entry.field);
-                zgui.text("{s}", .{anytype_to_string(value)});
-            }
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{anytype_to_string(thread.data.id)});
+
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{anytype_to_string(thread.data.name)});
+
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{anytype_to_string(thread.state)});
         }
 
         zgui.endTable();
@@ -273,8 +277,8 @@ fn adapter_capabilities(connection: Connection) void {
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
-    _ = data;
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
+    zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status)});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
         try begin_debug_sequence(connection, args);
@@ -423,24 +427,45 @@ fn protocol_value_to_string(value: protocol.Value) []const u8 {
         else => @panic("TODO"),
     }
 }
-
 fn anytype_to_string(value: anytype) []const u8 {
     const static = struct {
-        var buf: [10_000]u8 = undefined;
+        var buffer: [10_000]u8 = undefined;
+        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
     };
+    static.fixed.reset();
+    return anytype_to_string_recurse(value, static.fixed.allocator());
+}
 
+fn anytype_to_string_recurse(value: anytype, allocator: std.mem.Allocator) []const u8 {
     switch (@typeInfo(@TypeOf(value))) {
+        .bool => return bool_to_string(value),
+        .float, .int => {
+            return std.fmt.allocPrint(allocator, "{}", .{value}) catch unreachable;
+        },
         .@"enum" => return @tagName(value),
-        .@"union" => return @tagName(std.meta.activeTag(value)),
-        .optional => return anytype_to_string(value orelse return "null"),
+        .@"union" => {
+            switch (value) {
+                inline else => |v| {
+                    if (@TypeOf(v) == void) {
+                        return @tagName(std.meta.activeTag(value));
+                    } else {
+                        return std.fmt.allocPrint(allocator, "{s} = {s}", .{
+                            @tagName(std.meta.activeTag(value)),
+                            anytype_to_string_recurse(v, allocator),
+                        }) catch unreachable;
+                    }
+                },
+            }
+        },
+        .optional => return anytype_to_string_recurse(value orelse return "null", allocator),
         else => {},
     }
 
     return switch (@TypeOf(value)) {
-        bool => bool_to_string(value),
         []const u8 => mabye_string_to_string(value),
         protocol.Value => protocol_value_to_string(value),
-        i32 => std.fmt.bufPrint(&static.buf, "{}", .{value}) catch unreachable,
+        protocol.Object => @panic("TODO"),
+        protocol.Array => @panic("TODO"),
         inline else => @compileError(@typeName(@TypeOf(value))),
     };
 }

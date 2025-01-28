@@ -422,9 +422,7 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
     return try connection.queue_request(.launch, .{ .object = args }, depends_on);
 }
 
-pub fn handle_response_launch(connection: *Connection, request_seq: i32) !void {
-    const resp = try connection.get_parse_validate_response(protocol.LaunchResponse, request_seq, .launch);
-    defer resp.deinit();
+pub fn handle_response_launch(connection: *Connection, request_seq: i32) void {
     connection.state = .launched;
     connection.handled_response(.launch, request_seq, true);
 }

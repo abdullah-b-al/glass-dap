@@ -5,6 +5,21 @@ const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanag
 const utils = @import("utils.zig");
 const log = std.log.scoped(.session_data);
 
+const DebuggeeStatus = union(enum) {
+    not_running,
+    running,
+    stopped,
+    exited: i32,
+};
+
+const Thread = struct {
+    data: protocol.Thread,
+    state: enum {
+        running,
+        stopped,
+    },
+};
+
 pub const SessionData = struct {
     allocator: std.mem.Allocator,
 
@@ -12,9 +27,10 @@ pub const SessionData = struct {
     arena: std.heap.ArenaAllocator,
 
     string_storage: StringStorageUnmanaged = .{},
-    threads: std.ArrayListUnmanaged(protocol.Thread) = .{},
+    threads: std.ArrayListUnmanaged(Thread) = .{},
     modules: std.ArrayListUnmanaged(protocol.Module) = .{},
     output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
+    status: DebuggeeStatus,
 
     /// From the protocol:
     /// Arbitrary data from the previous, restarted connection.
@@ -24,6 +40,7 @@ pub const SessionData = struct {
 
     pub fn init(allocator: std.mem.Allocator) SessionData {
         return .{
+            .status = .not_running,
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         };
@@ -41,8 +58,8 @@ pub const SessionData = struct {
     pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !void {
         switch (event) {
             .stopped => log.err("TODO event: {s}", .{@tagName(event)}),
-            .continued => log.err("TODO event: {s}", .{@tagName(event)}),
-            .exited => log.err("TODO event: {s}", .{@tagName(event)}),
+            .continued => try data.handle_event_continued(connection),
+            .exited => try data.handle_event_exited(connection),
             .terminated => try data.handle_event_terminated(connection),
             .thread => log.err("TODO event: {s}", .{@tagName(event)}),
             .output => try data.handle_event_output(connection),
@@ -66,12 +83,17 @@ pub const SessionData = struct {
 
     pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
         const err = switch (command) {
+            .launch => blk: {
+                const resp = connection.get_parse_validate_response(protocol.LaunchResponse, request_seq, .launch) catch |err| break :blk err;
+                defer resp.deinit();
+                connection.handle_response_launch(request_seq);
+            },
+
             .cancel => log.err("TODO: {s}", .{@tagName(command)}),
             .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
             .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
             .initialize => connection.handle_response_init(request_seq),
             .configurationDone => connection.handle_response_configuration_done(request_seq),
-            .launch => connection.handle_response_launch(request_seq),
             .attach => log.err("TODO: {s}", .{@tagName(command)}),
             .restart => log.err("TODO: {s}", .{@tagName(command)}),
             .disconnect => connection.handle_response_disconnect(request_seq),
@@ -138,6 +160,37 @@ pub const SessionData = struct {
         return true;
     }
 
+    fn handle_event_continued(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.ContinuedEvent, .continued);
+        defer event.deinit();
+
+        if (event.value.body.allThreadsContinued) |all| {
+            if (all) for (data.threads.items) |*item| {
+                item.state = .running;
+            };
+        } else {
+            for (data.threads.items) |*item| {
+                if (item.data.id == event.value.body.threadId) {
+                    item.state = .running;
+                    break;
+                }
+            }
+        }
+
+        data.status = .running;
+
+        connection.handled_event(.continued, event.value.seq);
+    }
+
+    fn handle_event_exited(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.ExitedEvent, .exited);
+        defer event.deinit();
+
+        data.status = .{ .exited = event.value.body.exitCode };
+
+        connection.handled_event(.exited, event.value.seq);
+    }
+
     fn handle_event_output(data: *SessionData, connection: *Connection) !void {
         const event = try connection.get_and_parse_event(protocol.OutputEvent, .output);
         defer event.deinit();
@@ -161,6 +214,10 @@ pub const SessionData = struct {
 
         if (event.value.body) |body| {
             data.terminated_restart_data = try data.clone_anytype(body.restart);
+        }
+
+        if (data.status != .exited) {
+            data.status = .not_running;
         }
 
         connection.handled_event(.terminated, event.value.seq);
@@ -187,7 +244,10 @@ pub const SessionData = struct {
         data.threads.clearRetainingCapacity();
         try data.threads.ensureUnusedCapacity(data.allocator, threads.len);
         for (threads) |thread| {
-            data.threads.appendAssumeCapacity(try data.clone_anytype(thread));
+            data.threads.appendAssumeCapacity(.{
+                .data = try data.clone_anytype(thread),
+                .state = .stopped,
+            });
         }
     }
 
