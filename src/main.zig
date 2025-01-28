@@ -45,9 +45,66 @@ pub fn main() !void {
             };
         }
 
+        try send_queued_requests(&connection);
+        handle_queued_responses(&data, &connection);
+
         ui.ui_tick(window, &connection, &data, args);
     }
     std.log.info("Window Closed", .{});
+}
+
+fn send_queued_requests(connection: *Connection) !void {
+    var i: usize = 0;
+    if (connection.queued_requests.items.len > 0) {}
+    while (i < connection.queued_requests.items.len) {
+        const request = connection.queued_requests.items[i];
+        if (dependency_satisfied(connection.*, request)) {
+            std.debug.print("dependency satisfied {s} {}\n", .{ @tagName(request.command), request.seq });
+            try connection.send_request(request);
+            _ = connection.queued_requests.orderedRemove(i);
+        } else {
+            std.debug.print("dependency NOT satisfied {s} {}\n", .{ @tagName(request.command), request.seq });
+            i += 1;
+        }
+    }
+}
+
+fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
+    if (connection.expected_responses.items.len == 0) return;
+
+    var i: usize = 0;
+    while (i < connection.expected_responses.items.len) {
+        const resp = connection.expected_responses.items[i];
+
+        if (data.handle_response(connection, resp.command, resp.request_seq)) {
+            _ = connection.expected_responses.orderedRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
+    switch (to_send.depends_on) {
+        .event => |event| {
+            for (connection.handled_events.items) |item| {
+                if (item == event) return true;
+            }
+        },
+        .seq => |seq| {
+            for (connection.handled_responses.items) |item| {
+                if (item.request_seq == seq) return true;
+            }
+        },
+        .response => |command| {
+            for (connection.handled_responses.items) |item| {
+                if (item.command == command) return true;
+            }
+        },
+        .none => return true,
+    }
+
+    return false;
 }
 
 pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
@@ -66,27 +123,18 @@ pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
         try connection.adapter_spawn();
     }
 
-    const init_seq = try connection.send_request_init(init_args);
-    try connection.wait_for_response(init_seq);
-    try connection.handle_response_init(init_seq);
+    const init_seq = try connection.queue_request_init(init_args, .none);
 
-    const launch_seq = blk: {
+    {
         var extra = Object{};
         defer extra.deinit(connection.allocator);
         try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        break :blk try connection.send_request_launch(.{}, extra);
-    };
-    const inited_seq = try connection.wait_for_event("initialized");
-    connection.handle_event_initialized(inited_seq);
+        _ = try connection.queue_request_launch(.{}, extra, .{ .seq = init_seq });
+    }
 
     // TODO: Send configurations here
 
-    const config_seq = try connection.send_request_configuration_done(null, .{});
-    try connection.wait_for_response(config_seq);
-    try connection.handle_response_configuration_done(config_seq);
-
-    try connection.wait_for_response(launch_seq);
-    try connection.handle_response_launch(launch_seq);
+    _ = try connection.queue_request_configuration_done(null, .{}, .{ .event = .initialized });
 }
 
 pub const Args = struct {

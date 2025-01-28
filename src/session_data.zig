@@ -3,6 +3,7 @@ const protocol = @import("protocol.zig");
 const Connection = @import("connection.zig");
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
+const log = std.log.scoped(.session_data);
 
 pub const SessionData = struct {
     allocator: std.mem.Allocator,
@@ -63,6 +64,80 @@ pub const SessionData = struct {
         }
     }
 
+    pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
+        const err = switch (command) {
+            .cancel => log.err("TODO: {s}", .{@tagName(command)}),
+            .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
+            .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
+            .initialize => connection.handle_response_init(request_seq),
+            .configurationDone => connection.handle_response_configuration_done(request_seq),
+            .launch => connection.handle_response_launch(request_seq),
+            .attach => log.err("TODO: {s}", .{@tagName(command)}),
+            .restart => log.err("TODO: {s}", .{@tagName(command)}),
+            .disconnect => connection.handle_response_disconnect(request_seq),
+            .terminate => log.err("TODO: {s}", .{@tagName(command)}),
+            .breakpointLocations => log.err("TODO: {s}", .{@tagName(command)}),
+            .setBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
+            .setFunctionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
+            .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
+            .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(command)}),
+            .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
+            .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
+            .@"continue" => log.err("TODO: {s}", .{@tagName(command)}),
+            .next => log.err("TODO: {s}", .{@tagName(command)}),
+            .stepIn => log.err("TODO: {s}", .{@tagName(command)}),
+            .stepOut => log.err("TODO: {s}", .{@tagName(command)}),
+            .stepBack => log.err("TODO: {s}", .{@tagName(command)}),
+            .reverseContinue => log.err("TODO: {s}", .{@tagName(command)}),
+            .restartFrame => log.err("TODO: {s}", .{@tagName(command)}),
+            .goto => log.err("TODO: {s}", .{@tagName(command)}),
+            .pause => log.err("TODO: {s}", .{@tagName(command)}),
+            .stackTrace => log.err("TODO: {s}", .{@tagName(command)}),
+            .scopes => log.err("TODO: {s}", .{@tagName(command)}),
+            .variables => log.err("TODO: {s}", .{@tagName(command)}),
+            .setVariable => log.err("TODO: {s}", .{@tagName(command)}),
+            .source => log.err("TODO: {s}", .{@tagName(command)}),
+            .threads => data.handle_response_threads(connection, request_seq),
+            .terminateThreads => log.err("TODO: {s}", .{@tagName(command)}),
+            .modules => log.err("TODO: {s}", .{@tagName(command)}),
+            .loadedSources => log.err("TODO: {s}", .{@tagName(command)}),
+            .evaluate => log.err("TODO: {s}", .{@tagName(command)}),
+            .setExpression => log.err("TODO: {s}", .{@tagName(command)}),
+            .stepInTargets => log.err("TODO: {s}", .{@tagName(command)}),
+            .gotoTargets => log.err("TODO: {s}", .{@tagName(command)}),
+            .completions => log.err("TODO: {s}", .{@tagName(command)}),
+            .exceptionInfo => log.err("TODO: {s}", .{@tagName(command)}),
+            .readMemory => log.err("TODO: {s}", .{@tagName(command)}),
+            .writeMemory => log.err("TODO: {s}", .{@tagName(command)}),
+            .disassemble => log.err("TODO: {s}", .{@tagName(command)}),
+            .locations => log.err("TODO: {s}", .{@tagName(command)}),
+        };
+
+        err catch |e| switch (e) {
+            error.OutOfMemory,
+            error.Overflow,
+            error.InvalidCharacter,
+            error.UnexpectedToken,
+            error.InvalidNumber,
+            error.InvalidEnumTag,
+            error.DuplicateField,
+            error.RequestFailed,
+            error.UnknownField,
+            error.MissingField,
+            error.LengthMismatch,
+            error.InvalidSeqFromAdapter,
+            error.WrongCommandForResponse,
+            error.RequestResponseMismatchedRequestSeq,
+            => {
+                log.err("{!} from response of command {} request_seq {}", .{ e, command, request_seq });
+                return false;
+            },
+            error.ResponseDoesNotExist => return false,
+        };
+
+        return true;
+    }
+
     fn handle_event_output(data: *SessionData, connection: *Connection) !void {
         const event = try connection.get_and_parse_event(protocol.OutputEvent, .output);
         defer event.deinit();
@@ -70,14 +145,14 @@ pub const SessionData = struct {
         const output = try data.clone_anytype(event.value);
         data.output.appendAssumeCapacity(output);
 
-        connection.handled_event(event.value.seq);
+        connection.handled_event(.output, event.value.seq);
     }
 
     fn handle_event_modules(data: *SessionData, connection: *Connection) !void {
         const event = try connection.get_and_parse_event(protocol.ModuleEvent, .module);
         defer event.deinit();
         try data.add_module(event.value.body.module);
-        connection.handled_event(event.value.seq);
+        connection.handled_event(.module, event.value.seq);
     }
 
     fn handle_event_terminated(data: *SessionData, connection: *Connection) !void {
@@ -88,7 +163,7 @@ pub const SessionData = struct {
             data.terminated_restart_data = try data.clone_anytype(body.restart);
         }
 
-        connection.handled_event(event.value.seq);
+        connection.handled_event(.terminated, event.value.seq);
     }
 
     pub fn handle_response_threads(data: *SessionData, connection: *Connection, seq: i32) !void {
@@ -97,7 +172,7 @@ pub const SessionData = struct {
         const array = parsed.value.body.threads;
         try data.set_threads(array);
 
-        connection.handled_response(seq);
+        connection.handled_response(.threads, seq, true);
     }
 
     pub fn add_module(data: *SessionData, module: protocol.Module) !void {

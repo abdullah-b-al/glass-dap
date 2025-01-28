@@ -194,9 +194,9 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
 
     const table = .{
         .{ .name = "Queued Responses", .items = connection.responses.items },
-        .{ .name = "Handled Responses", .items = connection.handled_responses.items },
+        .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
         .{ .name = "Events", .items = connection.events.items },
-        .{ .name = "Handled Events", .items = connection.handled_events.items },
+        .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
     };
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
@@ -211,6 +211,18 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
             } else {
                 zgui.text("Connection debugging is turned off", .{});
             }
+        }
+    }
+
+    if (zgui.beginTabItem("Handled Responses", .{})) {
+        defer zgui.endTabItem();
+        draw_table_from_slice_of_struct(Connection.Response, connection.handled_responses.items);
+    }
+
+    if (zgui.beginTabItem("Handled Events", .{})) {
+        defer zgui.endTabItem();
+        for (connection.handled_events.items) |event| {
+            zgui.text("{s}", .{@tagName(event)});
         }
     }
 
@@ -261,9 +273,7 @@ fn adapter_capabilities(connection: Connection) void {
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
-    const static = struct {
-        var launch_seq: i32 = 0;
-    };
+    _ = data;
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
@@ -285,9 +295,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
             .adapterID = "???",
         };
 
-        const init_seq = try connection.send_request_init(init_args);
-        try connection.wait_for_response(init_seq);
-        try connection.handle_response_init(init_seq);
+        _ = try connection.queue_request_init(init_args, .none);
     }
 
     zgui.sameLine(.{});
@@ -295,37 +303,24 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         var extra = protocol.Object{};
         defer extra.deinit(connection.allocator);
         try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        static.launch_seq = try connection.send_request_launch(.{}, extra);
+        _ = try connection.queue_request_launch(.{}, extra, .{ .response = .initialize });
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Send configurationDone Request", .{})) {
-        const config_seq = try connection.send_request_configuration_done(null, .{});
-        try connection.wait_for_response(config_seq);
-        try connection.handle_response_configuration_done(config_seq);
-
-        if (static.launch_seq > 0) {
-            try connection.wait_for_response(static.launch_seq);
-            try connection.handle_response_launch(static.launch_seq);
-        } else {
-            std.log.err("Launch request hasn't been sent", .{});
-        }
+        _ = try connection.queue_request_configuration_done(null, .{}, .{ .event = .initialized });
     }
 
     if (zgui.button("end connection: disconnect", .{})) {
-        const seq = try connection.end_session(.disconnect);
-        try connection.wait_for_response(seq);
-        try connection.handle_response_disconnect(seq);
+        try connection.end_session(.disconnect);
     }
 
     if (zgui.button("end connection: terminate", .{})) {
-        _ = try connection.end_session(.terminate);
+        try connection.end_session(.terminate);
     }
 
     if (zgui.button("Threads", .{})) {
-        const seq = try connection.send_request_threads(null);
-        try connection.wait_for_response(seq);
-        try data.handle_response_threads(connection, seq);
+        _ = try connection.queue_request_threads(null, .none);
     }
 }
 
