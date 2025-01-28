@@ -36,7 +36,7 @@ fn loop(window: *glfw.Window, connection: *Connection, data: *SessionData, args:
             std.debug.print("{}\n", .{err});
         };
 
-        handle_queue_events(data, connection);
+        handle_queued_events(data, connection);
         send_queued_requests(connection);
         handle_queued_responses(data, connection);
 
@@ -100,7 +100,7 @@ fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
     }
 }
 
-fn handle_queue_events(data: *SessionData, connection: *Connection) void {
+fn handle_queued_events(data: *SessionData, connection: *Connection) void {
     for (connection.events.items) |parsed| {
         const value = utils.get_value(parsed.value, "event", .string) orelse @panic("Only event should be here");
         const event = utils.string_to_enum(Connection.Event, value) orelse {
