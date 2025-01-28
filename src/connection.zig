@@ -617,7 +617,7 @@ pub fn get_response_by_request_seq(connection: *Connection, request_seq: i32) !s
     return error.ResponseDoesNotExist;
 }
 
-pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoseNotExist}!struct { RawMessage, usize } {
+pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoesNotExist}!struct { RawMessage, usize } {
     const T = @TypeOf(name_or_seq);
     const is_string = comptime utils.is_zig_string(T);
     if (T != i32 and !is_string) {
@@ -637,7 +637,7 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoseN
         }
     }
 
-    return error.EventDoseNotExist;
+    return error.EventDoesNotExist;
 }
 
 fn value_to_object_then_write(connection: *Connection, value: anytype) !void {
