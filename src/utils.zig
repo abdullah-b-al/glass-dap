@@ -306,6 +306,16 @@ pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf
     }
 }
 
+pub fn string_to_enum(comptime E: type, string: []const u8) ?E {
+    inline for (std.meta.fields(E)) |field| {
+        if (std.mem.eql(u8, string, field.name)) {
+            return @enumFromInt(field.value);
+        }
+    }
+
+    return null;
+}
+
 fn clone_protocol_object(cloner: anytype, object: protocol.Object) !protocol.Object {
     var cloned: protocol.Object = .{};
     var iter = object.map.iterator();

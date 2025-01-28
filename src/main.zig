@@ -1,4 +1,5 @@
 const std = @import("std");
+const glfw = @import("zglfw");
 const protocol = @import("protocol.zig");
 const io = @import("io.zig");
 const utils = @import("utils.zig");
@@ -7,6 +8,7 @@ const SessionData = @import("session_data.zig").SessionData;
 const Object = protocol.Object;
 const time = std.time;
 const ui = @import("ui.zig");
+const log = std.log.scoped(.main);
 
 pub fn main() !void {
     const args = try parse_args();
@@ -23,47 +25,61 @@ pub fn main() !void {
     var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    const events = [_]Connection.Event{
-        .output,
-        .module,
-        .terminated,
-        .initialized,
-    };
+    loop(window, &connection, &data, args);
 
+    log.info("Window Closed", .{});
+}
+
+fn loop(window: *glfw.Window, connection: *Connection, data: *SessionData, args: Args) void {
     while (!window.shouldClose()) {
         connection.queue_messages(1) catch |err| {
             std.debug.print("{}\n", .{err});
         };
 
-        for (events) |event| {
-            data.handle_event(&connection, event) catch |err|
-                switch (err) {
-                error.EventDoseNotExist => {},
-                else => {
-                    std.log.err("{}", .{err});
-                },
-            };
-        }
+        handle_queue_events(data, connection);
+        send_queued_requests(connection);
+        handle_queued_responses(data, connection);
 
-        try send_queued_requests(&connection);
-        handle_queued_responses(&data, &connection);
-
-        ui.ui_tick(window, &connection, &data, args);
+        ui.ui_tick(window, connection, data, args);
     }
-    std.log.info("Window Closed", .{});
 }
 
-fn send_queued_requests(connection: *Connection) !void {
+fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
     if (connection.queued_requests.items.len > 0) {}
     while (i < connection.queued_requests.items.len) {
         const request = connection.queued_requests.items[i];
         if (dependency_satisfied(connection.*, request)) {
-            std.debug.print("dependency satisfied {s} {}\n", .{ @tagName(request.command), request.seq });
-            try connection.send_request(request);
-            _ = connection.queued_requests.orderedRemove(i);
+            defer _ = connection.queued_requests.orderedRemove(i);
+            connection.send_request(request) catch |err| switch (err) {
+                error.OutOfMemory,
+                error.NoSpaceLeft,
+
+                error.NoDevice,
+                error.SystemResources,
+                error.AccessDenied,
+                error.Unexpected,
+                error.ProcessNotFound,
+                error.InputOutput,
+                error.OperationAborted,
+                error.BrokenPipe,
+                error.ConnectionResetByPeer,
+                error.WouldBlock,
+                error.LockViolation,
+                error.DiskQuota,
+                error.FileTooBig,
+                error.DeviceBusy,
+                error.InvalidArgument,
+                error.NotOpenForWriting,
+
+                error.AdapterNotDoneInitializing,
+                error.AdapterNotSpawned,
+                error.AdapterDoesNotSupportRequest,
+                => {
+                    log.err("{}\n", .{err});
+                },
+            };
         } else {
-            std.debug.print("dependency NOT satisfied {s} {}\n", .{ @tagName(request.command), request.seq });
             i += 1;
         }
     }
@@ -81,6 +97,23 @@ fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
         } else {
             i += 1;
         }
+    }
+}
+
+fn handle_queue_events(data: *SessionData, connection: *Connection) void {
+    for (connection.events.items) |parsed| {
+        const value = utils.get_value(parsed.value, "event", .string) orelse @panic("Only event should be here");
+        const event = utils.string_to_enum(Connection.Event, value) orelse {
+            log.err("Unknown event {s}", .{value});
+            return;
+        };
+        data.handle_event(connection, event) catch |err|
+            switch (err) {
+            error.EventDoesNotExist => {},
+            else => {
+                log.err("{}", .{err});
+            },
+        };
     }
 }
 
@@ -144,7 +177,7 @@ pub const Args = struct {
 };
 fn parse_args() !Args {
     if (std.os.argv.len == 1) {
-        std.log.err("Must provide arguments", .{});
+        log.err("Must provide arguments", .{});
         std.process.exit(1);
     }
 
@@ -159,7 +192,7 @@ fn parse_args() !Args {
         } else if (std.mem.eql(u8, arg, "--debug_connection")) {
             result.debug_connection = true;
         } else {
-            std.log.err("Unknow arg {s}", .{arg});
+            log.err("Unknow arg {s}", .{arg});
             std.process.exit(1);
         }
     }

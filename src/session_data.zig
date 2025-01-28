@@ -40,22 +40,22 @@ pub const SessionData = struct {
 
     pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !void {
         switch (event) {
-            .stopped => {},
-            .continued => {},
-            .exited => {},
+            .stopped => log.err("TODO event: {s}", .{@tagName(event)}),
+            .continued => log.err("TODO event: {s}", .{@tagName(event)}),
+            .exited => log.err("TODO event: {s}", .{@tagName(event)}),
             .terminated => try data.handle_event_terminated(connection),
-            .thread => {},
+            .thread => log.err("TODO event: {s}", .{@tagName(event)}),
             .output => try data.handle_event_output(connection),
-            .breakpoint => {},
+            .breakpoint => log.err("TODO event: {s}", .{@tagName(event)}),
             .module => try data.handle_event_modules(connection),
-            .loadedSource => {},
-            .process => {},
-            .capabilities => {},
-            .progressStart => {},
-            .progressUpdate => {},
-            .progressEnd => {},
-            .invalidated => {},
-            .memory => {},
+            .loadedSource => log.err("TODO event: {s}", .{@tagName(event)}),
+            .process => log.err("TODO event: {s}", .{@tagName(event)}),
+            .capabilities => log.err("TODO event: {s}", .{@tagName(event)}),
+            .progressStart => log.err("TODO event: {s}", .{@tagName(event)}),
+            .progressUpdate => log.err("TODO event: {s}", .{@tagName(event)}),
+            .progressEnd => log.err("TODO event: {s}", .{@tagName(event)}),
+            .invalidated => log.err("TODO event: {s}", .{@tagName(event)}),
+            .memory => log.err("TODO event: {s}", .{@tagName(event)}),
             .initialized => {
                 const parsed = try connection.get_and_parse_event(protocol.InitializedEvent, .initialized);
                 defer parsed.deinit();
