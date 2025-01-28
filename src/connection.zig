@@ -275,17 +275,22 @@ pub fn deinit(connection: *Connection) void {
     connection.arena.deinit();
 }
 
-pub fn queue_request(connection: *Connection, comptime command: Command, arguments: ?protocol.Value, depends_on: Dependency) !i32 {
+pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency) !i32 {
     try connection.queued_requests.ensureUnusedCapacity(1);
     try connection.expected_responses.ensureUnusedCapacity(1);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
+    const args = if (@TypeOf(arguments) == protocol.Object)
+        arguments
+    else
+        try utils.value_to_object(arena.allocator(), arguments);
+
     const request = protocol.Request{
         .seq = connection.new_seq(),
         .type = .request,
         .command = @tagName(command),
-        .arguments = arguments,
+        .arguments = .{ .object = args },
     };
 
     connection.queued_requests.appendAssumeCapacity(.{
@@ -390,8 +395,7 @@ pub fn queue_request_init(connection: *Connection, arguments: protocol.Initializ
 
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
-    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
-    const seq = try connection.queue_request(.initialize, .{ .object = args }, depends_on);
+    const seq = try connection.queue_request(.initialize, arguments, depends_on);
     connection.state = .initializing;
     return seq;
 }
@@ -419,7 +423,7 @@ pub fn handle_response_init(connection: *Connection, request_seq: i32) !void {
 pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.launch, .{ .object = args }, depends_on);
+    return try connection.queue_request(.launch, args, depends_on);
 }
 
 pub fn handle_response_launch(connection: *Connection, request_seq: i32) void {
@@ -430,7 +434,7 @@ pub fn handle_response_launch(connection: *Connection, request_seq: i32) void {
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.configurationDone, .{ .object = args }, depends_on);
+    return try connection.queue_request(.configurationDone, args, depends_on);
 }
 
 pub fn handle_response_configuration_done(connection: *Connection, request_seq: i32) !void {
@@ -440,13 +444,11 @@ pub fn handle_response_configuration_done(connection: *Connection, request_seq: 
 }
 
 fn queue_request_terminate(connection: *Connection, arguments: ?protocol.TerminateArguments, depends_on: Dependency) !i32 {
-    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
-    return try connection.queue_request(.terminate, .{ .object = args }, depends_on);
+    return try connection.queue_request(.terminate, arguments, depends_on);
 }
 
 fn queue_request_disconnect(connection: *Connection, arguments: ?protocol.DisconnectArguments, depends_on: Dependency) !i32 {
-    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
-    return try connection.queue_request(.disconnect, .{ .object = args }, depends_on);
+    return try connection.queue_request(.disconnect, arguments, depends_on);
 }
 
 pub fn handle_response_disconnect(connection: *Connection, request_seq: i32) !void {
@@ -467,8 +469,7 @@ pub fn handle_event_initialized(connection: *Connection, seq: i32) void {
 }
 
 pub fn queue_request_threads(connection: *Connection, arguments: ?protocol.Value, depends_on: Dependency) !i32 {
-    const args = try utils.value_to_object(connection.arena.allocator(), arguments);
-    return try connection.queue_request(.threads, .{ .object = args }, depends_on);
+    return try connection.queue_request(.threads, arguments, depends_on);
 }
 
 fn check_request_capability(connection: *Connection, command: Command) !void {

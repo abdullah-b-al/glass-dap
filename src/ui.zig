@@ -8,6 +8,7 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const Args = @import("main.zig").Args;
 const begin_debug_sequence = @import("main.zig").begin_debug_sequence;
+const request = @import("request.zig");
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     try glfw.init();
@@ -97,7 +98,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     }
 
     modules(arena.allocator(), "Modules", data.*);
-    threads(arena.allocator(), "Threads", data.*);
+    threads(arena.allocator(), "Threads", data.*, connection);
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
@@ -105,12 +106,13 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     window.swapBuffers();
 }
 
-fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
+fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
     const table = .{
+        .{ .name = "Action" },
         .{ .name = "ID" },
         .{ .name = "Name" },
         .{ .name = "State" },
@@ -126,13 +128,22 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
         for (data.threads.items) |thread| {
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
+            if (zgui.button("Pause", .{})) {
+                request.pause(connection, thread.data.id) catch unreachable;
+            }
+
+            _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(thread.data.id, .{})});
 
             _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(thread.data.name, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
+            zgui.text("{s}", .{anytype_to_string(std.meta.activeTag(thread.state), .{})});
+            if (thread.state == .stopped) {
+                zgui.text("{s}", .{thread.state.stopped.description});
+                zgui.text("{s}", .{thread.state.stopped.text});
+            }
         }
 
         zgui.endTable();

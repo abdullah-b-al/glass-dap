@@ -14,9 +14,12 @@ const DebuggeeStatus = union(enum) {
 
 const Thread = struct {
     data: protocol.Thread,
-    state: enum {
+    state: union(enum) {
         running,
-        stopped,
+        stopped: struct {
+            description: []const u8 = "",
+            text: []const u8 = "",
+        },
     },
 };
 
@@ -57,7 +60,7 @@ pub const SessionData = struct {
 
     pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !void {
         switch (event) {
-            .stopped => log.err("TODO event: {s}", .{@tagName(event)}),
+            .stopped => try data.handle_event_stopped(connection),
             .continued => try data.handle_event_continued(connection),
             .exited => try data.handle_event_exited(connection),
             .terminated => try data.handle_event_terminated(connection),
@@ -89,6 +92,8 @@ pub const SessionData = struct {
                 connection.handle_response_launch(request_seq);
             },
 
+            .pause => acknowledge(connection, protocol.PauseResponse, request_seq, command),
+
             .cancel => log.err("TODO: {s}", .{@tagName(command)}),
             .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
             .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
@@ -113,7 +118,6 @@ pub const SessionData = struct {
             .reverseContinue => log.err("TODO: {s}", .{@tagName(command)}),
             .restartFrame => log.err("TODO: {s}", .{@tagName(command)}),
             .goto => log.err("TODO: {s}", .{@tagName(command)}),
-            .pause => log.err("TODO: {s}", .{@tagName(command)}),
             .stackTrace => log.err("TODO: {s}", .{@tagName(command)}),
             .scopes => log.err("TODO: {s}", .{@tagName(command)}),
             .variables => log.err("TODO: {s}", .{@tagName(command)}),
@@ -160,21 +164,31 @@ pub const SessionData = struct {
         return true;
     }
 
+    fn handle_event_stopped(data: *SessionData, connection: *Connection) !void {
+        const event = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
+        defer event.deinit();
+
+        const body = event.value.body;
+        if (body.threadId) |id| {
+            const thread = data.get_thread(id).?; // FIXME: Don't panic
+            thread.state = .{ .stopped = .{
+                .description = try data.get_or_clone_string(body.description orelse ""),
+                .text = try data.get_or_clone_string(body.text orelse ""),
+            } };
+        }
+
+        connection.handled_event(.stopped, event.value.seq);
+    }
+
     fn handle_event_continued(data: *SessionData, connection: *Connection) !void {
         const event = try connection.get_and_parse_event(protocol.ContinuedEvent, .continued);
         defer event.deinit();
 
-        if (event.value.body.allThreadsContinued) |all| {
-            if (all) for (data.threads.items) |*item| {
+        const all = event.value.body.allThreadsContinued orelse false;
+        const id = event.value.body.threadId;
+        for (data.threads.items) |*item| {
+            if (item.data.id == id or all)
                 item.state = .running;
-            };
-        } else {
-            for (data.threads.items) |*item| {
-                if (item.data.id == event.value.body.threadId) {
-                    item.state = .running;
-                    break;
-                }
-            }
         }
 
         data.status = .running;
@@ -246,7 +260,7 @@ pub const SessionData = struct {
         for (threads) |thread| {
             data.threads.appendAssumeCapacity(.{
                 .data = try data.clone_anytype(thread),
-                .state = .stopped,
+                .state = if (data.status == .running) .running else .{ .stopped = .{} },
             });
         }
     }
@@ -280,5 +294,20 @@ pub const SessionData = struct {
         }
 
         return false;
+    }
+
+    fn get_thread(data: *SessionData, id: i32) ?*Thread {
+        for (data.threads.items) |*item| {
+            if (item.data.id == id) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    fn acknowledge(connection: *Connection, comptime T: type, request_seq: i32, command: Connection.Command) !void {
+        const resp = try connection.get_parse_validate_response(T, request_seq, command);
+        defer resp.deinit();
+        connection.handled_response(command, request_seq, true);
     }
 };
