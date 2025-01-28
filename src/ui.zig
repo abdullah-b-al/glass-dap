@@ -126,13 +126,13 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
         for (data.threads.items) |thread| {
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.data.id)});
+            zgui.text("{s}", .{anytype_to_string(thread.data.id, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.data.name)});
+            zgui.text("{s}", .{anytype_to_string(thread.data.name, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.state)});
+            zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
         }
 
         zgui.endTable();
@@ -169,7 +169,9 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
             inline for (table) |entry| {
                 _ = zgui.tableNextColumn();
                 const value = @field(module, entry.field);
-                zgui.text("{s}", .{anytype_to_string(value)});
+                zgui.text("{s}", .{anytype_to_string(value, .{
+                    .value_for_null = "Unknown",
+                })});
             }
         }
         zgui.endTable();
@@ -278,7 +280,7 @@ fn adapter_capabilities(connection: Connection) void {
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
-    zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status)});
+    zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
         try begin_debug_sequence(connection, args);
@@ -348,14 +350,14 @@ fn draw_table_from_slice_of_struct(comptime T: type, mabye_value: ?[]T) void {
                     if (info == .pointer and info.pointer.child != u8) { // assume slice
                         for (field_value, 0..) |inner_v, i| {
                             if (i < field_value.len - 1) {
-                                zgui.text("{s},", .{anytype_to_string(inner_v)});
+                                zgui.text("{s},", .{anytype_to_string(inner_v, .{})});
                                 zgui.sameLine(.{});
                             } else {
-                                zgui.text("{s}", .{anytype_to_string(inner_v)});
+                                zgui.text("{s}", .{anytype_to_string(inner_v, .{})});
                             }
                         }
                     } else {
-                        zgui.text("{s}", .{anytype_to_string(field_value)});
+                        zgui.text("{s}", .{anytype_to_string(field_value, .{})});
                     }
                 }
             }
@@ -427,16 +429,21 @@ fn protocol_value_to_string(value: protocol.Value) []const u8 {
         else => @panic("TODO"),
     }
 }
-fn anytype_to_string(value: anytype) []const u8 {
+
+const ToStringOptions = struct {
+    show_union_name: bool = false,
+    value_for_null: []const u8 = "null",
+};
+fn anytype_to_string(value: anytype, opts: ToStringOptions) []const u8 {
     const static = struct {
         var buffer: [10_000]u8 = undefined;
         var fixed = std.heap.FixedBufferAllocator.init(&buffer);
     };
     static.fixed.reset();
-    return anytype_to_string_recurse(value, static.fixed.allocator());
+    return anytype_to_string_recurse(static.fixed.allocator(), value, opts);
 }
 
-fn anytype_to_string_recurse(value: anytype, allocator: std.mem.Allocator) []const u8 {
+fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts: ToStringOptions) []const u8 {
     switch (@typeInfo(@TypeOf(value))) {
         .bool => return bool_to_string(value),
         .float, .int => {
@@ -446,18 +453,23 @@ fn anytype_to_string_recurse(value: anytype, allocator: std.mem.Allocator) []con
         .@"union" => {
             switch (value) {
                 inline else => |v| {
+                    var name_prefix: []const u8 = "";
+                    if (opts.show_union_name) {
+                        name_prefix = std.fmt.allocPrint(allocator, "{s} = ", .{@tagName(std.meta.activeTag(value))}) catch unreachable;
+                    }
+
                     if (@TypeOf(v) == void) {
                         return @tagName(std.meta.activeTag(value));
                     } else {
-                        return std.fmt.allocPrint(allocator, "{s} = {s}", .{
-                            @tagName(std.meta.activeTag(value)),
-                            anytype_to_string_recurse(v, allocator),
+                        return std.fmt.allocPrint(allocator, "{s}{s}", .{
+                            name_prefix,
+                            anytype_to_string_recurse(allocator, v, opts),
                         }) catch unreachable;
                     }
                 },
             }
         },
-        .optional => return anytype_to_string_recurse(value orelse return "null", allocator),
+        .optional => return anytype_to_string_recurse(allocator, value orelse return opts.value_for_null, opts),
         else => {},
     }
 
