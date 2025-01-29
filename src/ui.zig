@@ -140,8 +140,12 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
             _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(std.meta.activeTag(thread.state), .{})});
             if (thread.state == .stopped) {
-                zgui.text("{s}", .{thread.state.stopped.description});
-                zgui.text("{s}", .{thread.state.stopped.text});
+                if (thread.state.stopped.description.len > 0) {
+                    zgui.text("{s}", .{thread.state.stopped.description});
+                }
+                if (thread.state.stopped.text.len > 0) {
+                    zgui.text("{s}", .{thread.state.stopped.text});
+                }
             }
         }
 
