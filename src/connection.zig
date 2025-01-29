@@ -71,7 +71,7 @@ const AdapterCapabilities = struct {
     breakpointModes: ?[]protocol.BreakpointMode = null,
 };
 
-const RawMessage = std.json.Parsed(std.json.Value);
+pub const RawMessage = std.json.Parsed(std.json.Value);
 
 const State = enum {
     /// Adapter and debuggee are running

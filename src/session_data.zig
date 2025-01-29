@@ -23,12 +23,33 @@ const Thread = struct {
     },
 };
 
+pub const Callback = struct {
+    pub const Function = fn (data: *SessionData, connection: *Connection, message: ?Connection.RawMessage) void;
+    pub const CallIf = enum {
+        success,
+        fail,
+        always,
+    };
+
+    pub const WhenToCall = union(enum) {
+        request_seq: i32,
+        response: Connection.Command,
+        any,
+    };
+
+    function: *const Function,
+    message: ?Connection.RawMessage,
+    call_if: CallIf,
+    when_to_call: WhenToCall,
+};
+
 pub const SessionData = struct {
     allocator: std.mem.Allocator,
 
     /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
     arena: std.heap.ArenaAllocator,
 
+    callbacks: std.ArrayListUnmanaged(Callback) = .{},
     string_storage: StringStorageUnmanaged = .{},
     threads: std.ArrayListUnmanaged(Thread) = .{},
     modules: std.ArrayListUnmanaged(protocol.Module) = .{},
@@ -54,6 +75,10 @@ pub const SessionData = struct {
         data.threads.deinit(data.allocator);
         data.modules.deinit(data.allocator);
         data.output.deinit(data.allocator);
+        for (data.callbacks.items) |cb| {
+            if (cb.message) |m| m.deinit();
+        }
+        data.callbacks.deinit(data.allocator);
 
         data.arena.deinit();
     }
@@ -264,6 +289,35 @@ pub const SessionData = struct {
                 .state = if (data.status == .running) .running else .{ .stopped = .{} },
             });
         }
+
+    /// `container` is a container type with a function named `function`
+    pub fn callback(
+        data: *SessionData,
+        call_if: Callback.CallIf,
+        when_to_call: Callback.WhenToCall,
+        message: ?Connection.RawMessage,
+        comptime container: anytype,
+    ) !void {
+        const func = comptime blk: {
+            if (@TypeOf(@field(container, "function")) == Callback.Function) {
+                break :blk @field(container, "function");
+            } else {
+                @compileError(
+                    "Callback function has the wrong type.\n" ++
+                        "Expcted `" ++ @typeName(*const Callback.Function) ++ "`\n" ++
+                        "Found `" ++ @typeName(@TypeOf(@field(container, "function"))),
+                );
+            }
+        };
+
+        const cb = Callback{
+            .function = func,
+            .message = message,
+            .call_if = call_if,
+            .when_to_call = when_to_call,
+        };
+
+        try data.callbacks.append(data.allocator, cb);
     }
 
     fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {

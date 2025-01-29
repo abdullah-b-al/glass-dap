@@ -39,8 +39,35 @@ fn loop(window: *glfw.Window, connection: *Connection, data: *SessionData, args:
         handle_queued_events(data, connection);
         send_queued_requests(connection);
         handle_queued_responses(data, connection);
+        handle_callbacks(data, connection);
 
         ui.ui_tick(window, connection, data, args);
+    }
+}
+
+fn handle_callbacks(data: *SessionData, connection: *Connection) void {
+    for (connection.handled_responses.items) |resp| {
+        var i: usize = 0;
+        while (i < data.callbacks.items.len) {
+            const cb = data.callbacks.items[i];
+            const call_if = switch (cb.call_if) {
+                .success, .fail => resp.success,
+                .always => true,
+            };
+
+            const when_to_call = switch (cb.when_to_call) {
+                .request_seq => |wanted| wanted == resp.request_seq,
+                .response => |wanted| wanted == resp.command,
+                .any => true,
+            };
+
+            if (call_if and when_to_call) {
+                cb.function(data, connection, cb.message);
+                _ = data.callbacks.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 }
 
