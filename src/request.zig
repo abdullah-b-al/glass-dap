@@ -90,6 +90,6 @@ pub fn pause(connection: *Connection, thread_id: i32) !void {
 }
 
 pub fn threads(connection: *Connection, arguments: ?protocol.Object) !void {
-    const args = if (arguments) |o| protocol.Value{ .object = o } else null;
-    _ = try connection.queue_request_threads(args, .none);
+    const args = if (arguments) |object| object else null;
+    _ = try connection.queue_request(.threads, args, .none);
 }

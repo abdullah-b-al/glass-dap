@@ -73,7 +73,7 @@ fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value
             try object.map.put(allocator, name, .{ .float = value });
         },
 
-        .null => @compileError("Handle in Optional"),
+        .null => @compileError("Handle in Optional or provide an empty object"),
         .optional => {
             if (value) |v| {
                 try value_to_object_recurse(allocator, name, v, object);

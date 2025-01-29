@@ -433,10 +433,6 @@ pub fn handle_event_initialized(connection: *Connection, seq: i32) void {
     connection.handled_event(.initialized, seq);
 }
 
-pub fn queue_request_threads(connection: *Connection, arguments: ?protocol.Value, depends_on: Dependency) !i32 {
-    return try connection.queue_request(.threads, arguments, depends_on);
-}
-
 fn check_request_capability(connection: *Connection, command: Command) !void {
     const s = connection.adapter_capabilities.support;
     const c = connection.adapter_capabilities;

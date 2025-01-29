@@ -89,7 +89,7 @@ pub const SessionData = struct {
         switch (event) {
             .stopped => {
                 // Per the overview page: Request the threads on a stopped event
-                const seq = try connection.queue_request_threads(null, .none);
+                const seq = try connection.queue_request(.threads, protocol.Object{}, .none);
                 const e = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
                 defer e.deinit();
                 const message = connection.remove_event(e.value.seq);
