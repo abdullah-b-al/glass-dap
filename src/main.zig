@@ -140,36 +140,6 @@ fn dependency_satisfied(connection: Connection, to_send: Connection.Request) boo
     return false;
 }
 
-pub fn begin_debug_sequence(connection: *Connection, args: Args) !void {
-    // send and respond to initialize
-    // send launch or attach
-    // when the adapter is ready it'll send a initialized event
-    // send configuration
-    // send configuration done
-    // respond to launch or attach
-    const init_args = protocol.InitializeRequestArguments{
-        .clientName = "unidep",
-        .adapterID = "???",
-    };
-
-    if (connection.state == .not_spawned) {
-        try connection.adapter_spawn();
-    }
-
-    const init_seq = try connection.queue_request_init(init_args, .none);
-
-    {
-        var extra = Object{};
-        defer extra.deinit(connection.allocator);
-        try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        _ = try connection.queue_request_launch(.{}, extra, .{ .seq = init_seq });
-    }
-
-    // TODO: Send configurations here
-
-    _ = try connection.queue_request_configuration_done(null, .{}, .{ .event = .initialized });
-}
-
 pub const Args = struct {
     adapter: []const u8 = "",
     debugee: []const u8 = "",

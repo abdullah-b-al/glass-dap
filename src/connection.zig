@@ -361,32 +361,6 @@ pub fn handled_response(connection: *Connection, command: Command, request_seq: 
     }
 }
 
-pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !void {
-    switch (connection.state) {
-        .initialized,
-        .partially_initialized,
-        .initializing,
-        .spawned,
-        => return error.SessionNotStarted,
-
-        .not_spawned => return error.AdapterNotSpawned,
-
-        .attached => @panic("TODO"),
-        .launched => {
-            switch (how) {
-                .terminate => _ = try connection.queue_request_terminate(.{
-                    .restart = false,
-                }, .none),
-                .disconnect => _ = try connection.queue_request_disconnect(.{
-                    .restart = false,
-                    .terminateDebuggee = null,
-                    .suspendDebuggee = null,
-                }, .none),
-            }
-        },
-    }
-}
-
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
 pub fn queue_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments, depends_on: Dependency) !i32 {
     if (connection.state.fully_initialized()) {
@@ -435,14 +409,6 @@ pub fn queue_request_configuration_done(connection: *Connection, arguments: ?pro
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
     return try connection.queue_request(.configurationDone, args, depends_on);
-}
-
-fn queue_request_terminate(connection: *Connection, arguments: ?protocol.TerminateArguments, depends_on: Dependency) !i32 {
-    return try connection.queue_request(.terminate, arguments, depends_on);
-}
-
-fn queue_request_disconnect(connection: *Connection, arguments: ?protocol.DisconnectArguments, depends_on: Dependency) !i32 {
-    return try connection.queue_request(.disconnect, arguments, depends_on);
 }
 
 pub fn handle_response_disconnect(connection: *Connection, request_seq: i32) !void {

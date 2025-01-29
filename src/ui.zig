@@ -7,7 +7,6 @@ const zopengl = @import("zopengl");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const Args = @import("main.zig").Args;
-const begin_debug_sequence = @import("main.zig").begin_debug_sequence;
 const request = @import("request.zig");
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
@@ -294,7 +293,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
-        try begin_debug_sequence(connection, args);
+        try request.begin_session(connection, args.debugee);
     }
 
     zgui.sameLine(.{});
@@ -312,7 +311,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
             .adapterID = "???",
         };
 
-        _ = try connection.queue_request_init(init_args, .none);
+        try request.init(connection, init_args);
     }
 
     zgui.sameLine(.{});
@@ -320,24 +319,24 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         var extra = protocol.Object{};
         defer extra.deinit(connection.allocator);
         try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        _ = try connection.queue_request_launch(.{}, extra, .{ .response = .initialize });
+        try request.launch(connection, extra);
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Send configurationDone Request", .{})) {
-        _ = try connection.queue_request_configuration_done(null, .{}, .{ .event = .initialized });
+        try request.configuration_done(connection, .{});
     }
 
     if (zgui.button("end connection: disconnect", .{})) {
-        try connection.end_session(.disconnect);
+        try request.end_session(connection, .disconnect);
     }
 
     if (zgui.button("end connection: terminate", .{})) {
-        try connection.end_session(.terminate);
+        try request.end_session(connection, .terminate);
     }
 
     if (zgui.button("Threads", .{})) {
-        _ = try connection.queue_request_threads(null, .none);
+        try request.threads(connection, null);
     }
 }
 
