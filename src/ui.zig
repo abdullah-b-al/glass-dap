@@ -90,6 +90,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         // dock them tabbed
         zgui.dockBuilderDockWindow("Modules", empty);
         zgui.dockBuilderDockWindow("Threads", empty);
+        zgui.dockBuilderDockWindow("Stack Frames", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -98,6 +99,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
 
     modules(arena.allocator(), "Modules", data.*);
     threads(arena.allocator(), "Threads", data.*, connection);
+    stack_frames(arena.allocator(), "Stack Frames", data.*, connection);
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
@@ -111,7 +113,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     if (!zgui.begin(name, .{})) return;
 
     const table = .{
-        .{ .name = "Action" },
+        .{ .name = "Actions" },
         .{ .name = "ID" },
         .{ .name = "Name" },
         .{ .name = "State" },
@@ -126,9 +128,21 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
 
         for (data.threads.items) |thread| {
             zgui.tableNextRow(.{});
-            _ = zgui.tableNextColumn();
-            if (zgui.button("Pause", .{})) {
-                request.pause(connection, thread.data.id) catch unreachable;
+            { // same column
+                _ = zgui.tableNextColumn();
+                if (zgui.button("Stack Trace", .{})) {
+                    request.stack_trace(connection, .{
+                        .threadId = thread.data.id,
+                        .startFrame = null, // request all frames
+                        .levels = null, // request all levels
+                        .format = null,
+                    }) catch return;
+                }
+
+                zgui.sameLine(.{});
+                if (zgui.button("Pause", .{})) {
+                    request.pause(connection, thread.data.id) catch return;
+                }
             }
 
             _ = zgui.tableNextColumn();
@@ -186,6 +200,43 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
                 zgui.text("{s}", .{anytype_to_string(value, .{
                     .value_for_null = "Unknown",
                 })});
+            }
+        }
+        zgui.endTable();
+    }
+}
+
+fn stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const table = .{
+        .{ .name = "ID" },
+        .{ .name = "Name" },
+        .{ .name = "Source" },
+    };
+    const columns_count = std.meta.fields(@TypeOf(table)).len;
+
+    if (zgui.beginTable("Stack Frames Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        inline for (table) |entry| {
+            zgui.tableSetupColumn(entry.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (data.stack_frames.items) |frame| {
+            zgui.tableNextRow(.{});
+
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{anytype_to_string(frame.id, .{})});
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{frame.name});
+            _ = zgui.tableNextColumn();
+            { // same column
+                if (frame.source) |source| {
+                    zgui.text("{s}", .{anytype_to_string(source, .{})});
+                }
             }
         }
         zgui.endTable();
@@ -458,7 +509,12 @@ fn anytype_to_string(value: anytype, opts: ToStringOptions) []const u8 {
 }
 
 fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts: ToStringOptions) []const u8 {
-    switch (@typeInfo(@TypeOf(value))) {
+    const T = @TypeOf(value);
+    if (T == []const u8) {
+        return mabye_string_to_string(value);
+    }
+
+    switch (@typeInfo(T)) {
         .bool => return bool_to_string(value),
         .float, .int => {
             return std.fmt.allocPrint(allocator, "{}", .{value}) catch unreachable;
@@ -483,15 +539,34 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
                 },
             }
         },
+        .@"struct" => |info| {
+            var list = std.ArrayList(u8).init(allocator);
+            var writer = list.writer();
+            inline for (info.fields, 0..) |field, i| {
+                writer.print("{s}: {s}", .{
+                    field.name,
+                    anytype_to_string_recurse(allocator, @field(value, field.name), opts),
+                }) catch unreachable;
+
+                if (i < info.fields.len - 1) {
+                    _ = writer.write("\n") catch unreachable;
+                }
+            }
+
+            return list.items;
+        },
+        .pointer => return @typeName(T),
         .optional => return anytype_to_string_recurse(allocator, value orelse return opts.value_for_null, opts),
         else => {},
     }
 
-    return switch (@TypeOf(value)) {
+    return switch (T) {
         []const u8 => mabye_string_to_string(value),
+        // *std.array_hash_map.IndexHeader => {},
         protocol.Value => protocol_value_to_string(value),
         protocol.Object => @panic("TODO"),
         protocol.Array => @panic("TODO"),
-        inline else => @compileError(@typeName(@TypeOf(value))),
+        std.debug.SafetyLock => return @typeName(T),
+        inline else => @compileError(@typeName(T)),
     };
 }

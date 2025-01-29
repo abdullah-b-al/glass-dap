@@ -56,6 +56,7 @@ pub const SessionData = struct {
     threads: std.ArrayListUnmanaged(Thread) = .{},
     modules: std.ArrayListUnmanaged(protocol.Module) = .{},
     output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
+    stack_frames: std.ArrayListUnmanaged(protocol.StackFrame) = .{},
     status: DebuggeeStatus,
 
     /// From the protocol:
@@ -77,6 +78,8 @@ pub const SessionData = struct {
         data.threads.deinit(data.allocator);
         data.modules.deinit(data.allocator);
         data.output.deinit(data.allocator);
+        data.stack_frames.deinit(data.allocator);
+
         for (data.callbacks.items) |cb| {
             if (cb.message) |m| m.deinit();
         }
@@ -144,6 +147,11 @@ pub const SessionData = struct {
             .disconnect => connection.handle_response_disconnect(request_seq),
 
             .threads => data.handle_response_threads(connection, request_seq),
+            .stackTrace => blk: {
+                // TODO: request more stack traces if count > data.stack_frames.item.len
+                const count = data.handle_response_stack_trace(connection, request_seq) catch |err| break :blk err;
+                _ = count;
+            },
 
             .cancel => log.err("TODO: {s}", .{@tagName(command)}),
             .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
@@ -166,7 +174,6 @@ pub const SessionData = struct {
             .reverseContinue => log.err("TODO: {s}", .{@tagName(command)}),
             .restartFrame => log.err("TODO: {s}", .{@tagName(command)}),
             .goto => log.err("TODO: {s}", .{@tagName(command)}),
-            .stackTrace => log.err("TODO: {s}", .{@tagName(command)}),
             .scopes => log.err("TODO: {s}", .{@tagName(command)}),
             .variables => log.err("TODO: {s}", .{@tagName(command)}),
             .setVariable => log.err("TODO: {s}", .{@tagName(command)}),
@@ -290,13 +297,25 @@ pub const SessionData = struct {
         connection.handled_event(.terminated, event.value.seq);
     }
 
-    pub fn handle_response_threads(data: *SessionData, connection: *Connection, seq: i32) !void {
-        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, seq, .threads);
+    pub fn handle_response_threads(data: *SessionData, connection: *Connection, request_seq: i32) !void {
+        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, request_seq, .threads);
         defer parsed.deinit();
         const array = parsed.value.body.threads;
         try data.set_threads(array);
 
-        connection.handled_response(.threads, seq, true);
+        connection.handled_response(.threads, request_seq, true);
+    }
+
+    pub fn handle_response_stack_trace(data: *SessionData, connection: *Connection, request_seq: i32) !i32 {
+        const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, request_seq, .stackTrace);
+        defer parsed.deinit();
+
+        try data.stack_frames.ensureUnusedCapacity(data.allocator, parsed.value.body.stackFrames.len);
+        for (parsed.value.body.stackFrames) |frame| {
+            data.stack_frames.appendAssumeCapacity(try data.clone_anytype(frame));
+        }
+
+        return parsed.value.body.totalFrames orelse std.math.maxInt(i32);
     }
 
     pub fn add_module(data: *SessionData, module: protocol.Module) !void {

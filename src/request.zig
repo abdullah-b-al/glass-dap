@@ -93,3 +93,7 @@ pub fn threads(connection: *Connection, arguments: ?protocol.Object) !void {
     const args = if (arguments) |object| object else null;
     _ = try connection.queue_request(.threads, args, .none);
 }
+
+pub fn stack_trace(connection: *Connection, arguments: protocol.StackTraceArguments) !void {
+    _ = try connection.queue_request(.stackTrace, arguments, .none);
+}
