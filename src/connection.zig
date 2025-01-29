@@ -437,12 +437,6 @@ pub fn queue_request_configuration_done(connection: *Connection, arguments: ?pro
     return try connection.queue_request(.configurationDone, args, depends_on);
 }
 
-pub fn handle_response_configuration_done(connection: *Connection, request_seq: i32) !void {
-    const resp = try connection.get_parse_validate_response(protocol.ConfigurationDoneResponse, request_seq, .configurationDone);
-    defer resp.deinit();
-    connection.handled_response(.configurationDone, request_seq, true);
-}
-
 fn queue_request_terminate(connection: *Connection, arguments: ?protocol.TerminateArguments, depends_on: Dependency) !i32 {
     return try connection.queue_request(.terminate, arguments, depends_on);
 }

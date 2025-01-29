@@ -87,21 +87,23 @@ pub const SessionData = struct {
     pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
         const err = switch (command) {
             .launch => blk: {
-                const resp = connection.get_parse_validate_response(protocol.LaunchResponse, request_seq, .launch) catch |err| break :blk err;
-                defer resp.deinit();
+                acknowledge_only(connection, request_seq, command) catch |err| break :blk err;
                 connection.handle_response_launch(request_seq);
             },
+            .configurationDone,
+            .pause,
+            => acknowledge_and_handled(connection, request_seq, command),
 
-            .pause => acknowledge(connection, protocol.PauseResponse, request_seq, command),
+            .initialize => connection.handle_response_init(request_seq),
+            .disconnect => connection.handle_response_disconnect(request_seq),
+
+            .threads => data.handle_response_threads(connection, request_seq),
 
             .cancel => log.err("TODO: {s}", .{@tagName(command)}),
             .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
             .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
-            .initialize => connection.handle_response_init(request_seq),
-            .configurationDone => connection.handle_response_configuration_done(request_seq),
             .attach => log.err("TODO: {s}", .{@tagName(command)}),
             .restart => log.err("TODO: {s}", .{@tagName(command)}),
-            .disconnect => connection.handle_response_disconnect(request_seq),
             .terminate => log.err("TODO: {s}", .{@tagName(command)}),
             .breakpointLocations => log.err("TODO: {s}", .{@tagName(command)}),
             .setBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
@@ -123,7 +125,6 @@ pub const SessionData = struct {
             .variables => log.err("TODO: {s}", .{@tagName(command)}),
             .setVariable => log.err("TODO: {s}", .{@tagName(command)}),
             .source => log.err("TODO: {s}", .{@tagName(command)}),
-            .threads => data.handle_response_threads(connection, request_seq),
             .terminateThreads => log.err("TODO: {s}", .{@tagName(command)}),
             .modules => log.err("TODO: {s}", .{@tagName(command)}),
             .loadedSources => log.err("TODO: {s}", .{@tagName(command)}),
@@ -305,9 +306,14 @@ pub const SessionData = struct {
         return null;
     }
 
-    fn acknowledge(connection: *Connection, comptime T: type, request_seq: i32, command: Connection.Command) !void {
-        const resp = try connection.get_parse_validate_response(T, request_seq, command);
+    fn acknowledge_and_handled(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
+        const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
         defer resp.deinit();
         connection.handled_response(command, request_seq, true);
+    }
+
+    fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
+        const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
+        resp.deinit();
     }
 };
