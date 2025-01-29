@@ -13,13 +13,15 @@ const DebuggeeStatus = union(enum) {
 };
 
 const Thread = struct {
+    const Stopped = struct {
+        description: []const u8 = "",
+        text: []const u8 = "",
+    };
+
     data: protocol.Thread,
     state: union(enum) {
         running,
-        stopped: struct {
-            description: []const u8 = "",
-            text: []const u8 = "",
-        },
+        stopped: Stopped,
     },
 };
 
@@ -83,9 +85,26 @@ pub const SessionData = struct {
         data.arena.deinit();
     }
 
-    pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !void {
+    pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !bool {
         switch (event) {
-            .stopped => try data.handle_event_stopped(connection),
+            .stopped => {
+                // Per the overview page: Request the threads on a stopped event
+                const seq = try connection.queue_request_threads(null, .none);
+                const e = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
+                defer e.deinit();
+                const message = connection.remove_event(e.value.seq);
+
+                try data.callback(.success, .{ .request_seq = seq }, message, struct {
+                    pub fn function(d: *SessionData, c: *Connection, m: ?Connection.RawMessage) void {
+                        defer m.?.deinit();
+                        d.handle_event_stopped(c, m.?) catch |err| switch (err) {
+                            else => log.err("Failed to handled event {}", .{@src()}),
+                        };
+                    }
+                });
+
+                return false;
+            },
             .continued => try data.handle_event_continued(connection),
             .exited => try data.handle_event_exited(connection),
             .terminated => try data.handle_event_terminated(connection),
@@ -107,6 +126,8 @@ pub const SessionData = struct {
                 connection.handle_event_initialized(parsed.value.seq);
             },
         }
+
+        return true;
     }
 
     pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
@@ -173,7 +194,6 @@ pub const SessionData = struct {
             error.InvalidNumber,
             error.InvalidEnumTag,
             error.DuplicateField,
-            error.RequestFailed,
             error.UnknownField,
             error.MissingField,
             error.LengthMismatch,
@@ -184,23 +204,30 @@ pub const SessionData = struct {
                 log.err("{!} from response of command {} request_seq {}", .{ e, command, request_seq });
                 return false;
             },
-            error.ResponseDoesNotExist => return false,
+            error.RequestFailed,
+            error.ResponseDoesNotExist,
+            => return false,
         };
 
         return true;
     }
 
-    fn handle_event_stopped(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
+    fn handle_event_stopped(data: *SessionData, connection: *Connection, name_or_message: anytype) !void {
+        const event = try get_and_parse_event_name_or_message(connection, protocol.StoppedEvent, name_or_message);
         defer event.deinit();
 
         const body = event.value.body;
-        if (body.threadId) |id| {
-            const thread = data.get_thread(id).?; // FIXME: Don't panic
-            thread.state = .{ .stopped = .{
-                .description = try data.get_or_clone_string(body.description orelse ""),
-                .text = try data.get_or_clone_string(body.text orelse ""),
-            } };
+        const stopped = Thread.Stopped{
+            .description = try data.get_or_clone_string(body.description orelse ""),
+            .text = try data.get_or_clone_string(body.text orelse ""),
+        };
+
+        const all = body.allThreadsStopped orelse false;
+        const id = body.threadId;
+        for (data.threads.items) |*thread| {
+            if (thread.data.id == id or all) {
+                thread.state = .{ .stopped = stopped };
+            }
         }
 
         connection.handled_event(.stopped, event.value.seq);
@@ -289,6 +316,7 @@ pub const SessionData = struct {
                 .state = if (data.status == .running) .running else .{ .stopped = .{} },
             });
         }
+    }
 
     /// `container` is a container type with a function named `function`
     pub fn callback(
@@ -369,5 +397,16 @@ pub const SessionData = struct {
     fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
         const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
         resp.deinit();
+    }
+
+    fn get_and_parse_event_name_or_message(connection: *Connection, comptime T: type, name_or_message: anytype) !std.json.Parsed(T) {
+        switch (@TypeOf(name_or_message)) {
+            Connection.Event => return try connection.get_and_parse_event(T, name_or_message),
+            Connection.RawMessage => {
+                // this clones everything in the raw_event
+                return try std.json.parseFromValue(T, connection.allocator, name_or_message.value, .{});
+            },
+            else => @compileError("Unsupported Type: " ++ @typeName(@TypeOf(name_or_message))),
+        }
     }
 };

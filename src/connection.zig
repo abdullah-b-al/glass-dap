@@ -335,8 +335,13 @@ pub fn send_request(connection: *Connection, request: Request) !void {
     request.arena.deinit();
 }
 
-pub fn handled_event(connection: *Connection, event: Event, seq: i32) void {
+pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
     _, const index = connection.get_event(seq) catch @panic("Only call this if you got an event");
+    return connection.events.orderedRemove(index);
+}
+
+pub fn handled_event(connection: *Connection, event: Event, seq: i32) void {
+    _, const index = connection.get_event(seq) catch return; // assume already handled
     const raw_event = connection.events.orderedRemove(index);
     connection.handled_events.appendAssumeCapacity(event);
     if (connection.debug) {
@@ -526,13 +531,15 @@ pub fn new_seq(s: *Connection) i32 {
 pub fn queue_messages(connection: *Connection, timeout_ms: u64) !void {
     const stdout = connection.adapter.stdout orelse return;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
+        const responses_capacity = connection.total_responses_received + 1;
         try connection.responses.ensureUnusedCapacity(1);
-        try connection.handled_responses.ensureTotalCapacity(connection.total_responses_received + 1);
-        try connection.debug_handled_responses.ensureTotalCapacity(connection.handled_responses.capacity);
+        try connection.handled_responses.ensureTotalCapacity(responses_capacity);
+        try connection.debug_handled_responses.ensureTotalCapacity(responses_capacity);
 
+        const events_capacity = connection.total_events_received + 1;
         try connection.events.ensureUnusedCapacity(1);
-        try connection.handled_events.ensureTotalCapacity(connection.total_events_received + 1);
-        try connection.debug_handled_events.ensureTotalCapacity(connection.handled_events.capacity);
+        try connection.handled_events.ensureTotalCapacity(events_capacity);
+        try connection.debug_handled_events.ensureTotalCapacity(events_capacity);
 
         const parsed = try io.read_message(stdout, connection.allocator);
         errdefer {

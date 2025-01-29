@@ -73,7 +73,6 @@ fn handle_callbacks(data: *SessionData, connection: *Connection) void {
 
 fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
-    if (connection.queued_requests.items.len > 0) {}
     while (i < connection.queued_requests.items.len) {
         const request = connection.queued_requests.items[i];
         if (dependency_satisfied(connection.*, request)) {
@@ -128,19 +127,26 @@ fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
 }
 
 fn handle_queued_events(data: *SessionData, connection: *Connection) void {
-    for (connection.events.items) |parsed| {
+    var i: usize = 0;
+    while (i < connection.events.items.len) {
+        const parsed = connection.events.items[i];
         const value = utils.get_value(parsed.value, "event", .string) orelse @panic("Only event should be here");
         const event = utils.string_to_enum(Connection.Event, value) orelse {
             log.err("Unknown event {s}", .{value});
             return;
         };
-        data.handle_event(connection, event) catch |err|
+        const handled = data.handle_event(connection, event) catch |err|
             switch (err) {
-            error.EventDoesNotExist => {},
-            else => {
+            error.EventDoesNotExist => unreachable,
+            else => blk: {
                 log.err("{}", .{err});
+                break :blk true; // ignore
             },
         };
+
+        if (handled) {
+            i += 1;
+        }
     }
 }
 
