@@ -1,6 +1,6 @@
 const std = @import("std");
 const Connection = @import("connection.zig");
-const SessionData = @import("session_data.zig").SessionData;
+const SessionData = @import("session_data.zig");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 
@@ -98,6 +98,9 @@ pub fn threads(connection: *Connection, arguments: ?protocol.Object) !void {
 
 pub fn stack_trace(connection: *Connection, arguments: protocol.StackTraceArguments) !void {
     _ = try connection.queue_request(.stackTrace, arguments, .none, .{
-        .thread_id = arguments.threadId,
+        .stack_trace = .{
+            .thread_id = arguments.threadId,
+            .request_scopes = false,
+        },
     });
 }

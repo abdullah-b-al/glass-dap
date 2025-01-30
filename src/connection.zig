@@ -106,14 +106,24 @@ const Dependency = union(enum) {
 };
 
 pub const RetainedRequestData = union(enum) {
+    stack_trace: struct {
+        thread_id: i32,
+        request_scopes: bool,
+    },
     thread_id: i32,
+    frame_id: i32,
 };
 
 pub const Response = struct {
     command: Command,
     request_seq: i32,
-    success: bool,
     request_data: ?RetainedRequestData,
+};
+
+pub const ResponseStatus = enum { success, failure };
+pub const HandledResponse = struct {
+    response: Response,
+    status: ResponseStatus,
 };
 
 pub const Request = struct {
@@ -205,7 +215,7 @@ adapter_capabilities: AdapterCapabilities = .{},
 
 queued_requests: std.ArrayList(Request),
 expected_responses: std.ArrayList(Response),
-handled_responses: std.ArrayList(Response),
+handled_responses: std.ArrayList(HandledResponse),
 handled_events: std.ArrayList(Event),
 
 total_responses_received: u32 = 0,
@@ -240,7 +250,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .queued_requests = std.ArrayList(Request).init(allocator),
         .responses = std.ArrayList(RawMessage).init(allocator),
         .expected_responses = std.ArrayList(Response).init(allocator),
-        .handled_responses = std.ArrayList(Response).init(allocator),
+        .handled_responses = std.ArrayList(HandledResponse).init(allocator),
         .handled_events = std.ArrayList(Event).init(allocator),
 
         .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
@@ -309,7 +319,6 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     connection.expected_responses.appendAssumeCapacity(.{
         .request_seq = request.seq,
         .command = command,
-        .success = false, // unknown for now
         .request_data = request_data,
     });
 
@@ -346,8 +355,17 @@ pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
     return connection.events.orderedRemove(index);
 }
 
+pub fn delayed_handled_event(connection: *Connection, event: Event, raw_event: RawMessage) void {
+    connection.handled_events.appendAssumeCapacity(event);
+    if (connection.debug) {
+        connection.debug_handled_events.appendAssumeCapacity(raw_event);
+    } else {
+        raw_event.deinit();
+    }
+}
+
 pub fn handled_event(connection: *Connection, event: Event, seq: i32) void {
-    _, const index = connection.get_event(seq) catch return; // assume already handled
+    _, const index = connection.get_event(seq) catch unreachable;
     const raw_event = connection.events.orderedRemove(index);
     connection.handled_events.appendAssumeCapacity(event);
     if (connection.debug) {
@@ -357,10 +375,13 @@ pub fn handled_event(connection: *Connection, event: Event, seq: i32) void {
     }
 }
 
-pub fn handled_response(connection: *Connection, response: Response) void {
+pub fn handled_response(connection: *Connection, response: Response, status: ResponseStatus) void {
     _, const index = connection.get_response_by_request_seq(response.request_seq) catch @panic("Only call this if you got a response");
     const raw_resp = connection.responses.orderedRemove(index);
-    connection.handled_responses.appendAssumeCapacity(response);
+    connection.handled_responses.appendAssumeCapacity(.{
+        .response = response,
+        .status = status,
+    });
     if (connection.debug) {
         connection.debug_handled_responses.appendAssumeCapacity(raw_resp);
     } else {
@@ -397,7 +418,7 @@ pub fn handle_response_init(connection: *Connection, response: Response) !void {
     }
 
     connection.state = .partially_initialized;
-    connection.handled_response(response);
+    connection.handled_response(response, .success);
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
@@ -409,7 +430,7 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
 
 pub fn handle_response_launch(connection: *Connection, response: Response) void {
     connection.state = .launched;
-    connection.handled_response(response);
+    connection.handled_response(response, .success);
 }
 
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
@@ -427,7 +448,7 @@ pub fn handle_response_disconnect(connection: *Connection, response: Response) !
         connection.state = .initialized;
     }
 
-    connection.handled_response(response);
+    connection.handled_response(response, .success);
 }
 
 pub fn handle_event_initialized(connection: *Connection, seq: i32) void {

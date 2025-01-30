@@ -1,7 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const Connection = @import("connection.zig");
-const SessionData = @import("session_data.zig").SessionData;
+const SessionData = @import("session_data.zig");
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
 const log = std.log.scoped(.handlers);
@@ -136,21 +136,7 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
             defer parsed.deinit();
             const message = connection.remove_event(parsed.value.seq);
 
-            try callback(callbacks, .success, .{ .request_seq = seq }, message, struct {
-                pub fn function(d: *SessionData, c: *Connection, m: ?Connection.RawMessage) void {
-                    defer m.?.deinit();
-                    const e = std.json.parseFromValue(protocol.StoppedEvent, c.allocator, m.?.value, .{}) catch |err| {
-                        log.err("Failed to handled event {}: {}", .{ @src(), err });
-                        return;
-                    };
-                    defer e.deinit();
-                    d.set_stopped(e.value) catch |err| {
-                        log.err("Failed to handled event {}: {}", .{ @src(), err });
-                    };
-
-                    c.handled_event(.stopped, e.value.seq);
-                }
-            });
+            try callback(callbacks, .success, .{ .request_seq = seq }, message, delayed_output_event_handler);
 
             return false;
         },
@@ -215,6 +201,36 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     return true;
 }
 
+pub fn delayed_output_event_handler(data: *SessionData, connection: *Connection, message: ?Connection.RawMessage) void {
+    const parsed = std.json.parseFromValue(protocol.StoppedEvent, connection.allocator, message.?.value, .{}) catch |err| {
+        log.err("Failed to handled event {}: {}", .{ @src(), err });
+        return;
+    };
+    defer parsed.deinit();
+    data.set_stopped(parsed.value) catch |err| {
+        log.err("Failed to handled event {}: {}", .{ @src(), err });
+    };
+
+    connection.delayed_handled_event(.stopped, message.?);
+
+    for (data.threads.items) |thread| {
+        switch (thread.state) {
+            .running => continue,
+            .stopped => {},
+        }
+
+        const retained = Connection.RetainedRequestData{ .stack_trace = .{
+            .thread_id = thread.data.id,
+            .request_scopes = false,
+        } };
+        _ = connection.queue_request(.stackTrace, protocol.StackTraceArguments{
+            .threadId = thread.data.id,
+        }, .none, retained) catch |err| {
+            log.err("Failed to queue request {}: {}", .{ @src(), err });
+        };
+    }
+}
+
 pub fn handle_response(data: *SessionData, connection: *Connection, response: Connection.Response) !void {
     switch (response.command) {
         .launch => {
@@ -234,21 +250,49 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
 
             try data.set_threads(parsed.value.body.threads);
 
-            connection.handled_response(response);
+            connection.handled_response(response, .success);
         },
         .stackTrace => {
             const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, response.request_seq, .stackTrace);
             defer parsed.deinit();
+            const retained = response.request_data.?.stack_trace;
 
-            try data.set_stack_trace(parsed.value);
+            if (parsed.value.body.stackFrames.len == 0) {
+                return;
+            }
+
+            try data.set_stack_frames(retained.thread_id, parsed.value);
 
             // codelldb doesn't include totalFrames even when it should.
             // orelse 0 to avoid infinitely requesting stack traces
             const count = parsed.value.body.totalFrames orelse 0;
-            defer connection.handled_response(response);
+            defer connection.handled_response(response, .success);
             if (count > data.stack_frames.items.len) {
                 try request.stack_trace(connection, .{ .threadId = response.request_data.?.thread_id });
+                _ = try connection.queue_request(
+                    .stackTrace,
+                    protocol.StackTraceArguments{ .threadId = retained.thread_id },
+                    .none,
+                    .{ .thread_id = retained.thread_id },
+                );
+            } else if (retained.request_scopes) {
+                for (data.stack_frames.items) |frame| {
+                    _ = try connection.queue_request(
+                        .scopes,
+                        protocol.ScopesArguments{ .frameId = frame.data.id },
+                        .none,
+                        .{ .frame_id = frame.data.id },
+                    );
+                }
             }
+        },
+        .scopes => {
+            const parsed = try connection.get_parse_validate_response(protocol.ScopesResponse, response.request_seq, response.command);
+            defer parsed.deinit();
+
+            try data.set_scopes(response.request_data.?.frame_id, parsed.value.body.scopes);
+
+            connection.handled_response(response, .success);
         },
 
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -272,7 +316,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
         .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
         .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .scopes => log.err("TODO: {s}", .{@tagName(response.command)}),
         .variables => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setVariable => log.err("TODO: {s}", .{@tagName(response.command)}),
         .source => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -298,22 +341,10 @@ pub fn callback(
     call_if: Callback.CallIf,
     when_to_call: Callback.WhenToCall,
     message: ?Connection.RawMessage,
-    comptime container: anytype,
+    comptime function: Callback.Function,
 ) !void {
-    const func = comptime blk: {
-        if (@TypeOf(@field(container, "function")) == Callback.Function) {
-            break :blk @field(container, "function");
-        } else {
-            @compileError(
-                "Callback function has the wrong type.\n" ++
-                    "Expcted `" ++ @typeName(*const Callback.Function) ++ "`\n" ++
-                    "Found `" ++ @typeName(@TypeOf(@field(container, "function"))),
-            );
-        }
-    };
-
     const cb = Callback{
-        .function = func,
+        .function = function,
         .message = message,
         .call_if = call_if,
         .when_to_call = when_to_call,
@@ -323,18 +354,19 @@ pub fn callback(
 }
 
 pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
-    for (connection.handled_responses.items) |resp| {
+    for (connection.handled_responses.items) |handled| {
         var i: usize = 0;
         while (i < callbacks.items.len) {
             const cb = callbacks.items[i];
             const call_if = switch (cb.call_if) {
-                .success, .fail => resp.success,
+                .success => handled.status == .success,
+                .fail => handled.status == .failure,
                 .always => true,
             };
 
             const when_to_call = switch (cb.when_to_call) {
-                .request_seq => |wanted| wanted == resp.request_seq,
-                .response => |wanted| wanted == resp.command,
+                .request_seq => |wanted| wanted == handled.response.request_seq,
+                .response => |wanted| wanted == handled.response.command,
                 .any => true,
             };
 
@@ -351,7 +383,7 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
 fn acknowledge_and_handled(connection: *Connection, response: Connection.Response) !void {
     const resp = try connection.get_parse_validate_response(protocol.Response, response.request_seq, response.command);
     defer resp.deinit();
-    connection.handled_response(response);
+    connection.handled_response(response, .success);
 }
 
 fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
@@ -368,12 +400,12 @@ fn dependency_satisfied(connection: Connection, to_send: Connection.Request) boo
         },
         .seq => |seq| {
             for (connection.handled_responses.items) |item| {
-                if (item.request_seq == seq) return true;
+                if (item.response.request_seq == seq) return true;
             }
         },
         .response => |command| {
             for (connection.handled_responses.items) |item| {
-                if (item.command == command) return true;
+                if (item.response.command == command) return true;
             }
         },
         .none => return true,

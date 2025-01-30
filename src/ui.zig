@@ -1,6 +1,6 @@
 const std = @import("std");
 const Connection = @import("connection.zig");
-const SessionData = @import("session_data.zig").SessionData;
+const SessionData = @import("session_data.zig");
 const zgui = @import("zgui");
 const glfw = @import("zglfw");
 const zopengl = @import("zopengl");
@@ -91,6 +91,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         zgui.dockBuilderDockWindow("Modules", empty);
         zgui.dockBuilderDockWindow("Threads", empty);
         zgui.dockBuilderDockWindow("Stack Frames", empty);
+        zgui.dockBuilderDockWindow("Scopes", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -100,6 +101,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     modules(arena.allocator(), "Modules", data.*);
     threads(arena.allocator(), "Threads", data.*, connection);
     stack_frames(arena.allocator(), "Stack Frames", data.*, connection);
+    scopes(arena.allocator(), "Scopes", data.*, connection);
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
@@ -229,18 +231,27 @@ fn stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
             zgui.tableNextRow(.{});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(frame.id, .{})});
+            zgui.text("{s}", .{anytype_to_string(frame.data.id, .{})});
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{frame.name});
+            zgui.text("{s}", .{frame.data.name});
             _ = zgui.tableNextColumn();
             { // same column
-                if (frame.source) |source| {
+                if (frame.data.source) |source| {
                     zgui.text("{s}", .{anytype_to_string(source, .{})});
                 }
             }
         }
         zgui.endTable();
     }
+}
+
+fn scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    draw_table_from_slice_of_struct(SessionData.Scope, data.scopes.items);
 }
 
 fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
@@ -287,7 +298,7 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
 
     if (zgui.beginTabItem("Handled Responses", .{})) {
         defer zgui.endTabItem();
-        draw_table_from_slice_of_struct(Connection.Response, connection.handled_responses.items);
+        draw_table_from_slice_of_struct(Connection.HandledResponse, connection.handled_responses.items);
     }
 
     if (zgui.beginTabItem("Handled Events", .{})) {
