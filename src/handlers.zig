@@ -242,11 +242,13 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
 
             try data.set_stack_trace(parsed.value);
 
-            // TODO: request more stack traces if count > data.stack_frames.item.len
-            const count = parsed.value.body.totalFrames orelse std.math.maxInt(i32);
-            _ = count;
-
-            connection.handled_response(.stackTrace, request_seq, true);
+            // codelldb doesn't include totalFrames even when it should.
+            // orelse 0 to avoid infinitely requesting stack traces
+            const count = parsed.value.body.totalFrames orelse 0;
+            defer connection.handled_response(response);
+            if (count > data.stack_frames.items.len) {
+                try request.stack_trace(connection, .{ .threadId = response.request_data.?.thread_id });
+            }
         },
 
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
