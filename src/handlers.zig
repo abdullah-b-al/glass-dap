@@ -68,17 +68,37 @@ pub fn send_queued_requests(connection: *Connection) void {
 }
 
 pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
-    if (connection.expected_responses.items.len == 0) return;
-
     var i: usize = 0;
     while (i < connection.expected_responses.items.len) {
         const resp = connection.expected_responses.items[i];
+        const err = handle_response(data, connection, resp.command, resp.request_seq);
+        err catch |e| switch (e) {
+            error.OutOfMemory,
+            error.Overflow,
+            error.InvalidCharacter,
+            error.UnexpectedToken,
+            error.InvalidNumber,
+            error.InvalidEnumTag,
+            error.DuplicateField,
+            error.UnknownField,
+            error.MissingField,
+            error.LengthMismatch,
+            error.InvalidSeqFromAdapter,
+            error.WrongCommandForResponse,
+            error.RequestResponseMismatchedRequestSeq,
+            error.RequestFailed,
+            => {
+                log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
+                i += 1;
+                continue;
+            },
+            error.ResponseDoesNotExist => {
+                i += 1;
+                continue;
+            },
+        };
 
-        if (handle_response(data, connection, resp.command, resp.request_seq)) {
-            _ = connection.expected_responses.orderedRemove(i);
-        } else {
-            i += 1;
-        }
+        _ = connection.expected_responses.orderedRemove(i);
     }
 }
 
@@ -194,32 +214,32 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     return true;
 }
 
-pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
-    const err = switch (command) {
-        .launch => blk: {
-            acknowledge_only(connection, request_seq, command) catch |err| break :blk err;
+pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) !void {
+    switch (command) {
+        .launch => {
+            try acknowledge_only(connection, request_seq, command);
             connection.handle_response_launch(request_seq);
         },
         .configurationDone,
         .pause,
-        => acknowledge_and_handled(connection, request_seq, command),
+        => try acknowledge_and_handled(connection, request_seq, command),
 
-        .initialize => connection.handle_response_init(request_seq),
-        .disconnect => connection.handle_response_disconnect(request_seq),
+        .initialize => try connection.handle_response_init(request_seq),
+        .disconnect => try connection.handle_response_disconnect(request_seq),
 
-        .threads => blk: {
-            const parsed = connection.get_parse_validate_response(protocol.ThreadsResponse, request_seq, .threads) catch |err| break :blk err;
+        .threads => {
+            const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, request_seq, .threads);
             defer parsed.deinit();
 
-            data.set_threads(parsed.value.body.threads) catch |err| break :blk err;
+            try data.set_threads(parsed.value.body.threads);
 
             connection.handled_response(.threads, request_seq, true);
         },
-        .stackTrace => blk: {
-            const parsed = connection.get_parse_validate_response(protocol.StackTraceResponse, request_seq, .stackTrace) catch |err| break :blk err;
+        .stackTrace => {
+            const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, request_seq, .stackTrace);
             defer parsed.deinit();
 
-            data.set_stack_trace(parsed.value) catch |err| break :blk err;
+            try data.set_stack_trace(parsed.value);
 
             // TODO: request more stack traces if count > data.stack_frames.item.len
             const count = parsed.value.body.totalFrames orelse std.math.maxInt(i32);
@@ -266,32 +286,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, command: Con
         .writeMemory => log.err("TODO: {s}", .{@tagName(command)}),
         .disassemble => log.err("TODO: {s}", .{@tagName(command)}),
         .locations => log.err("TODO: {s}", .{@tagName(command)}),
-    };
-
-    err catch |e| switch (e) {
-        error.OutOfMemory,
-        error.Overflow,
-        error.InvalidCharacter,
-        error.UnexpectedToken,
-        error.InvalidNumber,
-        error.InvalidEnumTag,
-        error.DuplicateField,
-        error.UnknownField,
-        error.MissingField,
-        error.LengthMismatch,
-        error.InvalidSeqFromAdapter,
-        error.WrongCommandForResponse,
-        error.RequestResponseMismatchedRequestSeq,
-        => {
-            log.err("{!} from response of command {} request_seq {}", .{ e, command, request_seq });
-            return false;
-        },
-        error.RequestFailed,
-        error.ResponseDoesNotExist,
-        => return false,
-    };
-
-    return true;
+    }
 }
 
 /// `container` is a container type with a function named `function`
