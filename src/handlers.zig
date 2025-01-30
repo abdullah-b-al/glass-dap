@@ -5,6 +5,7 @@ const SessionData = @import("session_data.zig").SessionData;
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
 const log = std.log.scoped(.handlers);
+const request = @import("request.zig");
 
 pub const Callbacks = std.ArrayList(Callback);
 pub const Callback = struct {
@@ -30,10 +31,10 @@ pub const Callback = struct {
 pub fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
-        const request = connection.queued_requests.items[i];
-        if (dependency_satisfied(connection.*, request)) {
+        const req = connection.queued_requests.items[i];
+        if (dependency_satisfied(connection.*, req)) {
             defer _ = connection.queued_requests.orderedRemove(i);
-            connection.send_request(request) catch |err| switch (err) {
+            connection.send_request(req) catch |err| switch (err) {
                 error.OutOfMemory,
                 error.NoSpaceLeft,
 
@@ -71,7 +72,7 @@ pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void
     var i: usize = 0;
     while (i < connection.expected_responses.items.len) {
         const resp = connection.expected_responses.items[i];
-        const err = handle_response(data, connection, resp.command, resp.request_seq);
+        const err = handle_response(data, connection, resp);
         err catch |e| switch (e) {
             error.OutOfMemory,
             error.Overflow,
@@ -130,7 +131,7 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
-            const seq = try connection.queue_request(.threads, protocol.Object{}, .none);
+            const seq = try connection.queue_request(.threads, protocol.Object{}, .none, null);
             const parsed = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
             defer parsed.deinit();
             const message = connection.remove_event(parsed.value.seq);
@@ -214,29 +215,29 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     return true;
 }
 
-pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) !void {
-    switch (command) {
+pub fn handle_response(data: *SessionData, connection: *Connection, response: Connection.Response) !void {
+    switch (response.command) {
         .launch => {
-            try acknowledge_only(connection, request_seq, command);
-            connection.handle_response_launch(request_seq);
+            try acknowledge_only(connection, response.request_seq, response.command);
+            connection.handle_response_launch(response);
         },
         .configurationDone,
         .pause,
-        => try acknowledge_and_handled(connection, request_seq, command),
+        => try acknowledge_and_handled(connection, response),
 
-        .initialize => try connection.handle_response_init(request_seq),
-        .disconnect => try connection.handle_response_disconnect(request_seq),
+        .initialize => try connection.handle_response_init(response),
+        .disconnect => try connection.handle_response_disconnect(response),
 
         .threads => {
-            const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, request_seq, .threads);
+            const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, response.request_seq, .threads);
             defer parsed.deinit();
 
             try data.set_threads(parsed.value.body.threads);
 
-            connection.handled_response(.threads, request_seq, true);
+            connection.handled_response(response);
         },
         .stackTrace => {
-            const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, request_seq, .stackTrace);
+            const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, response.request_seq, .stackTrace);
             defer parsed.deinit();
 
             try data.set_stack_trace(parsed.value);
@@ -248,44 +249,44 @@ pub fn handle_response(data: *SessionData, connection: *Connection, command: Con
             connection.handled_response(.stackTrace, request_seq, true);
         },
 
-        .cancel => log.err("TODO: {s}", .{@tagName(command)}),
-        .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
-        .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
-        .attach => log.err("TODO: {s}", .{@tagName(command)}),
-        .restart => log.err("TODO: {s}", .{@tagName(command)}),
-        .terminate => log.err("TODO: {s}", .{@tagName(command)}),
-        .breakpointLocations => log.err("TODO: {s}", .{@tagName(command)}),
-        .setBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-        .setFunctionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-        .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-        .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(command)}),
-        .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-        .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-        .@"continue" => log.err("TODO: {s}", .{@tagName(command)}),
-        .next => log.err("TODO: {s}", .{@tagName(command)}),
-        .stepIn => log.err("TODO: {s}", .{@tagName(command)}),
-        .stepOut => log.err("TODO: {s}", .{@tagName(command)}),
-        .stepBack => log.err("TODO: {s}", .{@tagName(command)}),
-        .reverseContinue => log.err("TODO: {s}", .{@tagName(command)}),
-        .restartFrame => log.err("TODO: {s}", .{@tagName(command)}),
-        .goto => log.err("TODO: {s}", .{@tagName(command)}),
-        .scopes => log.err("TODO: {s}", .{@tagName(command)}),
-        .variables => log.err("TODO: {s}", .{@tagName(command)}),
-        .setVariable => log.err("TODO: {s}", .{@tagName(command)}),
-        .source => log.err("TODO: {s}", .{@tagName(command)}),
-        .terminateThreads => log.err("TODO: {s}", .{@tagName(command)}),
-        .modules => log.err("TODO: {s}", .{@tagName(command)}),
-        .loadedSources => log.err("TODO: {s}", .{@tagName(command)}),
-        .evaluate => log.err("TODO: {s}", .{@tagName(command)}),
-        .setExpression => log.err("TODO: {s}", .{@tagName(command)}),
-        .stepInTargets => log.err("TODO: {s}", .{@tagName(command)}),
-        .gotoTargets => log.err("TODO: {s}", .{@tagName(command)}),
-        .completions => log.err("TODO: {s}", .{@tagName(command)}),
-        .exceptionInfo => log.err("TODO: {s}", .{@tagName(command)}),
-        .readMemory => log.err("TODO: {s}", .{@tagName(command)}),
-        .writeMemory => log.err("TODO: {s}", .{@tagName(command)}),
-        .disassemble => log.err("TODO: {s}", .{@tagName(command)}),
-        .locations => log.err("TODO: {s}", .{@tagName(command)}),
+        .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .attach => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .restart => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setFunctionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .@"continue" => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .next => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .stepIn => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .stepOut => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .stepBack => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .scopes => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .variables => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setVariable => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .source => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .terminateThreads => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .modules => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .setExpression => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .stepInTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .gotoTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .completions => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .exceptionInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .readMemory => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .writeMemory => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .disassemble => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .locations => log.err("TODO: {s}", .{@tagName(response.command)}),
     }
 }
 
@@ -345,10 +346,10 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
     }
 }
 
-fn acknowledge_and_handled(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
-    const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
+fn acknowledge_and_handled(connection: *Connection, response: Connection.Response) !void {
+    const resp = try connection.get_parse_validate_response(protocol.Response, response.request_seq, response.command);
     defer resp.deinit();
-    connection.handled_response(command, request_seq, true);
+    connection.handled_response(response);
 }
 
 fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {

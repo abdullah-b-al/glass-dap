@@ -67,6 +67,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                         .restart = false,
                     },
                     .none,
+                    null,
                 ),
 
                 .disconnect => _ = try connection.queue_request(
@@ -77,6 +78,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                         .suspendDebuggee = null,
                     },
                     .none,
+                    null,
                 ),
             }
         },
@@ -86,14 +88,16 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 pub fn pause(connection: *Connection, thread_id: i32) !void {
     _ = try connection.queue_request(.pause, protocol.PauseArguments{
         .threadId = thread_id,
-    }, .none);
+    }, .none, null);
 }
 
 pub fn threads(connection: *Connection, arguments: ?protocol.Object) !void {
     const args = if (arguments) |object| object else null;
-    _ = try connection.queue_request(.threads, args, .none);
+    _ = try connection.queue_request(.threads, args, .none, null);
 }
 
 pub fn stack_trace(connection: *Connection, arguments: protocol.StackTraceArguments) !void {
-    _ = try connection.queue_request(.stackTrace, arguments, .none);
+    _ = try connection.queue_request(.stackTrace, arguments, .none, .{
+        .thread_id = arguments.threadId,
+    });
 }
