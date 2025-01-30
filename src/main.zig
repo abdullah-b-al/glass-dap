@@ -9,6 +9,7 @@ const Object = protocol.Object;
 const time = std.time;
 const ui = @import("ui.zig");
 const log = std.log.scoped(.main);
+const handlers = @import("handlers.zig");
 
 pub fn main() !void {
     const args = try parse_args();
@@ -25,152 +26,32 @@ pub fn main() !void {
     var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    loop(window, &connection, &data, args);
+    var callbacks = handlers.Callbacks.init(gpa.allocator());
+    defer {
+        for (callbacks.items) |cb| {
+            if (cb.message) |m| m.deinit();
+        }
+        callbacks.deinit();
+    }
+
+    loop(window, &callbacks, &connection, &data, args);
 
     log.info("Window Closed", .{});
 }
 
-fn loop(window: *glfw.Window, connection: *Connection, data: *SessionData, args: Args) void {
+fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     while (!window.shouldClose()) {
         connection.queue_messages(1) catch |err| {
             std.debug.print("{}\n", .{err});
         };
 
-        handle_queued_events(data, connection);
-        send_queued_requests(connection);
-        handle_queued_responses(data, connection);
-        handle_callbacks(data, connection);
+        handlers.handle_queued_events(callbacks, data, connection);
+        handlers.send_queued_requests(connection);
+        handlers.handle_queued_responses(data, connection);
+        handlers.handle_callbacks(callbacks, data, connection);
 
         ui.ui_tick(window, connection, data, args);
     }
-}
-
-fn handle_callbacks(data: *SessionData, connection: *Connection) void {
-    for (connection.handled_responses.items) |resp| {
-        var i: usize = 0;
-        while (i < data.callbacks.items.len) {
-            const cb = data.callbacks.items[i];
-            const call_if = switch (cb.call_if) {
-                .success, .fail => resp.success,
-                .always => true,
-            };
-
-            const when_to_call = switch (cb.when_to_call) {
-                .request_seq => |wanted| wanted == resp.request_seq,
-                .response => |wanted| wanted == resp.command,
-                .any => true,
-            };
-
-            if (call_if and when_to_call) {
-                cb.function(data, connection, cb.message);
-                _ = data.callbacks.orderedRemove(i);
-            } else {
-                i += 1;
-            }
-        }
-    }
-}
-
-fn send_queued_requests(connection: *Connection) void {
-    var i: usize = 0;
-    while (i < connection.queued_requests.items.len) {
-        const request = connection.queued_requests.items[i];
-        if (dependency_satisfied(connection.*, request)) {
-            defer _ = connection.queued_requests.orderedRemove(i);
-            connection.send_request(request) catch |err| switch (err) {
-                error.OutOfMemory,
-                error.NoSpaceLeft,
-
-                error.NoDevice,
-                error.SystemResources,
-                error.AccessDenied,
-                error.Unexpected,
-                error.ProcessNotFound,
-                error.InputOutput,
-                error.OperationAborted,
-                error.BrokenPipe,
-                error.ConnectionResetByPeer,
-                error.WouldBlock,
-                error.LockViolation,
-                error.DiskQuota,
-                error.FileTooBig,
-                error.DeviceBusy,
-                error.InvalidArgument,
-                error.NotOpenForWriting,
-
-                error.AdapterNotDoneInitializing,
-                error.AdapterNotSpawned,
-                error.AdapterDoesNotSupportRequest,
-                => {
-                    log.err("{}\n", .{err});
-                },
-            };
-        } else {
-            i += 1;
-        }
-    }
-}
-
-fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
-    if (connection.expected_responses.items.len == 0) return;
-
-    var i: usize = 0;
-    while (i < connection.expected_responses.items.len) {
-        const resp = connection.expected_responses.items[i];
-
-        if (data.handle_response(connection, resp.command, resp.request_seq)) {
-            _ = connection.expected_responses.orderedRemove(i);
-        } else {
-            i += 1;
-        }
-    }
-}
-
-fn handle_queued_events(data: *SessionData, connection: *Connection) void {
-    var i: usize = 0;
-    while (i < connection.events.items.len) {
-        const parsed = connection.events.items[i];
-        const value = utils.get_value(parsed.value, "event", .string) orelse @panic("Only event should be here");
-        const event = utils.string_to_enum(Connection.Event, value) orelse {
-            log.err("Unknown event {s}", .{value});
-            return;
-        };
-        const handled = data.handle_event(connection, event) catch |err|
-            switch (err) {
-            error.EventDoesNotExist => unreachable,
-            else => blk: {
-                log.err("{}", .{err});
-                break :blk true; // ignore
-            },
-        };
-
-        if (handled) {
-            i += 1;
-        }
-    }
-}
-
-fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
-    switch (to_send.depends_on) {
-        .event => |event| {
-            for (connection.handled_events.items) |item| {
-                if (item == event) return true;
-            }
-        },
-        .seq => |seq| {
-            for (connection.handled_responses.items) |item| {
-                if (item.request_seq == seq) return true;
-            }
-        },
-        .response => |command| {
-            for (connection.handled_responses.items) |item| {
-                if (item.command == command) return true;
-            }
-        },
-        .none => return true,
-    }
-
-    return false;
 }
 
 pub const Args = struct {

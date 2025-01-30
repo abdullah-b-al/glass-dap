@@ -25,33 +25,12 @@ const Thread = struct {
     },
 };
 
-pub const Callback = struct {
-    pub const Function = fn (data: *SessionData, connection: *Connection, message: ?Connection.RawMessage) void;
-    pub const CallIf = enum {
-        success,
-        fail,
-        always,
-    };
-
-    pub const WhenToCall = union(enum) {
-        request_seq: i32,
-        response: Connection.Command,
-        any,
-    };
-
-    function: *const Function,
-    message: ?Connection.RawMessage,
-    call_if: CallIf,
-    when_to_call: WhenToCall,
-};
-
 pub const SessionData = struct {
     allocator: std.mem.Allocator,
 
     /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
     arena: std.heap.ArenaAllocator,
 
-    callbacks: std.ArrayListUnmanaged(Callback) = .{},
     string_storage: StringStorageUnmanaged = .{},
     threads: std.ArrayListUnmanaged(Thread) = .{},
     modules: std.ArrayListUnmanaged(protocol.Module) = .{},
@@ -80,150 +59,11 @@ pub const SessionData = struct {
         data.output.deinit(data.allocator);
         data.stack_frames.deinit(data.allocator);
 
-        for (data.callbacks.items) |cb| {
-            if (cb.message) |m| m.deinit();
-        }
-        data.callbacks.deinit(data.allocator);
-
         data.arena.deinit();
     }
 
-    pub fn handle_event(data: *SessionData, connection: *Connection, event: Connection.Event) !bool {
-        switch (event) {
-            .stopped => {
-                // Per the overview page: Request the threads on a stopped event
-                const seq = try connection.queue_request(.threads, protocol.Object{}, .none);
-                const e = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
-                defer e.deinit();
-                const message = connection.remove_event(e.value.seq);
-
-                try data.callback(.success, .{ .request_seq = seq }, message, struct {
-                    pub fn function(d: *SessionData, c: *Connection, m: ?Connection.RawMessage) void {
-                        defer m.?.deinit();
-                        d.handle_event_stopped(c, m.?) catch |err| switch (err) {
-                            else => log.err("Failed to handled event {}", .{@src()}),
-                        };
-                    }
-                });
-
-                return false;
-            },
-            .continued => try data.handle_event_continued(connection),
-            .exited => try data.handle_event_exited(connection),
-            .terminated => try data.handle_event_terminated(connection),
-            .thread => log.err("TODO event: {s}", .{@tagName(event)}),
-            .output => try data.handle_event_output(connection),
-            .breakpoint => log.err("TODO event: {s}", .{@tagName(event)}),
-            .module => try data.handle_event_modules(connection),
-            .loadedSource => log.err("TODO event: {s}", .{@tagName(event)}),
-            .process => log.err("TODO event: {s}", .{@tagName(event)}),
-            .capabilities => log.err("TODO event: {s}", .{@tagName(event)}),
-            .progressStart => log.err("TODO event: {s}", .{@tagName(event)}),
-            .progressUpdate => log.err("TODO event: {s}", .{@tagName(event)}),
-            .progressEnd => log.err("TODO event: {s}", .{@tagName(event)}),
-            .invalidated => log.err("TODO event: {s}", .{@tagName(event)}),
-            .memory => log.err("TODO event: {s}", .{@tagName(event)}),
-            .initialized => {
-                const parsed = try connection.get_and_parse_event(protocol.InitializedEvent, .initialized);
-                defer parsed.deinit();
-                connection.handle_event_initialized(parsed.value.seq);
-            },
-        }
-
-        return true;
-    }
-
-    pub fn handle_response(data: *SessionData, connection: *Connection, command: Connection.Command, request_seq: i32) bool {
-        const err = switch (command) {
-            .launch => blk: {
-                acknowledge_only(connection, request_seq, command) catch |err| break :blk err;
-                connection.handle_response_launch(request_seq);
-            },
-            .configurationDone,
-            .pause,
-            => acknowledge_and_handled(connection, request_seq, command),
-
-            .initialize => connection.handle_response_init(request_seq),
-            .disconnect => connection.handle_response_disconnect(request_seq),
-
-            .threads => data.handle_response_threads(connection, request_seq),
-            .stackTrace => blk: {
-                // TODO: request more stack traces if count > data.stack_frames.item.len
-                const count = data.handle_response_stack_trace(connection, request_seq) catch |err| break :blk err;
-                _ = count;
-            },
-
-            .cancel => log.err("TODO: {s}", .{@tagName(command)}),
-            .runInTerminal => log.err("TODO: {s}", .{@tagName(command)}),
-            .startDebugging => log.err("TODO: {s}", .{@tagName(command)}),
-            .attach => log.err("TODO: {s}", .{@tagName(command)}),
-            .restart => log.err("TODO: {s}", .{@tagName(command)}),
-            .terminate => log.err("TODO: {s}", .{@tagName(command)}),
-            .breakpointLocations => log.err("TODO: {s}", .{@tagName(command)}),
-            .setBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-            .setFunctionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-            .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-            .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(command)}),
-            .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-            .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(command)}),
-            .@"continue" => log.err("TODO: {s}", .{@tagName(command)}),
-            .next => log.err("TODO: {s}", .{@tagName(command)}),
-            .stepIn => log.err("TODO: {s}", .{@tagName(command)}),
-            .stepOut => log.err("TODO: {s}", .{@tagName(command)}),
-            .stepBack => log.err("TODO: {s}", .{@tagName(command)}),
-            .reverseContinue => log.err("TODO: {s}", .{@tagName(command)}),
-            .restartFrame => log.err("TODO: {s}", .{@tagName(command)}),
-            .goto => log.err("TODO: {s}", .{@tagName(command)}),
-            .scopes => log.err("TODO: {s}", .{@tagName(command)}),
-            .variables => log.err("TODO: {s}", .{@tagName(command)}),
-            .setVariable => log.err("TODO: {s}", .{@tagName(command)}),
-            .source => log.err("TODO: {s}", .{@tagName(command)}),
-            .terminateThreads => log.err("TODO: {s}", .{@tagName(command)}),
-            .modules => log.err("TODO: {s}", .{@tagName(command)}),
-            .loadedSources => log.err("TODO: {s}", .{@tagName(command)}),
-            .evaluate => log.err("TODO: {s}", .{@tagName(command)}),
-            .setExpression => log.err("TODO: {s}", .{@tagName(command)}),
-            .stepInTargets => log.err("TODO: {s}", .{@tagName(command)}),
-            .gotoTargets => log.err("TODO: {s}", .{@tagName(command)}),
-            .completions => log.err("TODO: {s}", .{@tagName(command)}),
-            .exceptionInfo => log.err("TODO: {s}", .{@tagName(command)}),
-            .readMemory => log.err("TODO: {s}", .{@tagName(command)}),
-            .writeMemory => log.err("TODO: {s}", .{@tagName(command)}),
-            .disassemble => log.err("TODO: {s}", .{@tagName(command)}),
-            .locations => log.err("TODO: {s}", .{@tagName(command)}),
-        };
-
-        err catch |e| switch (e) {
-            error.OutOfMemory,
-            error.Overflow,
-            error.InvalidCharacter,
-            error.UnexpectedToken,
-            error.InvalidNumber,
-            error.InvalidEnumTag,
-            error.DuplicateField,
-            error.UnknownField,
-            error.MissingField,
-            error.LengthMismatch,
-            error.InvalidSeqFromAdapter,
-            error.WrongCommandForResponse,
-            error.RequestResponseMismatchedRequestSeq,
-            => {
-                log.err("{!} from response of command {} request_seq {}", .{ e, command, request_seq });
-                return false;
-            },
-            error.RequestFailed,
-            error.ResponseDoesNotExist,
-            => return false,
-        };
-
-        return true;
-    }
-
-    fn handle_event_stopped(data: *SessionData, connection: *Connection, name_or_message: anytype) !void {
-        const event = try get_and_parse_event_name_or_message(connection, protocol.StoppedEvent, name_or_message);
-        defer event.deinit();
-
-        const body = event.value.body;
+    pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
+        const body = event.body;
         const stopped = Thread.Stopped{
             .description = try data.get_or_clone_string(body.description orelse ""),
             .text = try data.get_or_clone_string(body.text orelse ""),
@@ -236,93 +76,40 @@ pub const SessionData = struct {
                 thread.state = .{ .stopped = stopped };
             }
         }
-
-        connection.handled_event(.stopped, event.value.seq);
     }
 
-    fn handle_event_continued(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.ContinuedEvent, .continued);
-        defer event.deinit();
-
-        const all = event.value.body.allThreadsContinued orelse false;
-        const id = event.value.body.threadId;
+    pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) void {
+        const all = event.body.allThreadsContinued orelse false;
+        const id = event.body.threadId;
         for (data.threads.items) |*item| {
             if (item.data.id == id or all)
                 item.state = .running;
         }
 
         data.status = .running;
-
-        connection.handled_event(.continued, event.value.seq);
     }
 
-    fn handle_event_exited(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.ExitedEvent, .exited);
-        defer event.deinit();
-
-        data.status = .{ .exited = event.value.body.exitCode };
-
-        connection.handled_event(.exited, event.value.seq);
+    pub fn set_existed(data: *SessionData, event: protocol.ExitedEvent) !void {
+        data.status = .{ .exited = event.body.exitCode };
     }
 
-    fn handle_event_output(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.OutputEvent, .output);
-        defer event.deinit();
+    pub fn set_output(data: *SessionData, event: protocol.OutputEvent) !void {
         try data.output.ensureUnusedCapacity(data.allocator, 1);
-        const output = try data.clone_anytype(event.value);
+        const output = try data.clone_anytype(event);
         data.output.appendAssumeCapacity(output);
-
-        connection.handled_event(.output, event.value.seq);
     }
 
-    fn handle_event_modules(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.ModuleEvent, .module);
-        defer event.deinit();
-        try data.add_module(event.value.body.module);
-        connection.handled_event(.module, event.value.seq);
+    pub fn set_modules(data: *SessionData, event: protocol.ModuleEvent) !void {
+        try data.add_module(event.body.module);
     }
 
-    fn handle_event_terminated(data: *SessionData, connection: *Connection) !void {
-        const event = try connection.get_and_parse_event(protocol.TerminatedEvent, .terminated);
-        defer event.deinit();
-
-        if (event.value.body) |body| {
+    pub fn set_terminated(data: *SessionData, event: protocol.TerminatedEvent) !void {
+        if (event.body) |body| {
             data.terminated_restart_data = try data.clone_anytype(body.restart);
         }
 
         if (data.status != .exited) {
             data.status = .not_running;
-        }
-
-        connection.handled_event(.terminated, event.value.seq);
-    }
-
-    pub fn handle_response_threads(data: *SessionData, connection: *Connection, request_seq: i32) !void {
-        const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, request_seq, .threads);
-        defer parsed.deinit();
-        const array = parsed.value.body.threads;
-        try data.set_threads(array);
-
-        connection.handled_response(.threads, request_seq, true);
-    }
-
-    pub fn handle_response_stack_trace(data: *SessionData, connection: *Connection, request_seq: i32) !i32 {
-        const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, request_seq, .stackTrace);
-        defer parsed.deinit();
-
-        try data.stack_frames.ensureUnusedCapacity(data.allocator, parsed.value.body.stackFrames.len);
-        for (parsed.value.body.stackFrames) |frame| {
-            data.stack_frames.appendAssumeCapacity(try data.clone_anytype(frame));
-        }
-
-        return parsed.value.body.totalFrames orelse std.math.maxInt(i32);
-    }
-
-    pub fn add_module(data: *SessionData, module: protocol.Module) !void {
-        try data.modules.ensureUnusedCapacity(data.allocator, 1);
-
-        if (!entry_exists(data.modules.items, "id", module.id)) {
-            data.modules.appendAssumeCapacity(try data.clone_anytype(module));
         }
     }
 
@@ -337,34 +124,21 @@ pub const SessionData = struct {
         }
     }
 
-    /// `container` is a container type with a function named `function`
-    pub fn callback(
-        data: *SessionData,
-        call_if: Callback.CallIf,
-        when_to_call: Callback.WhenToCall,
-        message: ?Connection.RawMessage,
-        comptime container: anytype,
-    ) !void {
-        const func = comptime blk: {
-            if (@TypeOf(@field(container, "function")) == Callback.Function) {
-                break :blk @field(container, "function");
-            } else {
-                @compileError(
-                    "Callback function has the wrong type.\n" ++
-                        "Expcted `" ++ @typeName(*const Callback.Function) ++ "`\n" ++
-                        "Found `" ++ @typeName(@TypeOf(@field(container, "function"))),
-                );
-            }
-        };
+    pub fn set_stack_trace(data: *SessionData, response: protocol.StackTraceResponse) !void {
+        const body = response.body;
 
-        const cb = Callback{
-            .function = func,
-            .message = message,
-            .call_if = call_if,
-            .when_to_call = when_to_call,
-        };
+        try data.stack_frames.ensureUnusedCapacity(data.allocator, body.stackFrames.len);
+        for (body.stackFrames) |frame| {
+            data.stack_frames.appendAssumeCapacity(try data.clone_anytype(frame));
+        }
+    }
 
-        try data.callbacks.append(data.allocator, cb);
+    pub fn add_module(data: *SessionData, module: protocol.Module) !void {
+        try data.modules.ensureUnusedCapacity(data.allocator, 1);
+
+        if (!entry_exists(data.modules.items, "id", module.id)) {
+            data.modules.appendAssumeCapacity(try data.clone_anytype(module));
+        }
     }
 
     fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {
@@ -396,36 +170,5 @@ pub const SessionData = struct {
         }
 
         return false;
-    }
-
-    fn get_thread(data: *SessionData, id: i32) ?*Thread {
-        for (data.threads.items) |*item| {
-            if (item.data.id == id) {
-                return item;
-            }
-        }
-        return null;
-    }
-
-    fn acknowledge_and_handled(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
-        const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
-        defer resp.deinit();
-        connection.handled_response(command, request_seq, true);
-    }
-
-    fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
-        const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
-        resp.deinit();
-    }
-
-    fn get_and_parse_event_name_or_message(connection: *Connection, comptime T: type, name_or_message: anytype) !std.json.Parsed(T) {
-        switch (@TypeOf(name_or_message)) {
-            Connection.Event => return try connection.get_and_parse_event(T, name_or_message),
-            Connection.RawMessage => {
-                // this clones everything in the raw_event
-                return try std.json.parseFromValue(T, connection.allocator, name_or_message.value, .{});
-            },
-            else => @compileError("Unsupported Type: " ++ @typeName(@TypeOf(name_or_message))),
-        }
     }
 };
