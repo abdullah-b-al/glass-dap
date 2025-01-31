@@ -109,9 +109,14 @@ pub const RetainedRequestData = union(enum) {
     stack_trace: struct {
         thread_id: i32,
         request_scopes: bool,
+        request_variables: bool,
     },
     scopes: struct {
         frame_id: i32,
+        request_variables: bool,
+    },
+    variables: struct {
+        variables_reference: i32,
     },
     no_data,
 };

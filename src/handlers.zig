@@ -251,7 +251,12 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                         .scopes,
                         protocol.ScopesArguments{ .frameId = frame.data.id },
                         .none,
-                        .{ .scopes = .{ .frame_id = frame.data.id } },
+                        .{
+                            .scopes = .{
+                                .frame_id = frame.data.id,
+                                .request_variables = retained.request_variables,
+                            },
+                        },
                     );
                 }
             }
@@ -259,8 +264,31 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .scopes => {
             const parsed = try connection.get_parse_validate_response(protocol.ScopesResponse, response.request_seq, response.command);
             defer parsed.deinit();
+            const retained = response.request_data.scopes;
 
-            try data.set_scopes(response.request_data.scopes.frame_id, parsed.value.body.scopes);
+            try data.set_scopes(retained.frame_id, parsed.value.body.scopes);
+            defer connection.handled_response(response, .success);
+
+            if (retained.request_variables) {
+                for (parsed.value.body.scopes) |scope| {
+                    _ = try connection.queue_request(
+                        .variables,
+                        protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
+                        .none,
+                        .{ .variables = .{ .variables_reference = scope.variablesReference } },
+                    );
+                }
+            }
+        },
+        .variables => {
+            const parsed = try connection.get_parse_validate_response(
+                protocol.VariablesResponse,
+                response.request_seq,
+                .variables,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.variables;
+            try data.set_variables(retained.variables_reference, parsed.value.body.variables);
 
             connection.handled_response(response, .success);
         },
@@ -286,7 +314,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
         .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
         .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .variables => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setVariable => log.err("TODO: {s}", .{@tagName(response.command)}),
         .source => log.err("TODO: {s}", .{@tagName(response.command)}),
         .terminateThreads => log.err("TODO: {s}", .{@tagName(response.command)}),

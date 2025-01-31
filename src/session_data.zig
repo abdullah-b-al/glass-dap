@@ -42,6 +42,11 @@ pub const ThreadState = struct {
     state: State,
 };
 
+pub const Variables = struct {
+    reference: i32,
+    data: []const protocol.Variable,
+};
+
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 
@@ -56,6 +61,7 @@ modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 stack_frames: std.ArrayListUnmanaged(StackFrame) = .{},
 scopes: std.ArrayListUnmanaged(Scope) = .{},
+variables: std.ArrayListUnmanaged(Variables) = .{},
 threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 status: DebuggeeStatus,
 
@@ -80,7 +86,7 @@ pub fn deinit(data: *SessionData) void {
     data.output.deinit(data.allocator);
     data.scopes.deinit(data.allocator);
     data.stack_frames.deinit(data.allocator);
-
+    data.variables.deinit(data.allocator);
     data.threads_state.deinit(data.allocator);
 
     data.arena.deinit();
@@ -205,6 +211,18 @@ pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.
         data.scopes.appendAssumeCapacity(.{
             .frame_id = frame_id,
             .data = try data.clone_anytype(scope),
+        });
+    }
+}
+
+pub fn set_variables(data: *SessionData, variables_reference: i32, response: []const protocol.Variable) !void {
+    try data.variables.ensureUnusedCapacity(data.allocator, 1);
+    if (get_entry_ptr(data.variables.items, "reference", variables_reference)) |entry| {
+        entry.data = try data.clone_anytype(response);
+    } else {
+        data.variables.appendAssumeCapacity(.{
+            .reference = variables_reference,
+            .data = try data.clone_anytype(response),
         });
     }
 }

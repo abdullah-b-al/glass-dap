@@ -81,6 +81,7 @@ pub fn get_debuggee_state(connection: *Connection, thread_id: ThreadID) !void {
         .{ .stack_trace = .{
             .thread_id = thread_id,
             .request_scopes = true,
+            .request_variables = true,
         } },
     );
 }

@@ -92,6 +92,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         zgui.dockBuilderDockWindow("Threads", empty);
         zgui.dockBuilderDockWindow("Stack Frames", empty);
         zgui.dockBuilderDockWindow("Scopes", empty);
+        zgui.dockBuilderDockWindow("Variables", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -102,6 +103,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     threads(arena.allocator(), "Threads", data.*, connection);
     stack_frames(arena.allocator(), "Stack Frames", data.*, connection);
     scopes(arena.allocator(), "Scopes", data.*, connection);
+    variables(arena.allocator(), "Variables", data.*, connection);
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
@@ -132,7 +134,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
             const thread = data.get_thread_data(item.id) orelse continue;
 
             zgui.tableNextRow(.{});
-            { // same column
+            { // column 1
                 _ = zgui.tableNextColumn();
                 if (zgui.button("Get Full State", .{})) {
                     request.get_debuggee_state(connection, thread.id) catch return;
@@ -148,8 +150,33 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
                         .stack_trace = .{
                             .thread_id = thread.id,
                             .request_scopes = false,
+                            .request_variables = false,
                         },
                     }) catch return;
+                }
+
+                zgui.sameLine(.{});
+                if (zgui.button("Scopes", .{})) {
+                    for (data.stack_frames.items) |frame| {
+                        _ = connection.queue_request(
+                            .scopes,
+                            protocol.ScopesArguments{ .frameId = frame.data.id },
+                            .none,
+                            .{ .scopes = .{ .frame_id = frame.data.id, .request_variables = false } },
+                        ) catch return;
+                    }
+                }
+
+                zgui.sameLine(.{});
+                if (zgui.button("Variables", .{})) {
+                    for (data.scopes.items) |scope| {
+                        _ = connection.queue_request(
+                            .variables,
+                            protocol.VariablesArguments{ .variablesReference = scope.data.variablesReference },
+                            .none,
+                            .{ .variables = .{ .variables_reference = scope.data.variablesReference } },
+                        ) catch return;
+                    }
                 }
 
                 zgui.sameLine(.{});
@@ -158,7 +185,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
                         .threadId = thread.id,
                     }, .none, .no_data) catch return;
                 }
-            }
+            } // column 1
 
             _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(thread.id, .{})});
@@ -256,7 +283,21 @@ fn scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conne
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    draw_table_from_slice_of_struct(SessionData.Scope, data.scopes.items);
+    draw_table_from_slice_of_struct("scopes slice", SessionData.Scope, data.scopes.items);
+}
+
+fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    for (data.variables.items) |item| {
+        var buf: [64]u8 = undefined;
+        const n = std.fmt.bufPrintZ(&buf, "variables slice: reference {}", .{item.reference}) catch return;
+        draw_table_from_slice_of_struct(n, protocol.Variable, item.data);
+        zgui.newLine();
+    }
 }
 
 fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
@@ -303,7 +344,7 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
 
     if (zgui.beginTabItem("Handled Responses", .{})) {
         defer zgui.endTabItem();
-        draw_table_from_slice_of_struct(Connection.HandledResponse, connection.handled_responses.items);
+        draw_table_from_slice_of_struct(@typeName(Connection.HandledResponse), Connection.HandledResponse, connection.handled_responses.items);
     }
 
     if (zgui.beginTabItem("Handled Events", .{})) {
@@ -354,9 +395,9 @@ fn adapter_capabilities(connection: Connection) void {
         zgui.text("No supportedChecksumAlgorithms", .{});
     }
 
-    draw_table_from_slice_of_struct(protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
-    draw_table_from_slice_of_struct(protocol.ColumnDescriptor, c.additionalModuleColumns);
-    draw_table_from_slice_of_struct(protocol.BreakpointMode, c.breakpointModes);
+    draw_table_from_slice_of_struct(@typeName(protocol.ExceptionBreakpointsFilter), protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
+    draw_table_from_slice_of_struct(@typeName(protocol.ColumnDescriptor), protocol.ColumnDescriptor, c.additionalModuleColumns);
+    draw_table_from_slice_of_struct(@typeName(protocol.BreakpointMode), protocol.BreakpointMode, c.breakpointModes);
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
@@ -413,11 +454,11 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 }
 
-fn draw_table_from_slice_of_struct(comptime T: type, mabye_value: ?[]T) void {
-    zgui.text("== {s} len({}) ==", .{ @typeName(T), (mabye_value orelse &.{}).len });
+fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_value: ?[]const T) void {
+    zgui.text("== {s} len({}) ==", .{ name, (mabye_value orelse &.{}).len });
     const table = std.meta.fields(T);
     const columns_count = std.meta.fields(T).len;
-    if (zgui.beginTable(@typeName(T), .{ .column = columns_count, .flags = .{ .resizable = true, .context_menu_in_body = true } })) {
+    if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{ .resizable = true, .context_menu_in_body = true } })) {
         inline for (table) |entry| {
             zgui.tableSetupColumn(entry.name, .{});
         }
