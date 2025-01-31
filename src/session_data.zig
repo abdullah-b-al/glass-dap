@@ -56,7 +56,7 @@ modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 stack_frames: std.ArrayListUnmanaged(StackFrame) = .{},
 scopes: std.ArrayListUnmanaged(Scope) = .{},
-thread_state: std.ArrayListUnmanaged(ThreadState) = .{},
+threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 status: DebuggeeStatus,
 
 /// From the protocol:
@@ -81,14 +81,14 @@ pub fn deinit(data: *SessionData) void {
     data.scopes.deinit(data.allocator);
     data.stack_frames.deinit(data.allocator);
 
-    data.thread_state.deinit(data.allocator);
+    data.threads_state.deinit(data.allocator);
 
     data.arena.deinit();
 }
 
 pub fn get_thread_data(data: SessionData, id: i32) ?Thread {
     const thread = get_entry_ptr(data.threads.items, "id", id) orelse return null;
-    const state = get_entry_ptr(data.thread_state.items, "thread_id", id) orelse return null;
+    const state = get_entry_ptr(data.threads_state.items, "thread_id", id) orelse return null;
 
     return Thread{
         .id = thread.id,
@@ -101,13 +101,13 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
     const stopped = try data.clone_anytype(event.body);
 
     if (stopped.threadId) |id| {
-        if (get_entry_ptr(data.thread_state.items, "thread_id", id)) |entry| {
+        if (get_entry_ptr(data.threads_state.items, "thread_id", id)) |entry| {
             entry.* = .{
                 .thread_id = entry.thread_id,
                 .state = .{ .stopped = stopped },
             };
         } else {
-            try data.thread_state.append(data.allocator, .{
+            try data.threads_state.append(data.allocator, .{
                 .thread_id = id,
                 .state = .{ .stopped = stopped },
             });
@@ -115,7 +115,7 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
     }
 
     if (stopped.allThreadsStopped orelse false) {
-        for (data.thread_state.items) |*item| {
+        for (data.threads_state.items) |*item| {
             switch (item.state) {
                 .stopped => {},
                 .continued => {
@@ -130,19 +130,19 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
 }
 
 pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
-    if (get_entry_ptr(data.thread_state.items, "thread_id", event.body.threadId)) |entry| {
+    if (get_entry_ptr(data.threads_state.items, "thread_id", event.body.threadId)) |entry| {
         entry.* = .{
             .thread_id = entry.thread_id,
             .state = .continued,
         };
     } else {
-        try data.thread_state.append(data.allocator, .{
+        try data.threads_state.append(data.allocator, .{
             .thread_id = event.body.threadId,
             .state = .continued,
         });
     }
 
-    for (data.thread_state.items) |*item| {
+    for (data.threads_state.items) |*item| {
         switch (item.state) {
             .continued => {},
             .stopped => {
