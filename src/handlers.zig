@@ -128,23 +128,24 @@ pub fn handle_queued_events(callbacks: *Callbacks, data: *SessionData, connectio
 }
 
 pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Connection, event: Connection.Event) !bool {
+    _ = callbacks;
     switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
-            const seq = try connection.queue_request(.threads, protocol.Object{}, .none, null);
+            _ = try connection.queue_request(.threads, protocol.Object{}, .none, null);
+
             const parsed = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
             defer parsed.deinit();
-            const message = connection.remove_event(parsed.value.seq);
 
-            try callback(callbacks, .success, .{ .request_seq = seq }, message, delayed_output_event_handler);
+            try data.set_stopped(parsed.value);
 
-            return false;
+            connection.handled_event(event, parsed.value.seq);
         },
         .continued => {
             const parsed = try connection.get_and_parse_event(protocol.ContinuedEvent, .continued);
             defer parsed.deinit();
 
-            data.set_continued(parsed.value);
+            try data.set_continued(parsed.value);
 
             connection.handled_event(.continued, parsed.value.seq);
         },
@@ -199,36 +200,6 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     }
 
     return true;
-}
-
-pub fn delayed_output_event_handler(data: *SessionData, connection: *Connection, message: ?Connection.RawMessage) void {
-    const parsed = std.json.parseFromValue(protocol.StoppedEvent, connection.allocator, message.?.value, .{}) catch |err| {
-        log.err("Failed to handled event {}: {}", .{ @src(), err });
-        return;
-    };
-    defer parsed.deinit();
-    data.set_stopped(parsed.value) catch |err| {
-        log.err("Failed to handled event {}: {}", .{ @src(), err });
-    };
-
-    connection.delayed_handled_event(.stopped, message.?);
-
-    for (data.threads.items) |thread| {
-        switch (thread.state) {
-            .running => continue,
-            .stopped => {},
-        }
-
-        const retained = Connection.RetainedRequestData{ .stack_trace = .{
-            .thread_id = thread.data.id,
-            .request_scopes = false,
-        } };
-        _ = connection.queue_request(.stackTrace, protocol.StackTraceArguments{
-            .threadId = thread.data.id,
-        }, .none, retained) catch |err| {
-            log.err("Failed to queue request {}: {}", .{ @src(), err });
-        };
-    }
 }
 
 pub fn handle_response(data: *SessionData, connection: *Connection, response: Connection.Response) !void {
