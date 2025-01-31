@@ -14,14 +14,14 @@ const DebuggeeStatus = union(enum) {
     exited: i32,
 };
 
-pub const StackFrame = struct {
+pub const StackFrames = struct {
     thread_id: i32,
-    data: protocol.StackFrame,
+    data: []const protocol.StackFrame,
 };
 
-pub const Scope = struct {
+pub const Scopes = struct {
     frame_id: i32,
-    data: protocol.Scope,
+    data: []const protocol.Scope,
 };
 
 pub const Thread = struct {
@@ -59,8 +59,8 @@ string_storage: StringStorageUnmanaged = .{},
 threads: std.ArrayListUnmanaged(protocol.Thread) = .{},
 modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
-stack_frames: std.ArrayListUnmanaged(StackFrame) = .{},
-scopes: std.ArrayListUnmanaged(Scope) = .{},
+stack_frames: std.ArrayListUnmanaged(StackFrames) = .{},
+scopes: std.ArrayListUnmanaged(Scopes) = .{},
 variables: std.ArrayListUnmanaged(Variables) = .{},
 threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 status: DebuggeeStatus,
@@ -193,24 +193,27 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     }
 }
 
-pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: protocol.StackTraceResponse) !void {
-    const body = response.body;
-
-    try data.stack_frames.ensureUnusedCapacity(data.allocator, body.stackFrames.len);
-    for (body.stackFrames) |frame| {
+pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: []const protocol.StackFrame) !void {
+    try data.stack_frames.ensureUnusedCapacity(data.allocator, 1);
+    if (get_entry_ptr(data.stack_frames.items, "thread_id", thread_id)) |entry| {
+        // FIXME: check docs: protocol.StackTraceResponse.body.totalFrames
+        entry.data = try data.clone_anytype(response);
+    } else {
         data.stack_frames.appendAssumeCapacity(.{
             .thread_id = thread_id,
-            .data = try data.clone_anytype(frame),
+            .data = try data.clone_anytype(response),
         });
     }
 }
 
 pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.Scope) !void {
-    try data.scopes.ensureUnusedCapacity(data.allocator, response.len);
-    for (response) |scope| {
+    try data.scopes.ensureUnusedCapacity(data.allocator, 1);
+    if (get_entry_ptr(data.scopes.items, "frame_id", frame_id)) |entry| {
+        entry.data = try data.clone_anytype(response);
+    } else {
         data.scopes.appendAssumeCapacity(.{
             .frame_id = frame_id,
-            .data = try data.clone_anytype(scope),
+            .data = try data.clone_anytype(response),
         });
     }
 }

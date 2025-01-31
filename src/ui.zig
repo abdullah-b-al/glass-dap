@@ -157,25 +157,29 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
 
                 zgui.sameLine(.{});
                 if (zgui.button("Scopes", .{})) {
-                    for (data.stack_frames.items) |frame| {
-                        _ = connection.queue_request(
-                            .scopes,
-                            protocol.ScopesArguments{ .frameId = frame.data.id },
-                            .none,
-                            .{ .scopes = .{ .frame_id = frame.data.id, .request_variables = false } },
-                        ) catch return;
+                    for (data.stack_frames.items) |entry| {
+                        for (entry.data) |frame| {
+                            _ = connection.queue_request(
+                                .scopes,
+                                protocol.ScopesArguments{ .frameId = frame.id },
+                                .none,
+                                .{ .scopes = .{ .frame_id = frame.id, .request_variables = false } },
+                            ) catch return;
+                        }
                     }
                 }
 
                 zgui.sameLine(.{});
                 if (zgui.button("Variables", .{})) {
-                    for (data.scopes.items) |scope| {
-                        _ = connection.queue_request(
-                            .variables,
-                            protocol.VariablesArguments{ .variablesReference = scope.data.variablesReference },
-                            .none,
-                            .{ .variables = .{ .variables_reference = scope.data.variablesReference } },
-                        ) catch return;
+                    for (data.scopes.items) |entry| {
+                        for (entry.data) |scope| {
+                            _ = connection.queue_request(
+                                .variables,
+                                protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
+                                .none,
+                                .{ .variables = .{ .variables_reference = scope.variablesReference } },
+                            ) catch return;
+                        }
                     }
                 }
 
@@ -246,34 +250,11 @@ fn stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    const table = .{
-        .{ .name = "ID" },
-        .{ .name = "Name" },
-        .{ .name = "Source" },
-    };
-    const columns_count = std.meta.fields(@TypeOf(table)).len;
-
-    if (zgui.beginTable("Stack Frames Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
-        inline for (table) |entry| {
-            zgui.tableSetupColumn(entry.name, .{});
-        }
-        zgui.tableHeadersRow();
-
-        for (data.stack_frames.items) |frame| {
-            zgui.tableNextRow(.{});
-
-            _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(frame.data.id, .{})});
-            _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{frame.data.name});
-            _ = zgui.tableNextColumn();
-            { // same column
-                if (frame.data.source) |source| {
-                    zgui.text("{s}", .{anytype_to_string(source, .{})});
-                }
-            }
-        }
-        zgui.endTable();
+    for (data.stack_frames.items) |item| {
+        var buf: [64]u8 = undefined;
+        const n = std.fmt.bufPrintZ(&buf, "Thread ID {}##variables slice", .{item.thread_id}) catch return;
+        draw_table_from_slice_of_struct(n, protocol.StackFrame, item.data);
+        zgui.newLine();
     }
 }
 
@@ -283,7 +264,12 @@ fn scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conne
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    draw_table_from_slice_of_struct("scopes slice", SessionData.Scope, data.scopes.items);
+    for (data.scopes.items) |item| {
+        var buf: [64]u8 = undefined;
+        const n = std.fmt.bufPrintZ(&buf, "Frame ID {}##scopes slice", .{item.frame_id}) catch return;
+        draw_table_from_slice_of_struct(n, protocol.Scope, item.data);
+        zgui.newLine();
+    }
 }
 
 fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
@@ -294,7 +280,7 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, co
 
     for (data.variables.items) |item| {
         var buf: [64]u8 = undefined;
-        const n = std.fmt.bufPrintZ(&buf, "variables slice: reference {}", .{item.reference}) catch return;
+        const n = std.fmt.bufPrintZ(&buf, "Reference {}##variables slice", .{item.reference}) catch return;
         draw_table_from_slice_of_struct(n, protocol.Variable, item.data);
         zgui.newLine();
     }
@@ -455,10 +441,21 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 }
 
 fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_value: ?[]const T) void {
-    zgui.text("== {s} len({}) ==", .{ name, (mabye_value orelse &.{}).len });
+    const visiable_name = blk: {
+        var iter = std.mem.splitAny(u8, name, "##");
+        break :blk iter.next().?;
+    };
+    zgui.text("{s} len({})", .{ visiable_name, (mabye_value orelse &.{}).len });
     const table = std.meta.fields(T);
     const columns_count = std.meta.fields(T).len;
-    if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{ .resizable = true, .context_menu_in_body = true } })) {
+    if (zgui.beginTable(
+        name,
+        .{ .column = columns_count, .flags = .{
+            .resizable = true,
+            .context_menu_in_body = true,
+            .borders = .{ .inner_h = true, .outer_h = true, .inner_v = true, .outer_v = true },
+        } },
+    )) {
         inline for (table) |entry| {
             zgui.tableSetupColumn(entry.name, .{});
         }

@@ -232,7 +232,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                 return;
             }
 
-            try data.set_stack_frames(retained.thread_id, parsed.value);
+            try data.set_stack_frames(retained.thread_id, parsed.value.body.stackFrames);
 
             // codelldb doesn't include totalFrames even when it should.
             // orelse 0 to avoid infinitely requesting stack traces
@@ -246,18 +246,20 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                     .{ .stack_trace = retained },
                 );
             } else if (retained.request_scopes) {
-                for (data.stack_frames.items) |frame| {
-                    _ = try connection.queue_request(
-                        .scopes,
-                        protocol.ScopesArguments{ .frameId = frame.data.id },
-                        .none,
-                        .{
-                            .scopes = .{
-                                .frame_id = frame.data.id,
-                                .request_variables = retained.request_variables,
+                for (data.stack_frames.items) |item| {
+                    for (item.data) |frame| {
+                        _ = try connection.queue_request(
+                            .scopes,
+                            protocol.ScopesArguments{ .frameId = frame.id },
+                            .none,
+                            .{
+                                .scopes = .{
+                                    .frame_id = frame.id,
+                                    .request_variables = retained.request_variables,
+                                },
                             },
-                        },
-                    );
+                        );
+                    }
                 }
             }
         },
