@@ -135,17 +135,25 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
             { // same column
                 _ = zgui.tableNextColumn();
                 if (zgui.button("Stack Trace", .{})) {
-                    request.stack_trace(connection, .{
+                    const args = protocol.StackTraceArguments{
                         .threadId = thread.id,
                         .startFrame = null, // request all frames
                         .levels = null, // request all levels
                         .format = null,
+                    };
+                    _ = connection.queue_request(.stackTrace, args, .none, .{
+                        .stack_trace = .{
+                            .thread_id = thread.id,
+                            .request_scopes = false,
+                        },
                     }) catch return;
                 }
 
                 zgui.sameLine(.{});
                 if (zgui.button("Pause", .{})) {
-                    request.pause(connection, thread.id) catch return;
+                    _ = connection.queue_request(.pause, protocol.PauseArguments{
+                        .threadId = thread.id,
+                    }, .none, null) catch return;
                 }
             }
 
@@ -156,7 +164,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
             zgui.text("{s}", .{anytype_to_string(thread.name, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(std.meta.activeTag(thread.state), .{})});
+            zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
         }
 
         zgui.endTable();
@@ -371,7 +379,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
             .adapterID = "???",
         };
 
-        try request.init(connection, init_args);
+        _ = try connection.queue_request_init(init_args, .none);
     }
 
     zgui.sameLine(.{});
@@ -379,12 +387,14 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         var extra = protocol.Object{};
         defer extra.deinit(connection.allocator);
         try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        try request.launch(connection, extra);
+        _ = try connection.queue_request_launch(.{}, extra, .{ .response = .initialize });
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Send configurationDone Request", .{})) {
-        try request.configuration_done(connection, .{});
+        _ = try connection.queue_request_configuration_done(null, .{
+            .map = .{},
+        }, .{ .event = .initialized });
     }
 
     if (zgui.button("end connection: disconnect", .{})) {
@@ -396,7 +406,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 
     if (zgui.button("Threads", .{})) {
-        try request.threads(connection, null);
+        _ = try connection.queue_request(.threads, null, .none, null);
     }
 }
 

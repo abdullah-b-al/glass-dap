@@ -239,12 +239,11 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             const count = parsed.value.body.totalFrames orelse 0;
             defer connection.handled_response(response, .success);
             if (count > data.stack_frames.items.len) {
-                try request.stack_trace(connection, .{ .threadId = response.request_data.?.thread_id });
                 _ = try connection.queue_request(
                     .stackTrace,
                     protocol.StackTraceArguments{ .threadId = retained.thread_id },
                     .none,
-                    .{ .thread_id = retained.thread_id },
+                    .{ .stack_trace = retained },
                 );
             } else if (retained.request_scopes) {
                 for (data.stack_frames.items) |frame| {
