@@ -3,6 +3,7 @@ const Connection = @import("connection.zig");
 const SessionData = @import("session_data.zig");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
+const ThreadID = SessionData.ThreadID;
 
 pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
     // send and respond to initialize
@@ -69,4 +70,17 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
             }
         },
     }
+}
+
+// Causes a chain of requests to get the state
+pub fn get_debuggee_state(connection: *Connection, thread_id: ThreadID) !void {
+    _ = try connection.queue_request(
+        .stackTrace,
+        protocol.StackTraceArguments{ .threadId = thread_id },
+        .none,
+        .{ .stack_trace = .{
+            .thread_id = thread_id,
+            .request_scopes = true,
+        } },
+    );
 }

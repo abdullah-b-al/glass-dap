@@ -134,6 +134,9 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
             zgui.tableNextRow(.{});
             { // same column
                 _ = zgui.tableNextColumn();
+                if (zgui.button("Get Full State", .{})) {
+                    request.get_debuggee_state(connection, thread.id) catch return;
+                }
                 if (zgui.button("Stack Trace", .{})) {
                     const args = protocol.StackTraceArguments{
                         .threadId = thread.id,
