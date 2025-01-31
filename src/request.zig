@@ -53,7 +53,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                         .restart = false,
                     },
                     .none,
-                    null,
+                    .no_data,
                 ),
 
                 .disconnect => _ = try connection.queue_request(
@@ -64,7 +64,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                         .suspendDebuggee = null,
                     },
                     .none,
-                    null,
+                    .no_data,
                 ),
             }
         },

@@ -132,7 +132,7 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
     switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
-            _ = try connection.queue_request(.threads, protocol.Object{}, .none, null);
+            _ = try connection.queue_request(.threads, protocol.Object{}, .none, .no_data);
 
             const parsed = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
             defer parsed.deinit();
@@ -226,7 +226,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .stackTrace => {
             const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, response.request_seq, .stackTrace);
             defer parsed.deinit();
-            const retained = response.request_data.?.stack_trace;
+            const retained = response.request_data.stack_trace;
 
             if (parsed.value.body.stackFrames.len == 0) {
                 return;
@@ -251,7 +251,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                         .scopes,
                         protocol.ScopesArguments{ .frameId = frame.data.id },
                         .none,
-                        .{ .frame_id = frame.data.id },
+                        .{ .scopes = .{ .frame_id = frame.data.id } },
                     );
                 }
             }
@@ -260,7 +260,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             const parsed = try connection.get_parse_validate_response(protocol.ScopesResponse, response.request_seq, response.command);
             defer parsed.deinit();
 
-            try data.set_scopes(response.request_data.?.frame_id, parsed.value.body.scopes);
+            try data.set_scopes(response.request_data.scopes.frame_id, parsed.value.body.scopes);
 
             connection.handled_response(response, .success);
         },

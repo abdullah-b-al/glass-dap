@@ -110,14 +110,16 @@ pub const RetainedRequestData = union(enum) {
         thread_id: i32,
         request_scopes: bool,
     },
-    thread_id: i32,
-    frame_id: i32,
+    scopes: struct {
+        frame_id: i32,
+    },
+    no_data,
 };
 
 pub const Response = struct {
     command: Command,
     request_seq: i32,
-    request_data: ?RetainedRequestData,
+    request_data: RetainedRequestData,
 };
 
 pub const ResponseStatus = enum { success, failure };
@@ -290,16 +292,17 @@ pub fn deinit(connection: *Connection) void {
     connection.arena.deinit();
 }
 
-pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: ?RetainedRequestData) !i32 {
+pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !i32 {
     try connection.queued_requests.ensureUnusedCapacity(1);
     try connection.expected_responses.ensureUnusedCapacity(1);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
-    const args = if (@TypeOf(arguments) == protocol.Object)
-        arguments
-    else
-        try utils.value_to_object(arena.allocator(), arguments);
+    const args = switch (@TypeOf(arguments)) {
+        @TypeOf(null) => protocol.Object{},
+        protocol.Object => arguments,
+        else => try utils.value_to_object(arena.allocator(), arguments),
+    };
 
     const request = protocol.Request{
         .seq = connection.new_seq(),
@@ -397,7 +400,7 @@ pub fn queue_request_init(connection: *Connection, arguments: protocol.Initializ
 
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
-    const seq = try connection.queue_request(.initialize, arguments, depends_on, null);
+    const seq = try connection.queue_request(.initialize, arguments, depends_on, .no_data);
     connection.state = .initializing;
     return seq;
 }
@@ -425,7 +428,7 @@ pub fn handle_response_init(connection: *Connection, response: Response) !void {
 pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.launch, args, depends_on, null);
+    return try connection.queue_request(.launch, args, depends_on, .no_data);
 }
 
 pub fn handle_response_launch(connection: *Connection, response: Response) void {
@@ -436,7 +439,7 @@ pub fn handle_response_launch(connection: *Connection, response: Response) void 
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.configurationDone, args, depends_on, null);
+    return try connection.queue_request(.configurationDone, args, depends_on, .no_data);
 }
 
 pub fn handle_response_disconnect(connection: *Connection, response: Response) !void {

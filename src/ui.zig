@@ -153,7 +153,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
                 if (zgui.button("Pause", .{})) {
                     _ = connection.queue_request(.pause, protocol.PauseArguments{
                         .threadId = thread.id,
-                    }, .none, null) catch return;
+                    }, .none, .no_data) catch return;
                 }
             }
 
@@ -406,7 +406,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 
     if (zgui.button("Threads", .{})) {
-        _ = try connection.queue_request(.threads, null, .none, null);
+        _ = try connection.queue_request(.threads, null, .none, .no_data);
     }
 }
 
