@@ -316,6 +316,18 @@ pub fn string_to_enum(comptime E: type, string: []const u8) ?E {
     return null;
 }
 
+pub fn get_field_type(comptime T: type, comptime field_name: []const u8) type {
+    for (std.meta.fields(T)) |field| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            return field.type;
+        }
+    }
+
+    var buf: [1024]u8 = undefined;
+    const message = std.fmt.bufPrint(&buf, "`{s}` doesn't have field `{s}`", .{ @typeName(T), field_name }) catch unreachable;
+    @compileError(message);
+}
+
 fn clone_protocol_object(cloner: anytype, object: protocol.Object) !protocol.Object {
     var cloned: protocol.Object = .{};
     var iter = object.map.iterator();

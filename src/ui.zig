@@ -128,13 +128,15 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
         }
         zgui.tableHeadersRow();
 
-        for (data.threads.items) |thread| {
+        for (data.threads.items) |item| {
+            const thread = data.get_thread_data(item.id) orelse continue;
+
             zgui.tableNextRow(.{});
             { // same column
                 _ = zgui.tableNextColumn();
                 if (zgui.button("Stack Trace", .{})) {
                     request.stack_trace(connection, .{
-                        .threadId = thread.data.id,
+                        .threadId = thread.id,
                         .startFrame = null, // request all frames
                         .levels = null, // request all levels
                         .format = null,
@@ -143,26 +145,18 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
 
                 zgui.sameLine(.{});
                 if (zgui.button("Pause", .{})) {
-                    request.pause(connection, thread.data.id) catch return;
+                    request.pause(connection, thread.id) catch return;
                 }
             }
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.data.id, .{})});
+            zgui.text("{s}", .{anytype_to_string(thread.id, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.data.name, .{})});
+            zgui.text("{s}", .{anytype_to_string(thread.name, .{})});
 
             _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(std.meta.activeTag(thread.state), .{})});
-            if (thread.state == .stopped) {
-                if (thread.state.stopped.description.len > 0) {
-                    zgui.text("{s}", .{thread.state.stopped.description});
-                }
-                if (thread.state.stopped.text.len > 0) {
-                    zgui.text("{s}", .{thread.state.stopped.text});
-                }
-            }
         }
 
         zgui.endTable();

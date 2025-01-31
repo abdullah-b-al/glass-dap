@@ -14,19 +14,6 @@ const DebuggeeStatus = union(enum) {
     exited: i32,
 };
 
-const Thread = struct {
-    const Stopped = struct {
-        description: []const u8 = "",
-        text: []const u8 = "",
-    };
-
-    data: protocol.Thread,
-    state: union(enum) {
-        running,
-        stopped: Stopped,
-    },
-};
-
 pub const StackFrame = struct {
     thread_id: i32,
     data: protocol.StackFrame,
@@ -37,17 +24,39 @@ pub const Scope = struct {
     data: protocol.Scope,
 };
 
+pub const Thread = struct {
+    id: i32,
+    name: []const u8,
+    state: ThreadState.State,
+};
+
+pub const ThreadID = i32;
+
+pub const ThreadState = struct {
+    const State = union(enum) {
+        stopped: ?Stopped,
+        continued,
+    };
+
+    thread_id: ThreadID,
+    state: State,
+};
+
+pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
+pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
+
 allocator: std.mem.Allocator,
 
 /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
 arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .{},
-threads: std.ArrayListUnmanaged(Thread) = .{},
+threads: std.ArrayListUnmanaged(protocol.Thread) = .{},
 modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 stack_frames: std.ArrayListUnmanaged(StackFrame) = .{},
 scopes: std.ArrayListUnmanaged(Scope) = .{},
+thread_state: std.ArrayListUnmanaged(ThreadState) = .{},
 status: DebuggeeStatus,
 
 /// From the protocol:
@@ -72,34 +81,78 @@ pub fn deinit(data: *SessionData) void {
     data.scopes.deinit(data.allocator);
     data.stack_frames.deinit(data.allocator);
 
+    data.thread_state.deinit(data.allocator);
+
     data.arena.deinit();
 }
 
-pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
-    const body = event.body;
-    const stopped = Thread.Stopped{
-        .description = try data.get_or_clone_string(body.description orelse ""),
-        .text = try data.get_or_clone_string(body.text orelse ""),
-    };
+pub fn get_thread_data(data: SessionData, id: i32) ?Thread {
+    const thread = get_entry_ptr(data.threads.items, "id", id) orelse return null;
+    const state = get_entry_ptr(data.thread_state.items, "thread_id", id) orelse return null;
 
-    const all = body.allThreadsStopped orelse false;
-    const id = body.threadId;
-    for (data.threads.items) |*thread| {
-        if (thread.data.id == id or all) {
-            thread.state = .{ .stopped = stopped };
+    return Thread{
+        .id = thread.id,
+        .name = thread.name,
+        .state = state.state,
+    };
+}
+
+pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
+    const stopped = try data.clone_anytype(event.body);
+
+    if (stopped.threadId) |id| {
+        if (get_entry_ptr(data.thread_state.items, "thread_id", id)) |entry| {
+            entry.* = .{
+                .thread_id = entry.thread_id,
+                .state = .{ .stopped = stopped },
+            };
+        } else {
+            try data.thread_state.append(data.allocator, .{
+                .thread_id = id,
+                .state = .{ .stopped = stopped },
+            });
+        }
+    }
+
+    if (stopped.allThreadsStopped orelse false) {
+        for (data.thread_state.items) |*item| {
+            switch (item.state) {
+                .stopped => {},
+                .continued => {
+                    item.* = .{
+                        .thread_id = item.thread_id,
+                        .state = .{ .stopped = null },
+                    };
+                },
+            }
         }
     }
 }
 
-pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) void {
-    const all = event.body.allThreadsContinued orelse false;
-    const id = event.body.threadId;
-    for (data.threads.items) |*item| {
-        if (item.data.id == id or all)
-            item.state = .running;
+pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
+    if (get_entry_ptr(data.thread_state.items, "thread_id", event.body.threadId)) |entry| {
+        entry.* = .{
+            .thread_id = entry.thread_id,
+            .state = .continued,
+        };
+    } else {
+        try data.thread_state.append(data.allocator, .{
+            .thread_id = event.body.threadId,
+            .state = .continued,
+        });
     }
 
-    data.status = .running;
+    for (data.thread_state.items) |*item| {
+        switch (item.state) {
+            .continued => {},
+            .stopped => {
+                item.* = .{
+                    .thread_id = item.thread_id,
+                    .state = .continued,
+                };
+            },
+        }
+    }
 }
 
 pub fn set_existed(data: *SessionData, event: protocol.ExitedEvent) !void {
@@ -130,10 +183,7 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     data.threads.clearRetainingCapacity();
     try data.threads.ensureUnusedCapacity(data.allocator, threads.len);
     for (threads) |thread| {
-        data.threads.appendAssumeCapacity(.{
-            .data = try data.clone_anytype(thread),
-            .state = if (data.status == .running) .running else .{ .stopped = .{} },
-        });
+        data.threads.appendAssumeCapacity(try data.clone_anytype(thread));
     }
 }
 
@@ -189,11 +239,15 @@ fn get_or_clone_string(data: *SessionData, string: []const u8) ![]const u8 {
 }
 
 fn entry_exists(slice: anytype, comptime field_name: []const u8, value: anytype) bool {
-    for (slice) |item| {
+    return get_entry_ptr(slice, field_name, value) != null;
+}
+
+fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype) ?*@typeInfo(@TypeOf(slice)).pointer.child {
+    for (slice) |*item| {
         if (std.meta.eql(@field(item, field_name), value)) {
-            return true;
+            return item;
         }
     }
 
-    return false;
+    return null;
 }
