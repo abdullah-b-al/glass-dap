@@ -31,7 +31,9 @@ pub fn create_message(allocator: std.mem.Allocator, value: protocol.Object) ![]c
     var list = std.ArrayList(u8).init(allocator);
     defer list.deinit();
 
-    try std.json.stringify(value, .{}, list.writer());
+    try std.json.stringify(value, .{
+        .emit_null_optional_fields = false,
+    }, list.writer());
 
     var buf: [512]u8 = undefined;
     const header = try std.fmt.bufPrint(&buf, "Content-Length: {d}\r\n\r\n", .{list.items.len});
