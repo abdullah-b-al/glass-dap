@@ -71,54 +71,14 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
 
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
-    const static = struct {
-        var built_layout = false;
-    };
-    if (!static.built_layout) {
-        static.built_layout = true;
-        const dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
-
-        zgui.dockBuilderRemoveNode(dockspace_id);
-        const viewport = zgui.getMainViewport();
-        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
-        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
-
-        // const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
-        // const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
-        // const right = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.50, null, dock_main_id);
-
-        // dock them tabbed
-        zgui.dockBuilderDockWindow("Modules", empty);
-        zgui.dockBuilderDockWindow("Threads", empty);
-        zgui.dockBuilderDockWindow("Stack Frames", empty);
-        zgui.dockBuilderDockWindow("Scopes", empty);
-        zgui.dockBuilderDockWindow("Variables", empty);
-        zgui.dockBuilderDockWindow("Breakpoints", empty);
-        zgui.dockBuilderDockWindow("Sources", empty);
-        zgui.dockBuilderDockWindow("Sources Content", empty);
-
-        zgui.dockBuilderFinish(dockspace_id);
-
-        _ = zgui.DockSpace("MyDockSpace", viewport.getSize(), .{});
-    }
-
-    modules(arena.allocator(), "Modules", data.*);
-    threads(arena.allocator(), "Threads", data.*, connection);
-    stack_frames(arena.allocator(), "Stack Frames", data.*, connection);
-    scopes(arena.allocator(), "Scopes", data.*, connection);
-    variables(arena.allocator(), "Variables", data.*, connection);
-    breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
-    sources(arena.allocator(), "Sources", data.*, connection);
-    sources_content(arena.allocator(), "Sources Content", data.*, connection);
-
-    debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
+    debug_ui(arena.allocator(), connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
     window.swapBuffers();
 }
 
-fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -212,7 +172,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     }
 }
 
-fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
+fn debug_modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -251,7 +211,7 @@ fn modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void
     }
 }
 
-fn stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -265,7 +225,7 @@ fn stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
     }
 }
 
-fn scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -279,7 +239,7 @@ fn scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conne
     }
 }
 
-fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -293,7 +253,7 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, co
     }
 }
 
-fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -309,7 +269,7 @@ fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, 
     // }
 }
 
-fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -318,7 +278,7 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     draw_table_from_slice_of_struct("sources", protocol.Source, data.sources.items);
 }
 
-fn sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
     defer zgui.end();
@@ -346,12 +306,53 @@ fn sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionDa
     }
 }
 
-fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
+fn debug_ui(arena: std.mem.Allocator, connection: *Connection, data: *SessionData, args: Args) !void {
+    const static = struct {
+        var built_layout = false;
+    };
+    if (!static.built_layout) {
+        static.built_layout = true;
+        const dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
+
+        zgui.dockBuilderRemoveNode(dockspace_id);
+        const viewport = zgui.getMainViewport();
+        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
+        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
+
+        // const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
+        // const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
+        // const right = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.50, null, dock_main_id);
+
+        // dock them tabbed
+        zgui.dockBuilderDockWindow("Debug General", empty);
+        zgui.dockBuilderDockWindow("Debug Modules", empty);
+        zgui.dockBuilderDockWindow("Debug Threads", empty);
+        zgui.dockBuilderDockWindow("Debug Stack Frames", empty);
+        zgui.dockBuilderDockWindow("Debug Scopes", empty);
+        zgui.dockBuilderDockWindow("Debug Variables", empty);
+        zgui.dockBuilderDockWindow("Debug Breakpoints", empty);
+        zgui.dockBuilderDockWindow("Debug Sources", empty);
+        zgui.dockBuilderDockWindow("Debug Sources Content", empty);
+
+        zgui.dockBuilderFinish(dockspace_id);
+
+        _ = zgui.DockSpace("Debug DockSpace", viewport.getSize(), .{});
+    }
+
+    debug_modules(arena, "Debug Modules", data.*);
+    debug_threads(arena, "Debug Threads", data.*, connection);
+    debug_stack_frames(arena, "Debug Stack Frames", data.*, connection);
+    debug_scopes(arena, "Debug Scopes", data.*, connection);
+    debug_variables(arena, "Debug Variables", data.*, connection);
+    debug_breakpoints(arena, "Debug Breakpoints", data.*, connection);
+    debug_sources(arena, "Debug Sources", data.*, connection);
+    debug_sources_content(arena, "Debug Sources Content", data.*, connection);
+
     var open: bool = true;
     zgui.showDemoWindow(&open);
 
     defer zgui.end();
-    if (!zgui.begin(name, .{})) return;
+    if (!zgui.begin("Debug General", .{})) return;
 
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Debug Tabs", .{})) return;
