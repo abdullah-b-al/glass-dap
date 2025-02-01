@@ -47,6 +47,13 @@ pub const Variables = struct {
     data: []const protocol.Variable,
 };
 
+pub const SourceContent = struct {
+    path: ?[]const u8,
+    source_reference: i32,
+    content: []const u8,
+    mime_type: ?[]const u8,
+};
+
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 
@@ -65,6 +72,7 @@ variables: std.ArrayListUnmanaged(Variables) = .{},
 threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
 sources: std.ArrayListUnmanaged(protocol.Source) = .{},
+sources_content: std.ArrayListUnmanaged(SourceContent) = .{},
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// This is here to allow adding and removing individual breakpoints.
@@ -98,6 +106,7 @@ pub fn deinit(data: *SessionData) void {
     data.function_breakpoints.deinit(data.allocator);
     data.breakpoints.deinit(data.allocator);
     data.sources.deinit(data.allocator);
+    data.sources_content.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -232,6 +241,23 @@ pub fn set_source(data: *SessionData, source: protocol.Source) !void {
     if (!exists) {
         try data.sources.append(data.allocator, try data.clone_anytype(source));
     }
+}
+
+pub fn get_source_by_reference(data: *SessionData, reference: i32) ?protocol.Source {
+    return (get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
+}
+
+pub fn get_source_by_path(data: *SessionData, path: []const u8) ?protocol.Source {
+    return (get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
+}
+
+pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
+    const entry =
+        get_entry_ptr(data.sources_content.items, "source_reference", content.source_reference) orelse
+        get_entry_ptr(data.sources_content.items, "path", content.path) orelse
+        try data.sources_content.addOne(data.allocator);
+
+    entry.* = try data.clone_anytype(content);
 }
 
 pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.Scope) !void {

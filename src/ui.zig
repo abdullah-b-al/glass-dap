@@ -95,6 +95,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         zgui.dockBuilderDockWindow("Variables", empty);
         zgui.dockBuilderDockWindow("Breakpoints", empty);
         zgui.dockBuilderDockWindow("Sources", empty);
+        zgui.dockBuilderDockWindow("Sources Content", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -108,6 +109,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     variables(arena.allocator(), "Variables", data.*, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
     sources(arena.allocator(), "Sources", data.*, connection);
+    sources_content(arena.allocator(), "Sources Content", data.*, connection);
 
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
@@ -316,6 +318,34 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     draw_table_from_slice_of_struct("sources", protocol.Source, data.sources.items);
 }
 
+fn sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    zgui.text("len {}", .{data.sources_content.items.len});
+    zgui.newLine();
+
+    defer zgui.endTabBar();
+    if (!zgui.beginTabBar("Sources Content Tabs", .{})) return;
+
+    var buf: [512:0]u8 = undefined;
+    for (data.sources_content.items, 0..) |entry, i| {
+        var tab_name: [:0]const u8 = undefined;
+        if (entry.path) |path| {
+            tab_name = std.fmt.bufPrintZ(&buf, "{s}##Sources", .{path}) catch continue;
+        } else {
+            tab_name = std.fmt.bufPrintZ(&buf, "{}##Sources", .{i}) catch continue;
+        }
+
+        if (zgui.beginTabItem(tab_name, .{})) {
+            defer zgui.endTabItem();
+            zgui.text("{s}", .{entry.content});
+        }
+    }
+}
+
 fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
     var open: bool = true;
     zgui.showDemoWindow(&open);
@@ -422,6 +452,11 @@ fn adapter_capabilities(connection: Connection) void {
 }
 
 fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
+    const static = struct {
+        var name_buf: [512:0]u8 = .{0} ** 512;
+        var source_buf: [512:0]u8 = .{0} ** 512;
+    };
+
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
 
@@ -474,6 +509,25 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         _ = try connection.queue_request(.threads, null, .none, .no_data);
     }
 
+    _ = zgui.inputText("source reference", .{ .buf = &static.source_buf });
+    if (zgui.button("Source Content", .{})) blk: {
+        const len = std.mem.indexOfScalar(u8, &static.source_buf, 0) orelse static.source_buf.len;
+        const id = static.source_buf[0..len];
+        const number = std.fmt.parseInt(i32, id, 10) catch break :blk;
+        const source = data.get_source_by_reference(number);
+        if (source) |s| {
+            _ = try connection.queue_request(
+                .source,
+                protocol.SourceArguments{
+                    .source = s,
+                    .sourceReference = s.sourceReference.?,
+                },
+                .none,
+                .{ .source = .{ .path = s.path, .source_reference = s.sourceReference.? } },
+            );
+        }
+    }
+
     if (zgui.button("Request Set Function Breakpoint", .{})) {
         _ = try connection.queue_request(
             .setFunctionBreakpoints,
@@ -486,9 +540,6 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 
     zgui.newLine();
-    const static = struct {
-        var name_buf: [512:0]u8 = .{0} ** 512;
-    };
     _ = zgui.inputText("Function name", .{ .buf = &static.name_buf });
     if (zgui.button("Add Function Breakpoint", .{})) {
         const len = std.mem.indexOfScalar(u8, &static.name_buf, 0) orelse static.name_buf.len;

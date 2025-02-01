@@ -322,6 +322,24 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
 
             connection.handled_response(response, .success);
         },
+        .source => {
+            const parsed = try connection.get_parse_validate_response(
+                protocol.SourceResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.source;
+
+            try data.set_source_content(.{
+                .path = retained.path,
+                .source_reference = retained.source_reference,
+                .content = parsed.value.body.content,
+                .mime_type = parsed.value.body.mimeType,
+            });
+
+            connection.handled_response(response, .success);
+        },
 
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -344,7 +362,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
         .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setVariable => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .source => log.err("TODO: {s}", .{@tagName(response.command)}),
         .terminateThreads => log.err("TODO: {s}", .{@tagName(response.command)}),
         .modules => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),

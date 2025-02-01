@@ -118,6 +118,10 @@ pub const RetainedRequestData = union(enum) {
     variables: struct {
         variables_reference: i32,
     },
+    source: struct {
+        path: ?[]const u8,
+        source_reference: i32,
+    },
     no_data,
 };
 
@@ -312,7 +316,14 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     try connection.expected_responses.ensureUnusedCapacity(1);
     try connection.debug_requests.ensureTotalCapacity(connection.total_requests);
 
+    // don't use the request's arena so as not to free the expected_responses data
+    // when the request is sent
+    const cloner = connection.create_cloner();
+    const cloned_request_data = try utils.clone_anytype(cloner, request_data);
+
+    // FIXME: This leaks for some reason.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    errdefer arena.deinit();
 
     const args = switch (@TypeOf(arguments)) {
         @TypeOf(null) => protocol.Object{},
@@ -338,7 +349,7 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     connection.expected_responses.appendAssumeCapacity(.{
         .request_seq = request.seq,
         .command = command,
-        .request_data = request_data,
+        .request_data = cloned_request_data,
     });
 
     return request.seq;
