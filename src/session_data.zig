@@ -64,6 +64,7 @@ scopes: std.ArrayListUnmanaged(Scopes) = .{},
 variables: std.ArrayListUnmanaged(Variables) = .{},
 threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
+sources: std.ArrayListUnmanaged(protocol.Source) = .{},
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// This is here to allow adding and removing individual breakpoints.
@@ -96,6 +97,7 @@ pub fn deinit(data: *SessionData) void {
     data.threads_state.deinit(data.allocator);
     data.function_breakpoints.deinit(data.allocator);
     data.breakpoints.deinit(data.allocator);
+    data.sources.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -211,6 +213,24 @@ pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: []const pr
             .thread_id = thread_id,
             .data = try data.clone_anytype(response),
         });
+    }
+
+    for (data.stack_frames.items) |item| {
+        for (item.data) |frame| {
+            if (frame.source) |source| {
+                try data.set_source(source);
+            }
+        }
+    }
+}
+
+pub fn set_source(data: *SessionData, source: protocol.Source) !void {
+    const exists =
+        (source.path != null and entry_exists(data.sources.items, "path", source.path)) or
+        (source.sourceReference != null and entry_exists(data.sources.items, "sourceReference", source.sourceReference));
+
+    if (!exists) {
+        try data.sources.append(data.allocator, try data.clone_anytype(source));
     }
 }
 

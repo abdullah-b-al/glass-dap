@@ -94,6 +94,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         zgui.dockBuilderDockWindow("Scopes", empty);
         zgui.dockBuilderDockWindow("Variables", empty);
         zgui.dockBuilderDockWindow("Breakpoints", empty);
+        zgui.dockBuilderDockWindow("Sources", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -106,6 +107,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     scopes(arena.allocator(), "Scopes", data.*, connection);
     variables(arena.allocator(), "Variables", data.*, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
+    sources(arena.allocator(), "Sources", data.*, connection);
 
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
@@ -303,6 +305,15 @@ fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, 
     //     draw_table_from_slice_of_struct(n, protocol.Breakpoint, item.data);
     //     zgui.newLine();
     // }
+}
+
+fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    draw_table_from_slice_of_struct("sources", protocol.Source, data.sources.items);
 }
 
 fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
