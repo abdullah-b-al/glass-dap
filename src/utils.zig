@@ -249,8 +249,10 @@ pub fn is_zig_string(comptime T: type) bool {
 }
 
 /// Clone is {
-///     allocator: std.mem.Allocator,
-///     pub fn clone_string(Cloner, string) error{OutOfMemory}![]const u8 {}
+///     allocator: std.mem.Allocator
+///
+///     Optionally: pub fn clone_string(Cloner, string) error{OutOfMemory}![]const u8;
+///
 /// }
 pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf(value) {
     const T = @TypeOf(value);
@@ -265,7 +267,11 @@ pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf
     }
 
     if (T == []const u8 or T == []u8) {
-        return try cloner.clone_string(value);
+        if (@hasDecl(@TypeOf(cloner), "clone_string")) {
+            return try cloner.clone_string(value);
+        } else {
+            return cloner.allocator.dupe(u8, value);
+        }
     }
 
     switch (@typeInfo(T)) {
