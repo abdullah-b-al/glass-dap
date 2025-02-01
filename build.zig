@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     build_gen(b, target, optimize);
 
     const exe = b.addExecutable(.{
-        .name = "unidep",
+        .name = "thabit",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     // executable but we're binding it to a
     // dedicated build step.
     const exe_check = b.addExecutable(.{
-        .name = "unidep",
+        .name = "thabit",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
