@@ -32,10 +32,7 @@ pub fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
-            error.DependencyNotSatisfied => {
-                i += 1;
-                continue;
-            },
+            error.DependencyNotSatisfied,
 
             error.OutOfMemory,
             error.NoSpaceLeft,
@@ -61,6 +58,7 @@ pub fn send_queued_requests(connection: *Connection) void {
             error.AdapterNotSpawned,
             error.AdapterDoesNotSupportRequest,
             => {
+                i += 1;
                 log.err("{}\n", .{err});
             },
         };
