@@ -225,6 +225,9 @@ expected_responses: std.ArrayList(Response),
 handled_responses: std.ArrayList(HandledResponse),
 handled_events: std.ArrayList(Event),
 
+total_requests: u32 = 0,
+debug_requests: std.ArrayList(Request),
+
 total_responses_received: u32 = 0,
 responses: std.ArrayList(RawMessage),
 debug_handled_responses: std.ArrayList(RawMessage),
@@ -255,6 +258,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         .queued_requests = std.ArrayList(Request).init(allocator),
+        .debug_requests = std.ArrayList(Request).init(allocator),
         .responses = std.ArrayList(RawMessage).init(allocator),
         .expected_responses = std.ArrayList(Response).init(allocator),
         .handled_responses = std.ArrayList(HandledResponse).init(allocator),
@@ -281,6 +285,11 @@ pub fn deinit(connection: *Connection) void {
         }
     }
 
+    for (connection.debug_requests.items) |*request| {
+        request.arena.deinit();
+    }
+    connection.debug_requests.deinit();
+
     for (connection.queued_requests.items) |*request| {
         request.arena.deinit();
     }
@@ -298,8 +307,10 @@ pub fn deinit(connection: *Connection) void {
 }
 
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !i32 {
+    connection.total_requests += 1;
     try connection.queued_requests.ensureUnusedCapacity(1);
     try connection.expected_responses.ensureUnusedCapacity(1);
+    try connection.debug_requests.ensureTotalCapacity(connection.total_requests);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
@@ -333,7 +344,10 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     return request.seq;
 }
 
-pub fn send_request(connection: *Connection, request: Request) !void {
+pub fn send_request(connection: *Connection, index: usize) !void {
+    const request = connection.queued_requests.items[index];
+    if (!dependency_satisfied(connection.*, request)) return error.DependencyNotSatisfied;
+
     switch (connection.state) {
         .partially_initialized => {
             switch (request.command) {
@@ -355,7 +369,36 @@ pub fn send_request(connection: *Connection, request: Request) !void {
     const message = try io.create_message(connection.allocator, request.object);
     defer connection.allocator.free(message);
     try connection.adapter_write_all(message);
-    request.arena.deinit();
+
+    _ = connection.queued_requests.orderedRemove(index);
+    if (connection.debug) {
+        connection.debug_requests.appendAssumeCapacity(request);
+    } else {
+        request.arena.deinit();
+    }
+}
+
+fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
+    switch (to_send.depends_on) {
+        .event => |event| {
+            for (connection.handled_events.items) |item| {
+                if (item == event) return true;
+            }
+        },
+        .seq => |seq| {
+            for (connection.handled_responses.items) |item| {
+                if (item.response.request_seq == seq) return true;
+            }
+        },
+        .response => |command| {
+            for (connection.handled_responses.items) |item| {
+                if (item.response.command == command) return true;
+            }
+        },
+        .none => return true,
+    }
+
+    return false;
 }
 
 pub fn remove_event(connection: *Connection, seq: i32) RawMessage {

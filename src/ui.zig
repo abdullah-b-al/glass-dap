@@ -306,6 +306,15 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
         adapter_capabilities(connection.*);
     }
 
+    if (zgui.beginTabItem("Sent Requests", .{})) {
+        defer zgui.endTabItem();
+        for (connection.debug_requests.items) |item| {
+            var buf: [512]u8 = undefined;
+            const slice = std.fmt.bufPrint(&buf, "seq({}){s}", .{ item.seq, @tagName(item.command) }) catch unreachable;
+            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.object });
+        }
+    }
+
     const table = .{
         .{ .name = "Queued Responses", .items = connection.responses.items },
         .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
@@ -315,15 +324,11 @@ fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connectio
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
             defer zgui.endTabItem();
-            if (connection.debug) {
-                for (element.items) |resp| {
-                    const seq = resp.value.object.get("seq").?.integer;
-                    var buf: [512]u8 = undefined;
-                    const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
-                    recursively_draw_object(arena, slice, slice, resp.value);
-                }
-            } else {
-                zgui.text("Connection debugging is turned off", .{});
+            for (element.items) |resp| {
+                const seq = resp.value.object.get("seq").?.integer;
+                var buf: [512]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
+                recursively_draw_object(arena, slice, slice, resp.value);
             }
         }
     }
@@ -515,6 +520,53 @@ fn recursively_draw_object(allocator: std.mem.Allocator, parent: []const u8, nam
                     var buf: [512]u8 = undefined;
                     const slice = std.fmt.bufPrintZ(&buf, "{s}[{}]", .{ parent, i }) catch unreachable;
                     recursively_draw_object(allocator, slice, slice, item);
+                    zgui.unindent(.{ .indent_w = 1 });
+                }
+
+                zgui.unindent(.{ .indent_w = 1 });
+                zgui.treePop();
+            }
+        },
+        .number_string, .string => |v| {
+            var color = [4]f32{ 1, 1, 1, 1 };
+            if (std.mem.endsWith(u8, name, "event") or std.mem.endsWith(u8, name, "command")) {
+                color = .{ 0.5, 0.5, 1, 1 };
+            }
+            zgui.textColored(color, "{s} = \"{s}\"", .{ name, v });
+        },
+        inline else => |v| {
+            zgui.text("{s} = {}", .{ name, v });
+        },
+    }
+}
+
+fn recursively_draw_protocol_object(allocator: std.mem.Allocator, parent: []const u8, name: []const u8, value: protocol.Value) void {
+    switch (value) {
+        .object => |object| {
+            const object_name = allocator.dupeZ(u8, name) catch return;
+
+            if (zgui.treeNode(object_name)) {
+                zgui.indent(.{ .indent_w = 1 });
+                var iter = object.map.iterator();
+                while (iter.next()) |kv| {
+                    var buf: [512]u8 = undefined;
+                    const slice = std.fmt.bufPrintZ(&buf, "{s}.{s}", .{ parent, kv.key_ptr.* }) catch unreachable;
+                    recursively_draw_protocol_object(allocator, slice, slice, kv.value_ptr.*);
+                }
+                zgui.unindent(.{ .indent_w = 1 });
+                zgui.treePop();
+            }
+        },
+        .array => |array| {
+            const array_name = allocator.dupeZ(u8, name) catch return;
+            if (zgui.treeNode(array_name)) {
+                zgui.indent(.{ .indent_w = 1 });
+
+                for (array.items, 0..) |item, i| {
+                    zgui.indent(.{ .indent_w = 1 });
+                    var buf: [512]u8 = undefined;
+                    const slice = std.fmt.bufPrintZ(&buf, "{s}[{}]", .{ parent, i }) catch unreachable;
+                    recursively_draw_protocol_object(allocator, slice, slice, item);
                     zgui.unindent(.{ .indent_w = 1 });
                 }
 

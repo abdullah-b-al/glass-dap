@@ -31,40 +31,39 @@ pub const Callback = struct {
 pub fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
-        const req = connection.queued_requests.items[i];
-        if (dependency_satisfied(connection.*, req)) {
-            defer _ = connection.queued_requests.orderedRemove(i);
-            connection.send_request(req) catch |err| switch (err) {
-                error.OutOfMemory,
-                error.NoSpaceLeft,
+        connection.send_request(i) catch |err| switch (err) {
+            error.DependencyNotSatisfied => {
+                i += 1;
+                continue;
+            },
 
-                error.NoDevice,
-                error.SystemResources,
-                error.AccessDenied,
-                error.Unexpected,
-                error.ProcessNotFound,
-                error.InputOutput,
-                error.OperationAborted,
-                error.BrokenPipe,
-                error.ConnectionResetByPeer,
-                error.WouldBlock,
-                error.LockViolation,
-                error.DiskQuota,
-                error.FileTooBig,
-                error.DeviceBusy,
-                error.InvalidArgument,
-                error.NotOpenForWriting,
+            error.OutOfMemory,
+            error.NoSpaceLeft,
 
-                error.AdapterNotDoneInitializing,
-                error.AdapterNotSpawned,
-                error.AdapterDoesNotSupportRequest,
-                => {
-                    log.err("{}\n", .{err});
-                },
-            };
-        } else {
-            i += 1;
-        }
+            error.NoDevice,
+            error.SystemResources,
+            error.AccessDenied,
+            error.Unexpected,
+            error.ProcessNotFound,
+            error.InputOutput,
+            error.OperationAborted,
+            error.BrokenPipe,
+            error.ConnectionResetByPeer,
+            error.WouldBlock,
+            error.LockViolation,
+            error.DiskQuota,
+            error.FileTooBig,
+            error.DeviceBusy,
+            error.InvalidArgument,
+            error.NotOpenForWriting,
+
+            error.AdapterNotDoneInitializing,
+            error.AdapterNotSpawned,
+            error.AdapterDoesNotSupportRequest,
+            => {
+                log.err("{}\n", .{err});
+            },
+        };
     }
 }
 
