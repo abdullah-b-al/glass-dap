@@ -63,6 +63,12 @@ stack_frames: std.ArrayListUnmanaged(StackFrames) = .{},
 scopes: std.ArrayListUnmanaged(Scopes) = .{},
 variables: std.ArrayListUnmanaged(Variables) = .{},
 threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
+breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
+
+/// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
+/// This is here to allow adding and removing individual breakpoints.
+function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .{},
+
 status: DebuggeeStatus,
 
 /// From the protocol:
@@ -88,6 +94,8 @@ pub fn deinit(data: *SessionData) void {
     data.stack_frames.deinit(data.allocator);
     data.variables.deinit(data.allocator);
     data.threads_state.deinit(data.allocator);
+    data.function_breakpoints.deinit(data.allocator);
+    data.breakpoints.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -238,6 +246,45 @@ pub fn add_module(data: *SessionData, module: protocol.Module) !void {
     }
 }
 
+pub fn set_breakpoints(data: *SessionData, breakpoints: []const protocol.Breakpoint) !void {
+    for (breakpoints) |bp| {
+        if (entry_exists(data.breakpoints.items, "id", bp.id)) {
+            try data.update_breakpoint(bp);
+        } else {
+            try data.breakpoints.append(data.allocator, try data.clone_anytype(bp));
+        }
+    }
+}
+
+pub fn remove_breakpoint(data: *SessionData, id: ?i32) void {
+    const index = get_entry_index(
+        data.breakpoints.items,
+        "id",
+        id orelse return,
+    ) orelse return;
+
+    _ = data.breakpoints.orderedRemove(index);
+}
+
+fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void {
+    const id = breakpoint.id orelse return error.NoBreakpointIDGiven;
+    const entry = get_entry_ptr(data.breakpoints.items, "id", id) orelse return error.BreakpointDoesNotExist;
+
+    entry.* = try data.clone_anytype(breakpoint);
+    entry.id = id;
+}
+
+pub fn add_function_breakpoint(data: *SessionData, breakpoint: protocol.FunctionBreakpoint) !void {
+    if (!entry_exists(data.function_breakpoints.items, "name", breakpoint.name)) {
+        try data.function_breakpoints.append(data.allocator, try data.clone_anytype(breakpoint));
+    }
+}
+
+pub fn remove_function_breakpoint(data: *SessionData, name: []const u8) void {
+    const index = get_entry_index(data.function_breakpoints.items, "name", name) orelse return;
+    _ = data.function_breakpoints.orderedRemove(index);
+}
+
 fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {
     const Cloner = struct {
         const Cloner = @This();
@@ -264,9 +311,19 @@ fn entry_exists(slice: anytype, comptime field_name: []const u8, value: anytype)
 }
 
 fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype) ?*@typeInfo(@TypeOf(slice)).pointer.child {
-    for (slice) |*item| {
-        if (std.meta.eql(@field(item, field_name), value)) {
-            return item;
+    const index = get_entry_index(slice, field_name, value) orelse return null;
+    return &slice[index];
+}
+
+fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: anytype) ?usize {
+    const info = @typeInfo(@TypeOf(value));
+    const is_slice = info == .pointer and info.pointer.size == .slice;
+    for (slice, 0..) |item, i| {
+        const field = @field(item, field_name);
+        if (is_slice and std.mem.eql(info.pointer.child, field, value)) {
+            return i;
+        } else if (std.meta.eql(field, value)) {
+            return i;
         }
     }
 

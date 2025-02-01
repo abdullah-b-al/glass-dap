@@ -71,6 +71,9 @@ pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void
         const resp = connection.expected_responses.items[i];
         const err = handle_response(data, connection, resp);
         err catch |e| switch (e) {
+            error.NoBreakpointIDGiven,
+            error.BreakpointDoesNotExist,
+
             error.OutOfMemory,
             error.Overflow,
             error.InvalidCharacter,
@@ -183,9 +186,24 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
             defer parsed.deinit();
             connection.handle_event_initialized(parsed.value.seq);
         },
+        .breakpoint => {
+            const parsed = try connection.get_and_parse_event(protocol.BreakpointEvent, .breakpoint);
+            defer parsed.deinit();
+
+            const body = parsed.value.body;
+            switch (body.reason) {
+                .changed, .new => try data.set_breakpoints(&.{body.breakpoint}),
+                .removed => data.remove_breakpoint(body.breakpoint.id),
+                .string => |string| log.err(
+                    "TODO event: {s} in switch case {s}",
+                    .{ @tagName(event), string },
+                ),
+            }
+
+            connection.handled_event(.breakpoint, parsed.value.seq);
+        },
 
         .thread => log.err("TODO event: {s}", .{@tagName(event)}),
-        .breakpoint => log.err("TODO event: {s}", .{@tagName(event)}),
         .loadedSource => log.err("TODO event: {s}", .{@tagName(event)}),
         .process => log.err("TODO event: {s}", .{@tagName(event)}),
         .capabilities => log.err("TODO event: {s}", .{@tagName(event)}),
@@ -292,6 +310,19 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             connection.handled_response(response, .success);
         },
 
+        .setFunctionBreakpoints => {
+            const parsed = try connection.get_parse_validate_response(
+                protocol.SetFunctionBreakpointsResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            try data.set_breakpoints(parsed.value.body.breakpoints);
+
+            connection.handled_response(response, .success);
+        },
+
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -300,7 +331,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
         .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setFunctionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),

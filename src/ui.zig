@@ -93,6 +93,7 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
         zgui.dockBuilderDockWindow("Stack Frames", empty);
         zgui.dockBuilderDockWindow("Scopes", empty);
         zgui.dockBuilderDockWindow("Variables", empty);
+        zgui.dockBuilderDockWindow("Breakpoints", empty);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -104,6 +105,8 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
     stack_frames(arena.allocator(), "Stack Frames", data.*, connection);
     scopes(arena.allocator(), "Scopes", data.*, connection);
     variables(arena.allocator(), "Variables", data.*, connection);
+    breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
+
     debug_ui(arena.allocator(), "Debug", connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
@@ -286,6 +289,22 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, co
     }
 }
 
+fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    draw_table_from_slice_of_struct("breakpoints", protocol.Breakpoint, data.breakpoints.items);
+
+    // for (data.break.items) |item| {
+    //     var buf: [64]u8 = undefined;
+    //     const n = std.fmt.bufPrintZ(&buf, "ID {?}##breakpoints slice", .{item.id}) catch return;
+    //     draw_table_from_slice_of_struct(n, protocol.Breakpoint, item.data);
+    //     zgui.newLine();
+    // }
+}
+
 fn debug_ui(arena: std.mem.Allocator, name: [:0]const u8, connection: *Connection, data: *SessionData, args: Args) !void {
     var open: bool = true;
     zgui.showDemoWindow(&open);
@@ -443,6 +462,38 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     if (zgui.button("Threads", .{})) {
         _ = try connection.queue_request(.threads, null, .none, .no_data);
     }
+
+    if (zgui.button("Request Set Function Breakpoint", .{})) {
+        _ = try connection.queue_request(
+            .setFunctionBreakpoints,
+            protocol.SetFunctionBreakpointsArguments{
+                .breakpoints = data.function_breakpoints.items,
+            },
+            .none,
+            .no_data,
+        );
+    }
+
+    zgui.newLine();
+    const static = struct {
+        var name_buf: [512:0]u8 = .{0} ** 512;
+    };
+    _ = zgui.inputText("Function name", .{ .buf = &static.name_buf });
+    if (zgui.button("Add Function Breakpoint", .{})) {
+        const len = std.mem.indexOfScalar(u8, &static.name_buf, 0) orelse static.name_buf.len;
+        try data.add_function_breakpoint(.{
+            .name = static.name_buf[0..len],
+        });
+
+        static.name_buf[0] = 0; // clear
+    }
+    zgui.sameLine(.{});
+    if (zgui.button("Remove Function Breakpoint", .{})) {
+        const len = std.mem.indexOfScalar(u8, &static.name_buf, 0) orelse static.name_buf.len;
+        data.remove_function_breakpoint(static.name_buf[0..len]);
+        static.name_buf[0] = 0; // clear
+    }
+    draw_table_from_slice_of_struct("Function Breakpoints", protocol.FunctionBreakpoint, data.function_breakpoints.items);
 }
 
 fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_value: ?[]const T) void {
