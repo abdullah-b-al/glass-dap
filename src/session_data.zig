@@ -336,12 +336,21 @@ fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype
 }
 
 fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: anytype) ?usize {
+    if (@typeInfo(@TypeOf(value)) == .optional and value == null) return null;
+
     const info = @typeInfo(@TypeOf(value));
     const is_slice = info == .pointer and info.pointer.size == .slice;
     for (slice, 0..) |item, i| {
         const field = @field(item, field_name);
-        if (is_slice and std.mem.eql(info.pointer.child, field, value)) {
-            return i;
+        if (is_slice) {
+            const unwraped_field = if (@typeInfo(@TypeOf(field)) == .optional)
+                field orelse continue
+            else
+                field;
+
+            if (std.mem.eql(info.pointer.child, unwraped_field, value)) {
+                return i;
+            }
         } else if (std.meta.eql(field, value)) {
             return i;
         }
