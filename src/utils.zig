@@ -36,68 +36,79 @@ pub fn object_ancestor_get(object: *protocol.Object, ancestors: []const []const 
     return obj;
 }
 
-pub fn value_to_object(allocator: std.mem.Allocator, value: anytype) !protocol.Object {
+pub fn value_to_object(arena: std.mem.Allocator, value: anytype) !protocol.Object {
     var root = protocol.Object{};
-    try value_to_object_recurse(allocator, "object", value, &root);
+    try value_to_object_recurse(arena, "object", value, &root);
     const maybe_object = root.map.get("object").?;
     switch (maybe_object) {
         .null => return root,
         .object => |object| {
             _ = root.map.swapRemove("object");
-            root.deinit(allocator);
+            root.deinit(arena);
             return object;
         },
         else => unreachable,
     }
 }
 
-fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value: anytype, object: *protocol.Object) error{OutOfMemory}!void {
+/// This function does NOT duplicate memory but it does allocate memory to store slices
+fn value_to_object_recurse(arena: std.mem.Allocator, name: []const u8, value: anytype, object: *protocol.Object) error{OutOfMemory}!void {
     if (@TypeOf(value) == protocol.Object) {
-        try object.map.put(allocator, name, .{ .object = value });
+        try object.map.put(arena, name, .{ .object = value });
         return;
     }
 
     if (@TypeOf(value) == protocol.Array) {
-        try object.map.put(allocator, name, .{ .array = value });
+        try object.map.put(arena, name, .{ .array = value });
         return;
     }
 
     switch (@typeInfo(@TypeOf(value))) {
         .bool => {
-            try object.map.put(allocator, name, .{ .bool = value });
+            try object.map.put(arena, name, .{ .bool = value });
         },
         .int => {
-            try object.map.put(allocator, name, .{ .integer = @intCast(value) });
+            try object.map.put(arena, name, .{ .integer = @intCast(value) });
         },
         .float => {
-            try object.map.put(allocator, name, .{ .float = value });
+            try object.map.put(arena, name, .{ .float = value });
         },
 
         .null => @compileError("Handle in Optional or provide an empty object"),
         .optional => {
             if (value) |v| {
-                try value_to_object_recurse(allocator, name, v, object);
+                try value_to_object_recurse(arena, name, v, object);
             } else {
-                try object.map.put(allocator, name, .null);
+                try object.map.put(arena, name, .null);
             }
         },
         .@"enum" => {
-            try object.map.put(allocator, name, .{ .string = @tagName(value) });
+            try object.map.put(arena, name, .{ .string = @tagName(value) });
         },
 
         .@"struct" => {
-            try object.map.put(allocator, name, .{ .object = protocol.Object{} });
+            try object.map.put(arena, name, .{ .object = protocol.Object{} });
             const struct_object = &object.map.getPtr(name).?.object;
             inline for (std.meta.fields(@TypeOf(value))) |field| {
-                try value_to_object_recurse(allocator, field.name, @field(value, field.name), struct_object);
+                try value_to_object_recurse(arena, field.name, @field(value, field.name), struct_object);
             }
         },
 
         .pointer => |pointer| {
-            if (pointer.child == u8 and pointer.size == .slice) {
-                try object.map.put(allocator, name, .{ .string = value });
+            if (pointer.size != .slice) {
+                @compileError("Type not supported: " ++ @typeName(@TypeOf(value)));
+            }
+
+            if (pointer.child == u8) {
+                try object.map.put(arena, name, .{ .string = value });
             } else {
-                @panic("Type impossible to support: " ++ @typeName(@TypeOf(value)));
+                var list = std.ArrayListUnmanaged(protocol.Value){};
+                try list.ensureTotalCapacity(arena, value.len);
+                for (value) |v| {
+                    const o = try value_to_object(arena, v);
+                    list.appendAssumeCapacity(.{ .object = o });
+                }
+                try object.map.put(arena, name, .{ .array = list });
             }
         },
         .void => @panic("Handle in Union"),
@@ -113,9 +124,9 @@ fn value_to_object_recurse(allocator: std.mem.Allocator, name: []const u8, value
                     const v = @field(value, f.name);
                     if (@TypeOf(v) == void) {
                         // treat it as an enum, because that's effectively what it is
-                        try object.map.put(allocator, name, .{ .string = @tagName(value) });
+                        try object.map.put(arena, name, .{ .string = @tagName(value) });
                     } else {
-                        try value_to_object_recurse(allocator, name, v, object);
+                        try value_to_object_recurse(arena, name, v, object);
                     }
                 }
             }
