@@ -73,6 +73,7 @@ pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void
         err catch |e| switch (e) {
             error.NoBreakpointIDGiven,
             error.BreakpointDoesNotExist,
+            error.SourceContentWithNoIdentifier,
 
             error.OutOfMemory,
             error.Overflow,

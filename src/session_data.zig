@@ -49,7 +49,7 @@ pub const Variables = struct {
 
 pub const SourceContent = struct {
     path: ?[]const u8,
-    source_reference: i32,
+    source_reference: ?i32,
     content: []const u8,
     mime_type: ?[]const u8,
 };
@@ -252,6 +252,10 @@ pub fn get_source_by_path(data: *SessionData, path: []const u8) ?protocol.Source
 }
 
 pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
+    if (content.path == null and content.source_reference == null) {
+        return error.SourceContentWithNoIdentifier;
+    }
+
     const entry =
         get_entry_ptr(data.sources_content.items, "source_reference", content.source_reference) orelse
         get_entry_ptr(data.sources_content.items, "path", content.path) orelse
