@@ -367,3 +367,36 @@ fn clone_protocol_array(cloner: anytype, array: protocol.Array) !protocol.Array 
 
     return cloned;
 }
+
+pub fn entry_exists(slice: anytype, comptime field_name: []const u8, value: anytype) bool {
+    return get_entry_ptr(slice, field_name, value) != null;
+}
+
+pub fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype) ?*@typeInfo(@TypeOf(slice)).pointer.child {
+    const index = get_entry_index(slice, field_name, value) orelse return null;
+    return &slice[index];
+}
+
+pub fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: anytype) ?usize {
+    if (@typeInfo(@TypeOf(value)) == .optional and value == null) return null;
+
+    const info = @typeInfo(@TypeOf(value));
+    const is_slice = info == .pointer and info.pointer.size == .slice;
+    for (slice, 0..) |item, i| {
+        const field = @field(item, field_name);
+        if (is_slice) {
+            const unwraped_field = if (@typeInfo(@TypeOf(field)) == .optional)
+                field orelse continue
+            else
+                field;
+
+            if (std.mem.eql(info.pointer.child, unwraped_field, value)) {
+                return i;
+            }
+        } else if (std.meta.eql(field, value)) {
+            return i;
+        }
+    }
+
+    return null;
+}

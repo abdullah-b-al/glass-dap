@@ -15,6 +15,8 @@ pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
     const init_args = protocol.InitializeRequestArguments{
         .clientName = "unidep",
         .adapterID = "???",
+        .columnsStartAt1 = false,
+        .linesStartAt1 = false,
     };
 
     if (connection.state == .not_spawned) {

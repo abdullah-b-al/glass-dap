@@ -112,8 +112,8 @@ pub fn deinit(data: *SessionData) void {
 }
 
 pub fn get_thread_data(data: SessionData, id: i32) ?Thread {
-    const thread = get_entry_ptr(data.threads.items, "id", id) orelse return null;
-    const state = get_entry_ptr(data.threads_state.items, "thread_id", id) orelse return null;
+    const thread = utils.get_entry_ptr(data.threads.items, "id", id) orelse return null;
+    const state = utils.get_entry_ptr(data.threads_state.items, "thread_id", id) orelse return null;
 
     return Thread{
         .id = thread.id,
@@ -126,7 +126,7 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
     const stopped = try data.clone_anytype(event.body);
 
     if (stopped.threadId) |id| {
-        if (get_entry_ptr(data.threads_state.items, "thread_id", id)) |entry| {
+        if (utils.get_entry_ptr(data.threads_state.items, "thread_id", id)) |entry| {
             entry.* = .{
                 .thread_id = entry.thread_id,
                 .state = .{ .stopped = stopped },
@@ -155,7 +155,7 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
 }
 
 pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
-    if (get_entry_ptr(data.threads_state.items, "thread_id", event.body.threadId)) |entry| {
+    if (utils.get_entry_ptr(data.threads_state.items, "thread_id", event.body.threadId)) |entry| {
         entry.* = .{
             .thread_id = entry.thread_id,
             .state = .continued,
@@ -214,7 +214,7 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
 
 pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: []const protocol.StackFrame) !void {
     try data.stack_frames.ensureUnusedCapacity(data.allocator, 1);
-    if (get_entry_ptr(data.stack_frames.items, "thread_id", thread_id)) |entry| {
+    if (utils.get_entry_ptr(data.stack_frames.items, "thread_id", thread_id)) |entry| {
         // FIXME: check docs: protocol.StackTraceResponse.body.totalFrames
         entry.data = try data.clone_anytype(response);
     } else {
@@ -235,8 +235,8 @@ pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: []const pr
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
     const exists =
-        (source.path != null and entry_exists(data.sources.items, "path", source.path)) or
-        (source.sourceReference != null and entry_exists(data.sources.items, "sourceReference", source.sourceReference));
+        (source.path != null and utils.entry_exists(data.sources.items, "path", source.path)) or
+        (source.sourceReference != null and utils.entry_exists(data.sources.items, "sourceReference", source.sourceReference));
 
     if (!exists) {
         try data.sources.append(data.allocator, try data.clone_anytype(source));
@@ -244,11 +244,11 @@ pub fn set_source(data: *SessionData, source: protocol.Source) !void {
 }
 
 pub fn get_source_by_reference(data: *SessionData, reference: i32) ?protocol.Source {
-    return (get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
+    return (utils.get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
 }
 
 pub fn get_source_by_path(data: *SessionData, path: []const u8) ?protocol.Source {
-    return (get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
+    return (utils.get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
 }
 
 pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
@@ -257,8 +257,8 @@ pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
     }
 
     const entry =
-        get_entry_ptr(data.sources_content.items, "source_reference", content.source_reference) orelse
-        get_entry_ptr(data.sources_content.items, "path", content.path) orelse
+        utils.get_entry_ptr(data.sources_content.items, "source_reference", content.source_reference) orelse
+        utils.get_entry_ptr(data.sources_content.items, "path", content.path) orelse
         try data.sources_content.addOne(data.allocator);
 
     entry.* = try data.clone_anytype(content);
@@ -266,7 +266,7 @@ pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
 
 pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.Scope) !void {
     try data.scopes.ensureUnusedCapacity(data.allocator, 1);
-    if (get_entry_ptr(data.scopes.items, "frame_id", frame_id)) |entry| {
+    if (utils.get_entry_ptr(data.scopes.items, "frame_id", frame_id)) |entry| {
         entry.data = try data.clone_anytype(response);
     } else {
         data.scopes.appendAssumeCapacity(.{
@@ -278,7 +278,7 @@ pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.
 
 pub fn set_variables(data: *SessionData, variables_reference: i32, response: []const protocol.Variable) !void {
     try data.variables.ensureUnusedCapacity(data.allocator, 1);
-    if (get_entry_ptr(data.variables.items, "reference", variables_reference)) |entry| {
+    if (utils.get_entry_ptr(data.variables.items, "reference", variables_reference)) |entry| {
         entry.data = try data.clone_anytype(response);
     } else {
         data.variables.appendAssumeCapacity(.{
@@ -291,14 +291,14 @@ pub fn set_variables(data: *SessionData, variables_reference: i32, response: []c
 pub fn add_module(data: *SessionData, module: protocol.Module) !void {
     try data.modules.ensureUnusedCapacity(data.allocator, 1);
 
-    if (!entry_exists(data.modules.items, "id", module.id)) {
+    if (!utils.entry_exists(data.modules.items, "id", module.id)) {
         data.modules.appendAssumeCapacity(try data.clone_anytype(module));
     }
 }
 
 pub fn set_breakpoints(data: *SessionData, breakpoints: []const protocol.Breakpoint) !void {
     for (breakpoints) |bp| {
-        if (entry_exists(data.breakpoints.items, "id", bp.id)) {
+        if (utils.entry_exists(data.breakpoints.items, "id", bp.id)) {
             try data.update_breakpoint(bp);
         } else {
             try data.breakpoints.append(data.allocator, try data.clone_anytype(bp));
@@ -307,7 +307,7 @@ pub fn set_breakpoints(data: *SessionData, breakpoints: []const protocol.Breakpo
 }
 
 pub fn remove_breakpoint(data: *SessionData, id: ?i32) void {
-    const index = get_entry_index(
+    const index = utils.get_entry_index(
         data.breakpoints.items,
         "id",
         id orelse return,
@@ -318,20 +318,20 @@ pub fn remove_breakpoint(data: *SessionData, id: ?i32) void {
 
 fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void {
     const id = breakpoint.id orelse return error.NoBreakpointIDGiven;
-    const entry = get_entry_ptr(data.breakpoints.items, "id", id) orelse return error.BreakpointDoesNotExist;
+    const entry = utils.get_entry_ptr(data.breakpoints.items, "id", id) orelse return error.BreakpointDoesNotExist;
 
     entry.* = try data.clone_anytype(breakpoint);
     entry.id = id;
 }
 
 pub fn add_function_breakpoint(data: *SessionData, breakpoint: protocol.FunctionBreakpoint) !void {
-    if (!entry_exists(data.function_breakpoints.items, "name", breakpoint.name)) {
+    if (!utils.entry_exists(data.function_breakpoints.items, "name", breakpoint.name)) {
         try data.function_breakpoints.append(data.allocator, try data.clone_anytype(breakpoint));
     }
 }
 
 pub fn remove_function_breakpoint(data: *SessionData, name: []const u8) void {
-    const index = get_entry_index(data.function_breakpoints.items, "name", name) orelse return;
+    const index = utils.get_entry_index(data.function_breakpoints.items, "name", name) orelse return;
     _ = data.function_breakpoints.orderedRemove(index);
 }
 
@@ -354,37 +354,4 @@ fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(
 
 fn get_or_clone_string(data: *SessionData, string: []const u8) ![]const u8 {
     return try data.string_storage.get_and_put(data.allocator, string);
-}
-
-fn entry_exists(slice: anytype, comptime field_name: []const u8, value: anytype) bool {
-    return get_entry_ptr(slice, field_name, value) != null;
-}
-
-fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype) ?*@typeInfo(@TypeOf(slice)).pointer.child {
-    const index = get_entry_index(slice, field_name, value) orelse return null;
-    return &slice[index];
-}
-
-fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: anytype) ?usize {
-    if (@typeInfo(@TypeOf(value)) == .optional and value == null) return null;
-
-    const info = @typeInfo(@TypeOf(value));
-    const is_slice = info == .pointer and info.pointer.size == .slice;
-    for (slice, 0..) |item, i| {
-        const field = @field(item, field_name);
-        if (is_slice) {
-            const unwraped_field = if (@typeInfo(@TypeOf(field)) == .optional)
-                field orelse continue
-            else
-                field;
-
-            if (std.mem.eql(info.pointer.child, unwraped_field, value)) {
-                return i;
-            }
-        } else if (std.meta.eql(field, value)) {
-            return i;
-        }
-    }
-
-    return null;
 }

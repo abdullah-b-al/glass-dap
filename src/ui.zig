@@ -8,6 +8,7 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const Args = @import("main.zig").Args;
 const request = @import("request.zig");
+const io = @import("io.zig");
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     try glfw.init();
@@ -280,22 +281,49 @@ fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: Session
     if (!zgui.begin(name, .{})) return;
 
     draw_table_from_slice_of_struct("breakpoints", protocol.Breakpoint, data.breakpoints.items);
-
-    // for (data.break.items) |item| {
-    //     var buf: [64]u8 = undefined;
-    //     const n = std.fmt.bufPrintZ(&buf, "ID {?}##breakpoints slice", .{item.id}) catch return;
-    //     draw_table_from_slice_of_struct(n, protocol.Breakpoint, item.data);
-    //     zgui.newLine();
-    // }
 }
 
-fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
-    _ = connection;
+fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    draw_table_from_slice_of_struct("sources", protocol.Source, data.sources.items);
+    const columns_count = std.meta.fields(protocol.Source).len + 1;
+    if (zgui.beginTable("Source Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        zgui.tableSetupColumn("Actions", .{});
+        inline for (std.meta.fields(protocol.Source)) |field| {
+            zgui.tableSetupColumn(field.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (data.sources.items, 0..) |source, i| {
+            const button_name = std.fmt.allocPrintZ(arena, "Get Content##{}", .{i}) catch return;
+            zgui.tableNextRow(.{});
+            _ = zgui.tableNextColumn();
+            if (zgui.button(button_name, .{})) blk: {
+                if (source.path) |path| {
+                    const new_source = io.open_file_as_source_content(arena, path) catch break :blk;
+                    data.set_source_content(new_source) catch break :blk;
+                } else {
+                    _ = connection.queue_request(
+                        .source,
+                        protocol.SourceArguments{
+                            .source = source,
+                            .sourceReference = source.sourceReference.?,
+                        },
+                        .none,
+                        .{ .source = .{ .path = source.path, .source_reference = source.sourceReference.? } },
+                    ) catch return;
+                }
+            }
+
+            inline for (std.meta.fields(protocol.Source)) |field| {
+                _ = zgui.tableNextColumn();
+                const value = @field(source, field.name);
+                zgui.text("{s}", .{anytype_to_string(value, .{})});
+            }
+        }
+        zgui.endTable();
+    }
 }
 
 fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
@@ -319,9 +347,22 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
             tab_name = std.fmt.bufPrintZ(&buf, "{}##Sources", .{i}) catch continue;
         }
 
+        const active_line: ?i32 = blk: {
+            const frame = get_frame_of_source_content(data, entry) orelse break :blk null;
+            break :blk frame.line;
+        };
+
+        var line_number: i32 = 0;
         if (zgui.beginTabItem(tab_name, .{})) {
             defer zgui.endTabItem();
-            zgui.text("{s}", .{entry.content});
+
+            var iter = std.mem.splitScalar(u8, entry.content, '\n');
+            while (iter.next()) |line| {
+                const color: [4]f32 = if (active_line == line_number) .{ 1, 0, 0, 1 } else .{ 1, 1, 1, 1 };
+                zgui.textColored(color, "{s}", .{line});
+
+                line_number += 1;
+            }
         }
     }
 }
@@ -365,7 +406,7 @@ fn debug_ui(arena: std.mem.Allocator, connection: *Connection, data: *SessionDat
     debug_scopes(arena, "Debug Scopes", data.*, connection);
     debug_variables(arena, "Debug Variables", data.*, connection);
     debug_breakpoints(arena, "Debug Breakpoints", data.*, connection);
-    debug_sources(arena, "Debug Sources", data.*, connection);
+    debug_sources(arena, "Debug Sources", data, connection);
     debug_sources_content(arena, "Debug Sources Content", data.*, connection);
 
     var open: bool = true;
@@ -498,6 +539,8 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         const init_args = protocol.InitializeRequestArguments{
             .clientName = "unidep",
             .adapterID = "???",
+            .columnsStartAt1 = false,
+            .linesStartAt1 = false,
         };
 
         _ = try connection.queue_request_init(init_args, .none);
@@ -811,4 +854,21 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
         std.debug.SafetyLock => return @typeName(T),
         inline else => @compileError(@typeName(T)),
     };
+}
+
+fn get_frame_of_source_content(data: SessionData, content: SessionData.SourceContent) ?protocol.StackFrame {
+    for (data.stack_frames.items) |stack| {
+        for (stack.data) |frame| {
+            const source: protocol.Source = frame.source orelse continue;
+            if (content.path) |path| {
+                if (path.len > 0 and std.mem.eql(u8, source.path orelse "", path)) {
+                    return frame;
+                }
+            } else if (content.source_reference == source.sourceReference) {
+                return frame;
+            }
+        }
+    }
+
+    return null;
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
+const SessionData = @import("session_data.zig");
 
 pub const Header = struct {
     content_len: usize,
@@ -82,4 +83,17 @@ pub fn read_all(allocator: std.mem.Allocator, header: Header, reader: anytype) !
     }
 
     return list.toOwnedSlice();
+}
+
+pub fn open_file_as_source_content(allocator: std.mem.Allocator, path: []const u8) !SessionData.SourceContent {
+    std.debug.assert(std.fs.path.isAbsolute(path));
+
+    const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    defer file.close();
+    return .{
+        .path = path,
+        .source_reference = null,
+        .content = try file.readToEndAlloc(allocator, std.math.maxInt(u32)),
+        .mime_type = null,
+    };
 }
