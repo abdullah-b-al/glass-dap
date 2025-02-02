@@ -223,6 +223,8 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             try acknowledge_only(connection, response.request_seq, response.command);
             connection.handle_response_launch(response);
         },
+
+        .next,
         .configurationDone,
         .pause,
         => try acknowledge_and_handled(connection, response),
@@ -354,7 +356,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .@"continue" => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .next => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepIn => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepOut => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepBack => log.err("TODO: {s}", .{@tagName(response.command)}),

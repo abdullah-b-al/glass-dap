@@ -156,6 +156,26 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                         .threadId = thread.id,
                     }, .none, .no_data) catch return;
                 }
+
+                var arg = protocol.NextArguments{
+                    .threadId = thread.id,
+                    .singleThread = true,
+                    .granularity = .line,
+                };
+                if (zgui.button("Next Line", .{})) {
+                    arg.granularity = .line;
+                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                }
+                zgui.sameLine(.{});
+                if (zgui.button("Next Statement", .{})) {
+                    arg.granularity = .statement;
+                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                }
+                zgui.sameLine(.{});
+                if (zgui.button("Next Instruction", .{})) {
+                    arg.granularity = .instruction;
+                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                }
             } // column 1
 
             _ = zgui.tableNextColumn();
