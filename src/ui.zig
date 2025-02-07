@@ -181,7 +181,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbac
     _ = zgui.beginChild("Code View", .{});
     defer zgui.endChild();
 
-    const content = get_source_content_of_active_source(data) orelse {
+    const key, const content = get_source_content_of_active_source(data) orelse {
         // Let's try again next frame
         set_source_content_of_active_source(arena, data, connection) catch |err| {
             log.err("{}", .{err});
@@ -193,7 +193,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbac
     const line_height = zgui.getTextLineHeightWithSpacing();
     const window_width = zgui.getWindowWidth();
 
-    const frame = get_frame_of_source_content(data.*, content);
+    const frame = get_frame_of_source_content(data.*, key);
 
     var iter = std.mem.splitScalar(u8, content.content, '\n');
     var line_number: usize = 0;
@@ -536,8 +536,8 @@ fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionDat
             _ = zgui.tableNextColumn();
             if (zgui.button(button_name, .{})) blk: {
                 if (source.path) |path| {
-                    const new_source = io.open_file_as_source_content(arena, path) catch break :blk;
-                    data.set_source_content(new_source) catch break :blk;
+                    const key, const new_source = io.open_file_as_source_content(arena, path) catch break :blk;
+                    data.set_source_content(key, new_source) catch break :blk;
                 } else {
                     _ = connection.queue_request(
                         .source,
@@ -567,23 +567,26 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    zgui.text("len {}", .{data.sources_content.items.len});
+    zgui.text("len {}", .{data.sources_content.count()});
     zgui.newLine();
 
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Sources Content Tabs", .{})) return;
 
     var buf: [512:0]u8 = undefined;
-    for (data.sources_content.items, 0..) |entry, i| {
-        var tab_name: [:0]const u8 = undefined;
-        if (entry.path) |path| {
-            tab_name = std.fmt.bufPrintZ(&buf, "{s}##Sources", .{path}) catch continue;
-        } else {
-            tab_name = std.fmt.bufPrintZ(&buf, "{}##Sources", .{i}) catch continue;
-        }
+    var sources_iter = data.sources_content.iterator();
+    var i: usize = 0;
+    while (sources_iter.next()) |entry| : (i += 1) {
+        const key = entry.key_ptr.*;
+        const content = entry.value_ptr.*;
+
+        const tab_name = switch (key) {
+            .path => |path| std.fmt.bufPrintZ(&buf, "{s}##Sources", .{path}) catch continue,
+            else => std.fmt.bufPrintZ(&buf, "{}##Sources", .{i}) catch continue,
+        };
 
         const active_line: ?i32 = blk: {
-            const frame = get_frame_of_source_content(data, entry) orelse break :blk null;
+            const frame = get_frame_of_source_content(data, key) orelse break :blk null;
             break :blk frame.line;
         };
 
@@ -591,7 +594,7 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
         if (zgui.beginTabItem(tab_name, .{})) {
             defer zgui.endTabItem();
 
-            var iter = std.mem.splitScalar(u8, entry.content, '\n');
+            var iter = std.mem.splitScalar(u8, content.content, '\n');
             while (iter.next()) |line| {
                 const color: [4]f32 = if (active_line == line_number) .{ 1, 0, 0, 1 } else .{ 1, 1, 1, 1 };
                 zgui.textColored(color, "{s}", .{line});
@@ -1080,18 +1083,19 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
     };
 }
 
-fn get_frame_of_source_content(data: SessionData, content: SessionData.SourceContent) ?protocol.StackFrame {
+fn get_frame_of_source_content(data: SessionData, key: SessionData.SourceContentKey) ?protocol.StackFrame {
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
 
         for (thread.stack.items) |frame| {
             const source: protocol.Source = frame.source orelse continue;
-            if (content.path) |path| {
-                if (path.len > 0 and std.mem.eql(u8, source.path orelse "", path)) {
-                    return frame;
-                }
-            } else if (content.source_reference == source.sourceReference) {
+            const eql = switch (key) {
+                .path => |path| path.len > 0 and std.mem.eql(u8, source.path orelse "", path),
+                .reference => |ref| ref == source.sourceReference,
+            };
+
+            if (eql) {
                 return frame;
             }
         }
@@ -1110,22 +1114,25 @@ fn get_stack_of_frame(data: *const SessionData, frame: protocol.StackFrame) ?Ses
     return null;
 }
 
-pub fn get_source_content_of_active_source(data: *const SessionData) ?SessionData.SourceContent {
-    const content = switch (state.active_source) {
+pub fn get_source_content_of_active_source(data: *const SessionData) ?struct { SessionData.SourceContentKey, SessionData.SourceContent } {
+    const entry = switch (state.active_source) {
         .none => return null,
-        .path => |path| utils.get_entry_ptr(data.sources_content.items, "path", path.slice()),
-        .reference => |reference| utils.get_entry_ptr(data.sources_content.items, "source_reference", reference),
+        .path => |path| data.sources_content.getEntry(.{ .path = path.slice() }),
+        .reference => |ref| data.sources_content.getEntry(.{ .reference = ref }),
     };
 
-    return if (content) |c| c.* else null;
+    return if (entry) |e|
+        .{ e.key_ptr.*, e.value_ptr.* }
+    else
+        null;
 }
 
 pub fn set_source_content_of_active_source(arena: std.mem.Allocator, data: *SessionData, connection: *Connection) !void {
     return switch (state.active_source) {
         .none => return,
         .path => |path| {
-            const content = try io.open_file_as_source_content(arena, path.slice());
-            try data.set_source_content(content);
+            _, const content = try io.open_file_as_source_content(arena, path.slice());
+            try data.set_source_content(.{ .path = path.slice() }, content);
         },
         .reference => |reference| {
             _ = try connection.queue_request(.source, protocol.SourceArguments{

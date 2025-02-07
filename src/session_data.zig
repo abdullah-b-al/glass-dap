@@ -45,9 +45,31 @@ pub const Variables = struct {
     data: []const protocol.Variable,
 };
 
+pub const SourceContentKey = union(enum) {
+    path: []const u8,
+    reference: i32,
+};
+
+const SourceContentHash = struct {
+    pub fn hash(_: @This(), key: SourceContentKey) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
+            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
+        }
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+    pub fn eql(_: @This(), a: SourceContentKey, b: SourceContentKey, _: usize) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .path => std.mem.eql(u8, a.path, b.path),
+            .reference => a.reference == b.reference,
+        };
+    }
+};
+
 pub const SourceContent = struct {
-    path: ?[]const u8,
-    source_reference: ?i32,
     content: []const u8,
     mime_type: ?[]const u8,
 };
@@ -61,14 +83,14 @@ allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .{},
-threads: std.AutoArrayHashMapUnmanaged(i32, Thread) = .{},
+threads: std.AutoArrayHashMapUnmanaged(i32, Thread) = .empty,
 modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 scopes: std.ArrayListUnmanaged(Scopes) = .{},
 variables: std.ArrayListUnmanaged(Variables) = .{},
 breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
 sources: std.ArrayListUnmanaged(protocol.Source) = .{},
-sources_content: std.ArrayListUnmanaged(SourceContent) = .{},
+sources_content: std.ArrayHashMapUnmanaged(SourceContentKey, SourceContent, SourceContentHash, false) = .empty,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// This is here to allow adding and removing individual breakpoints.
@@ -251,17 +273,13 @@ pub fn get_source_by_path(data: SessionData, path: []const u8) ?protocol.Source 
     return (utils.get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
 }
 
-pub fn set_source_content(data: *SessionData, content: SourceContent) !void {
-    if (content.path == null and content.source_reference == null) {
-        return error.SourceContentWithNoIdentifier;
-    }
-
-    const entry =
-        utils.get_entry_ptr(data.sources_content.items, "source_reference", content.source_reference) orelse
-        utils.get_entry_ptr(data.sources_content.items, "path", content.path) orelse
-        try data.sources_content.addOne(data.allocator);
-
-    entry.* = try data.clone_anytype(content);
+pub fn set_source_content(data: *SessionData, key: SourceContentKey, content: SourceContent) !void {
+    const real_key: SourceContentKey = switch (key) {
+        .path => |path| .{ .path = try data.string_storage.get_and_put(data.allocator, path) },
+        .reference => key,
+    };
+    const gop = try data.sources_content.getOrPut(data.allocator, real_key);
+    gop.value_ptr.* = try data.clone_anytype(content);
 }
 
 pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.Scope) !void {

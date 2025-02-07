@@ -73,7 +73,6 @@ pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void
         err catch |e| switch (e) {
             error.NoBreakpointIDGiven,
             error.BreakpointDoesNotExist,
-            error.SourceContentWithNoIdentifier,
 
             error.OutOfMemory,
             error.Overflow,
@@ -357,9 +356,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             defer parsed.deinit();
             const retained = response.request_data.source;
 
-            try data.set_source_content(.{
-                .path = retained.path,
-                .source_reference = retained.source_reference,
+            try data.set_source_content(.{ .reference = retained.source_reference }, .{
                 .content = parsed.value.body.content,
                 .mime_type = parsed.value.body.mimeType,
             });
