@@ -718,37 +718,6 @@ fn value_to_object_then_inject_then_write(connection: *Connection, value: anytyp
     try connection.adapter_write_all(message);
 }
 
-pub fn wait_for_response(connection: *Connection, seq: i32) !void {
-    while (true) {
-        for (connection.responses.items) |item| {
-            const request_seq = utils.pull_value(item.value.object.get("request_seq"), .integer) orelse continue;
-            if (request_seq == seq) {
-                return;
-            }
-        }
-        try connection.queue_messages(std.time.ms_per_s);
-    }
-}
-
-pub fn wait_for_event(connection: *Connection, name: []const u8) !i32 {
-    while (true) {
-        try connection.queue_messages(std.time.ms_per_s);
-        for (connection.events.items) |item| {
-            const value_event = item.value.object.get("event").?;
-            const event = switch (value_event) {
-                .string => |string| string,
-                else => unreachable, // this shouldn't run unless the message is invalid
-            };
-            if (std.mem.eql(u8, name, event)) {
-                const seq = utils.get_value(item.value, "seq", .integer) orelse continue;
-                return @truncate(seq);
-            }
-        }
-    }
-
-    unreachable;
-}
-
 pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
     const raw_resp, _ = try connection.get_response_by_request_seq(seq);
     return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
