@@ -363,6 +363,20 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
 
             connection.handled_response(response, .success);
         },
+        .@"continue" => {
+            const parsed = try connection.get_parse_validate_response(
+                protocol.ContinueResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            if (parsed.value.body.allThreadsContinued orelse true) {
+                data.set_continued_all();
+            }
+
+            connection.handled_response(response, .success);
+        },
 
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -376,7 +390,6 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .@"continue" => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepIn => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepOut => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepBack => log.err("TODO: {s}", .{@tagName(response.command)}),

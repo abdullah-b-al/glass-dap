@@ -21,6 +21,7 @@ pub const Scopes = struct {
 
 pub const Stack = std.ArrayListUnmanaged(protocol.StackFrame);
 
+pub const Threads = std.AutoArrayHashMapUnmanaged(i32, Thread);
 pub const Thread = struct {
     const State = union(enum) {
         stopped: ?Stopped,
@@ -83,7 +84,7 @@ allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .{},
-threads: std.AutoArrayHashMapUnmanaged(i32, Thread) = .empty,
+threads: Threads = .empty,
 modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
 scopes: std.ArrayListUnmanaged(Scopes) = .{},

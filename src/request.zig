@@ -14,7 +14,7 @@ pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
     // send configuration done
     // respond to launch or attach
     const init_args = protocol.InitializeRequestArguments{
-        .clientName = "unidep",
+        .clientName = "thabit",
         .adapterID = "???",
         .columnsStartAt1 = false,
         .linesStartAt1 = false,
@@ -90,12 +90,8 @@ pub fn get_thread_state(connection: *Connection, thread_id: i32) !void {
 }
 
 pub fn next(callbacks: *handlers.Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
-    var iter = data.threads.iterator();
-    while (iter.next()) |entry| {
-        const thread = entry.value_ptr;
-        if (!thread.unlocked) {
-            continue;
-        }
+    var iter = UnlockedThreadsIterator.init(data);
+    while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
             .threadId = thread.id,
             .singleThread = true,
@@ -119,3 +115,42 @@ pub fn next(callbacks: *handlers.Callbacks, data: SessionData, connection: *Conn
 
     handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.func) catch return;
 }
+
+pub fn continue_threads(data: SessionData, connection: *Connection) void {
+    var iter = UnlockedThreadsIterator.init(data);
+    while (iter.next()) |thread| {
+        const args = protocol.ContinueArguments{
+            .threadId = thread.id,
+            .singleThread = true,
+        };
+
+        _ = connection.queue_request(.@"continue", args, .none, .no_data) catch return;
+    }
+}
+
+pub fn pause(data: SessionData, connection: *Connection) void {
+    var iter = UnlockedThreadsIterator.init(data);
+    while (iter.next()) |thread| {
+        _ = connection.queue_request(.pause, protocol.PauseArguments{
+            .threadId = thread.id,
+        }, .none, .no_data) catch return;
+    }
+}
+
+pub const UnlockedThreadsIterator = struct {
+    iter: SessionData.Threads.Iterator,
+
+    pub fn init(data: SessionData) UnlockedThreadsIterator {
+        return .{ .iter = data.threads.iterator() };
+    }
+
+    pub fn next(self: *UnlockedThreadsIterator) ?SessionData.Thread {
+        while (self.iter.next()) |entry| {
+            if (entry.value_ptr.unlocked) {
+                return entry.value_ptr.*;
+            }
+        }
+
+        return null;
+    }
+};

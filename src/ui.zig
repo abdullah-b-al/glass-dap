@@ -127,9 +127,9 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
         _ = zgui.DockSpace("Main DockSpace", viewport.getSize(), .{});
     }
 
-    source_code(arena.allocator(), "Source Code", callbacks, data, connection);
+    source_code(arena.allocator(), "Source Code", data, connection);
     console(arena.allocator(), "Console", data.*, connection);
-    threads(arena.allocator(), "Threads", data, connection);
+    threads(arena.allocator(), "Threads", callbacks, data, connection);
     sources(arena.allocator(), "Sources", data.*, connection);
 
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
@@ -139,7 +139,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     window.swapBuffers();
 }
 
-fn source_code(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     if (state.update_active_source_to_top_of_stack) blk: {
         state.update_active_source_to_top_of_stack = false;
         if (thread_of_active_source(data.*)) |thread| {
@@ -163,23 +163,6 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbac
 
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
-
-    { // buttons
-        if (zgui.button("Next Line", .{})) {
-            request.next(callbacks, data.*, connection, .line);
-        }
-        zgui.sameLine(.{});
-        if (zgui.button("Next Statement", .{})) {
-            request.next(callbacks, data.*, connection, .statement);
-        }
-        zgui.sameLine(.{});
-        if (zgui.button("Next Instruction", .{})) {
-            request.next(callbacks, data.*, connection, .instruction);
-        }
-    } // buttons
-
-    _ = zgui.beginChild("Code View", .{});
-    defer zgui.endChild();
 
     const key, const content = get_source_content_of_active_source(data) orelse {
         // Let's try again next frame
@@ -269,12 +252,55 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     }
 }
 
-fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
+fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
     _ = arena;
-    _ = connection;
 
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
+
+    { // buttons
+        // line 1
+        if (zgui.button("Lock All", .{})) {
+            var iter = data.threads.iterator();
+            while (iter.next()) |entry| {
+                entry.value_ptr.unlocked = false;
+            }
+        }
+
+        zgui.sameLine(.{});
+        if (zgui.button("Unlock All", .{})) {
+            var iter = data.threads.iterator();
+            while (iter.next()) |entry| {
+                entry.value_ptr.unlocked = true;
+            }
+        }
+
+        // line 2
+
+        if (zgui.button("Pause", .{})) {
+            request.pause(data.*, connection);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Continue", .{})) {
+            request.continue_threads(data.*, connection);
+        }
+
+        // line 3
+        if (zgui.button("Next Line", .{})) {
+            request.next(callbacks, data.*, connection, .line);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Next Statement", .{})) {
+            request.next(callbacks, data.*, connection, .statement);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Next Instruction", .{})) {
+            request.next(callbacks, data.*, connection, .instruction);
+        }
+    } // buttons
+
+    _ = zgui.beginChild("Code View", .{});
+    defer zgui.endChild();
 
     var style = zgui.getStyle();
     var iter = data.threads.iterator();
@@ -321,7 +347,7 @@ fn console(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     }
 }
 
-fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: SessionData, connection: *Connection) void {
+fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -389,25 +415,6 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callb
                             ) catch return;
                         }
                     }
-                }
-
-                zgui.sameLine(.{});
-                if (zgui.button("Pause", .{})) {
-                    _ = connection.queue_request(.pause, protocol.PauseArguments{
-                        .threadId = thread.id,
-                    }, .none, .no_data) catch return;
-                }
-
-                if (zgui.button("Next Line", .{})) {
-                    request.next(callbacks, data, connection, .line);
-                }
-                zgui.sameLine(.{});
-                if (zgui.button("Next Statement", .{})) {
-                    request.next(callbacks, data, connection, .statement);
-                }
-                zgui.sameLine(.{});
-                if (zgui.button("Next Instruction", .{})) {
-                    request.next(callbacks, data, connection, .instruction);
                 }
             } // column 1
 
@@ -606,6 +613,8 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
 }
 
 fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
+    _ = callbacks;
+
     const static = struct {
         var built_layout = false;
     };
@@ -639,7 +648,7 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
     }
 
     debug_modules(arena, "Debug Modules", data.*);
-    debug_threads(arena, "Debug Threads", callbacks, data.*, connection);
+    debug_threads(arena, "Debug Threads", data.*, connection);
     debug_stack_frames(arena, "Debug Stack Frames", data.*, connection);
     debug_scopes(arena, "Debug Scopes", data.*, connection);
     debug_variables(arena, "Debug Variables", data.*, connection);
@@ -764,7 +773,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     zgui.sameLine(.{});
     if (zgui.button("Initialize Adapter", .{})) {
         const init_args = protocol.InitializeRequestArguments{
-            .clientName = "unidep",
+            .clientName = "thabit",
             .adapterID = "???",
             .columnsStartAt1 = false,
             .linesStartAt1 = false,
