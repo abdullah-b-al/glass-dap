@@ -685,9 +685,9 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
     }
 
     const table = .{
-        .{ .name = "Queued Responses", .items = connection.responses.items },
+        .{ .name = "Queued Messages", .items = connection.messages.items },
         .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
-        .{ .name = "Events", .items = connection.events.items },
+        .{ .name = "Debug Failed Messages", .items = connection.debug_failed_messages.items },
         .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
     };
     inline for (table) |element| {

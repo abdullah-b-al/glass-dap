@@ -49,9 +49,8 @@ fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Conne
             if (!ok) break;
         }
 
-        handlers.handle_queued_events(callbacks, data, connection);
         handlers.send_queued_requests(connection);
-        handlers.handle_queued_responses(data, connection);
+        handlers.handle_queued_messages(callbacks, data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 
         ui.ui_tick(window, callbacks, connection, data, args);

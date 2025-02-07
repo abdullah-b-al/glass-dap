@@ -152,6 +152,16 @@ pub const Request = struct {
     depends_on: Dependency,
 };
 
+pub const MessagesContext = struct {
+    pub fn less_than(_: void, a: RawMessage, b: RawMessage) std.math.Order {
+        const a_seq = utils.get_value(a.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
+        const b_seq = utils.get_value(b.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
+
+        return std.math.order(a_seq, b_seq);
+    }
+};
+pub const Messages = std.PriorityQueue(RawMessage, void, MessagesContext.less_than);
+
 pub const Command = blk: {
     @setEvalBranchQuota(10_000);
 
@@ -239,11 +249,12 @@ total_requests: u32 = 0,
 debug_requests: std.ArrayList(Request),
 
 total_responses_received: u32 = 0,
-responses: std.ArrayList(RawMessage),
-debug_handled_responses: std.ArrayList(RawMessage),
-
 total_events_received: u32 = 0,
-events: std.ArrayList(RawMessage),
+total_messages_received: u32 = 0,
+messages: Messages,
+
+debug_failed_messages: std.ArrayList(RawMessage),
+debug_handled_responses: std.ArrayList(RawMessage),
 debug_handled_events: std.ArrayList(RawMessage),
 
 state: State,
@@ -269,13 +280,13 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
         .queued_requests = std.ArrayList(Request).init(allocator),
         .debug_requests = std.ArrayList(Request).init(allocator),
-        .responses = std.ArrayList(RawMessage).init(allocator),
+        .messages = Messages.init(allocator, {}),
         .expected_responses = std.ArrayList(Response).init(allocator),
         .handled_responses = std.ArrayList(HandledResponse).init(allocator),
         .handled_events = std.ArrayList(Event).init(allocator),
 
+        .debug_failed_messages = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
-        .events = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_events = std.ArrayList(RawMessage).init(allocator),
         .debug = debug,
     };
@@ -283,9 +294,9 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
 
 pub fn deinit(connection: *Connection) void {
     const table = .{
-        connection.responses.items,
+        connection.messages.items,
+        connection.debug_failed_messages.items,
         connection.debug_handled_responses.items,
-        connection.events.items,
         connection.debug_handled_events.items,
     };
 
@@ -308,9 +319,10 @@ pub fn deinit(connection: *Connection) void {
     connection.expected_responses.deinit();
     connection.handled_responses.deinit();
     connection.handled_events.deinit();
-    connection.responses.deinit();
+
+    connection.messages.deinit();
+    connection.debug_failed_messages.deinit();
     connection.debug_handled_responses.deinit();
-    connection.events.deinit();
     connection.debug_handled_events.deinit();
 
     connection.arena.deinit();
@@ -432,28 +444,32 @@ pub fn delayed_handled_event(connection: *Connection, event: Event, raw_event: R
     }
 }
 
-pub fn handled_event(connection: *Connection, event: Event, seq: i32) void {
-    _, const index = connection.get_event(seq) catch unreachable;
-    const raw_event = connection.events.orderedRemove(index);
+pub fn handled_event(connection: *Connection, message: RawMessage, event: Event) void {
     connection.handled_events.appendAssumeCapacity(event);
     if (connection.debug) {
-        connection.debug_handled_events.appendAssumeCapacity(raw_event);
+        connection.debug_handled_events.appendAssumeCapacity(message);
     } else {
-        raw_event.deinit();
+        message.deinit();
     }
 }
 
-pub fn handled_response(connection: *Connection, response: Response, status: ResponseStatus) void {
-    _, const index = connection.get_response_by_request_seq(response.request_seq) catch @panic("Only call this if you got a response");
-    const raw_resp = connection.responses.orderedRemove(index);
+pub fn handled_response(connection: *Connection, message: RawMessage, response: Response, status: ResponseStatus) void {
     connection.handled_responses.appendAssumeCapacity(.{
         .response = response,
         .status = status,
     });
     if (connection.debug) {
-        connection.debug_handled_responses.appendAssumeCapacity(raw_resp);
+        connection.debug_handled_responses.appendAssumeCapacity(message);
     } else {
-        raw_resp.deinit();
+        message.deinit();
+    }
+}
+
+pub fn failed_message(connection: *Connection, message: RawMessage) void {
+    if (connection.debug) {
+        connection.debug_failed_messages.appendAssumeCapacity(message);
+    } else {
+        message.deinit();
     }
 }
 
@@ -470,11 +486,11 @@ pub fn queue_request_init(connection: *Connection, arguments: protocol.Initializ
     return seq;
 }
 
-pub fn handle_response_init(connection: *Connection, response: Response) !void {
+pub fn handle_response_init(connection: *Connection, message: RawMessage, response: Response) !void {
     std.debug.assert(connection.state == .initializing);
     const cloner = connection.create_cloner();
 
-    const resp = try connection.get_parse_validate_response(protocol.InitializeResponse, response.request_seq, .initialize);
+    const resp = try connection.parse_validate_response(message, protocol.InitializeResponse, response.request_seq, .initialize);
     defer resp.deinit();
     if (resp.value.body) |body| {
         connection.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
@@ -486,7 +502,7 @@ pub fn handle_response_init(connection: *Connection, response: Response) !void {
     }
 
     connection.state = .partially_initialized;
-    connection.handled_response(response, .success);
+    connection.handled_response(message, response, .success);
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
@@ -496,9 +512,9 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
     return try connection.queue_request(.launch, args, depends_on, .no_data);
 }
 
-pub fn handle_response_launch(connection: *Connection, response: Response) void {
+pub fn handle_response_launch(connection: *Connection, message: RawMessage, response: Response) void {
     connection.state = .launched;
-    connection.handled_response(response, .success);
+    connection.handled_response(message, response, .success);
 }
 
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
@@ -507,8 +523,13 @@ pub fn queue_request_configuration_done(connection: *Connection, arguments: ?pro
     return try connection.queue_request(.configurationDone, args, depends_on, .no_data);
 }
 
-pub fn handle_response_disconnect(connection: *Connection, response: Response) !void {
-    const resp = try connection.get_and_parse_response(protocol.DisconnectResponse, response.request_seq);
+pub fn handle_response_disconnect(connection: *Connection, message: RawMessage, response: Response) !void {
+    const resp = try connection.parse_validate_response(
+        message,
+        protocol.DisconnectResponse,
+        response.request_seq,
+        response.command,
+    );
     defer resp.deinit();
     try validate_response(resp.value, response.request_seq, .disconnect);
 
@@ -516,12 +537,12 @@ pub fn handle_response_disconnect(connection: *Connection, response: Response) !
         connection.state = .initialized;
     }
 
-    connection.handled_response(response, .success);
+    connection.handled_response(message, response, .success);
 }
 
-pub fn handle_event_initialized(connection: *Connection, seq: i32) void {
+pub fn handle_event_initialized(connection: *Connection, message: RawMessage) void {
     connection.state = .initialized;
-    connection.handled_event(.initialized, seq);
+    connection.handled_event(message, .initialized);
 }
 
 fn check_request_capability(connection: *Connection, command: Command) !void {
@@ -618,13 +639,14 @@ pub fn new_seq(s: *Connection) i32 {
 pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     const stdout = connection.adapter.stdout orelse return false;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
+        try connection.messages.ensureTotalCapacity(connection.total_messages_received + 1);
+        try connection.debug_failed_messages.ensureTotalCapacity(connection.messages.cap);
+
         const responses_capacity = connection.total_responses_received + 1;
-        try connection.responses.ensureUnusedCapacity(1);
         try connection.handled_responses.ensureTotalCapacity(responses_capacity);
         try connection.debug_handled_responses.ensureTotalCapacity(responses_capacity);
 
         const events_capacity = connection.total_events_received + 1;
-        try connection.events.ensureUnusedCapacity(1);
         try connection.handled_events.ensureTotalCapacity(events_capacity);
         try connection.debug_handled_events.ensureTotalCapacity(events_capacity);
 
@@ -633,24 +655,24 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
             std.log.err("{}\n", .{parsed});
             parsed.deinit();
         }
-        const object = if (parsed.value == .object) parsed.value.object else return error.InvalidMessage;
-        const t = object.get("type") orelse return error.InvalidMessage;
-        if (t != .string) return error.InvalidMessage;
-        const string = t.string;
+        const message_type = utils.get_value(parsed.value, "type", .string) orelse return error.InvalidMessage;
 
-        if (std.mem.eql(u8, string, "response")) {
-            const name = utils.pull_value(object.get("command"), .string) orelse "";
-            log.debug("New response \"{s}\"", .{name});
-            connection.responses.appendAssumeCapacity(parsed);
+        if (std.mem.eql(u8, message_type, "response")) {
+            if (utils.get_value(parsed.value, "request_seq", .integer) == null) {
+                return error.InvalidMessage;
+            }
+
             connection.total_responses_received += 1;
-        } else if (std.mem.eql(u8, string, "event")) {
-            const name = utils.pull_value(object.get("event"), .string) orelse "";
-            log.debug("New event \"{s}\"", .{name});
-            connection.events.appendAssumeCapacity(parsed);
+        } else if (std.mem.eql(u8, message_type, "event")) {
             connection.total_events_received += 1;
         } else {
             return error.UnknownMessage;
         }
+
+        connection.total_messages_received += 1;
+        connection.messages.add(parsed) catch |err| switch (err) {
+            error.OutOfMemory => unreachable,
+        };
 
         return true;
     }
@@ -658,7 +680,15 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     return false;
 }
 
-pub fn get_response_by_request_seq(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
+pub fn foo_get_response_by_request_seq(connection: *Connection, request_seq: i32) ?struct { Response, usize } {
+    for (connection.expected_responses.items, 0..) |resp, i| {
+        if (resp.request_seq == request_seq) return .{ resp, i };
+    }
+
+    return null;
+}
+
+pub fn get_response_message_by_request_seq(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
     for (connection.responses.items, 0..) |resp, i| {
         const object = resp.value.object; // messages shouldn't be queued up unless they're an object
         const raw_seq = object.get("request_seq") orelse continue;
@@ -722,24 +752,34 @@ fn value_to_object_then_inject_then_write(connection: *Connection, value: anytyp
     try connection.adapter_write_all(message);
 }
 
-pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
-    const raw_resp, _ = try connection.get_response_by_request_seq(seq);
-    return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
-}
+// pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
+//     const raw_resp, _ = try connection.get_response_by_request_seq(seq);
+//     return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
+// }
 
-pub fn get_parse_validate_response(connection: *Connection, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
-    const raw_resp, _ = try connection.get_response_by_request_seq(request_seq);
-    const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
+pub fn parse_validate_response(connection: *Connection, message: RawMessage, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
+    const resp = try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
     errdefer resp.deinit();
     try validate_response(resp.value, request_seq, command);
 
     return resp;
 }
 
-pub fn get_and_parse_event(connection: *Connection, comptime T: type, event: Event) !std.json.Parsed(T) {
-    const raw_event, _ = try connection.get_event(@tagName(event));
+// pub fn get_parse_validate_response_message(connection: *Connection, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
+//     const raw_resp, _ = try connection.get_response_by_request_seq(request_seq);
+//     const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
+//     errdefer resp.deinit();
+//     try validate_response(resp.value, request_seq, command);
+
+//     return resp;
+// }
+
+pub fn parse_event(connection: *Connection, message: RawMessage, comptime T: type, event: Event) !std.json.Parsed(T) {
+    const e = utils.get_value(message.value, "event", .string) orelse @panic("Passed non-event message");
+    std.debug.assert(std.mem.eql(u8, e, @tagName(event)));
+
     // this clones everything in the raw_event
-    return try std.json.parseFromValue(T, connection.allocator, raw_event.value, .{});
+    return try std.json.parseFromValue(T, connection.allocator, message.value, .{});
 }
 
 fn validate_response(resp: anytype, request_seq: i32, command: Command) !void {

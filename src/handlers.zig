@@ -32,7 +32,9 @@ pub fn send_queued_requests(connection: *Connection) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
-            error.DependencyNotSatisfied,
+            error.DependencyNotSatisfied => {
+                i += 1;
+            },
 
             error.OutOfMemory,
             error.NoSpaceLeft,
@@ -65,134 +67,138 @@ pub fn send_queued_requests(connection: *Connection) void {
     }
 }
 
-pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void {
-    var i: usize = 0;
-    while (i < connection.expected_responses.items.len) {
-        const resp = connection.expected_responses.items[i];
-        const err = handle_response(data, connection, resp);
-        err catch |e| switch (e) {
-            error.NoBreakpointIDGiven,
-            error.BreakpointDoesNotExist,
+pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+    while (connection.messages.removeOrNull()) |message| {
+        var ok = false;
+        const message_type = utils.get_value(message.value, "type", .string).?;
+        if (std.mem.eql(u8, message_type, "event")) {
+            ok = handle_event_message(message, callbacks, data, connection);
+        } else if (std.mem.eql(u8, message_type, "response")) {
+            const request_seq: i32 = @truncate(utils.get_value(message.value, "request_seq", .integer).?);
+            ok = handle_response_message(message, request_seq, data, connection);
+        } else {
+            @panic("opps!");
+        }
 
-            error.OutOfMemory,
-            error.Overflow,
-            error.InvalidCharacter,
-            error.UnexpectedToken,
-            error.InvalidNumber,
-            error.InvalidEnumTag,
-            error.DuplicateField,
-            error.LengthMismatch,
-            error.InvalidSeqFromAdapter,
-            error.WrongCommandForResponse,
-            => {
-                log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
-                i += 1;
-                continue;
-            },
-
-            error.ResponseDoesNotExist => {
-                i += 1;
-                continue;
-            },
-
-            error.UnknownField,
-            error.MissingField,
-            error.RequestResponseMismatchedRequestSeq,
-            error.RequestFailed,
-            => {
-                log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
-            },
-        };
-
-        _ = connection.expected_responses.orderedRemove(i);
-    }
-}
-
-pub fn handle_queued_events(callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
-    var i: usize = 0;
-    while (i < connection.events.items.len) {
-        const parsed = connection.events.items[i];
-        const value = utils.get_value(parsed.value, "event", .string) orelse @panic("Only event should be here");
-        const event = utils.string_to_enum(Connection.Event, value) orelse {
-            log.err("Unknown event {s}", .{value});
-            return;
-        };
-        const handled = handle_event(callbacks, data, connection, event) catch |err|
-            switch (err) {
-            error.EventDoesNotExist => unreachable,
-            else => blk: {
-                log.err("{}", .{err});
-                break :blk true; // ignore
-            },
-        };
-
-        if (handled) {
-            i += 1;
+        if (!ok) {
+            connection.failed_message(message);
         }
     }
 }
 
-pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Connection, event: Connection.Event) !bool {
+pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32, data: *SessionData, connection: *Connection) bool {
+    const resp, const index = connection.foo_get_response_by_request_seq(request_seq).?;
+    const err = handle_response(message, data, connection, resp);
+
+    err catch |e| switch (e) {
+        error.NoBreakpointIDGiven,
+        error.BreakpointDoesNotExist,
+
+        error.OutOfMemory,
+        error.Overflow,
+        error.InvalidCharacter,
+        error.UnexpectedToken,
+        error.InvalidNumber,
+        error.InvalidEnumTag,
+        error.DuplicateField,
+        error.LengthMismatch,
+        error.WrongCommandForResponse,
+        => {
+            log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
+            return false;
+        },
+
+        error.UnknownField,
+        error.MissingField,
+        error.RequestResponseMismatchedRequestSeq,
+        error.RequestFailed,
+        => {
+            log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
+            return false;
+        },
+    };
+
+    _ = connection.expected_responses.orderedRemove(index);
+    return true;
+}
+
+pub fn handle_event_message(message: Connection.RawMessage, callbacks: *Callbacks, data: *SessionData, connection: *Connection) bool {
+    const value = utils.get_value(message.value, "event", .string) orelse @panic("Only event should be here");
+    const event = utils.string_to_enum(Connection.Event, value) orelse {
+        log.err("Unknown event {s}", .{value});
+        return false;
+    };
+    handle_event(message, callbacks, data, connection, event) catch |err| switch (err) {
+        else => {
+            log.err("{}", .{err});
+            return false;
+        },
+    };
+
+    return true;
+}
+
+pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data: *SessionData, connection: *Connection, event: Connection.Event) !void {
     _ = callbacks;
     switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
             _ = try connection.queue_request(.threads, protocol.Object{}, .none, .no_data);
 
-            const parsed = try connection.get_and_parse_event(protocol.StoppedEvent, .stopped);
+            const parsed = try connection.parse_event(message, protocol.StoppedEvent, .stopped);
             defer parsed.deinit();
 
             try data.set_stopped(parsed.value);
 
-            connection.handled_event(event, parsed.value.seq);
+            connection.handled_event(message, event);
         },
         .continued => {
-            const parsed = try connection.get_and_parse_event(protocol.ContinuedEvent, .continued);
+            const parsed = try connection.parse_event(message, protocol.ContinuedEvent, .continued);
             defer parsed.deinit();
 
             try data.set_continued(parsed.value);
 
-            connection.handled_event(.continued, parsed.value.seq);
+            connection.handled_event(message, .continued);
         },
         .exited => {
-            const parsed = try connection.get_and_parse_event(protocol.ExitedEvent, .exited);
+            const parsed = try connection.parse_event(message, protocol.ExitedEvent, .exited);
             defer parsed.deinit();
 
             try data.set_existed(parsed.value);
 
-            connection.handled_event(.exited, parsed.value.seq);
+            connection.handled_event(message, .exited);
         },
         .terminated => {
-            const parsed = try connection.get_and_parse_event(protocol.TerminatedEvent, .terminated);
+            const parsed = try connection.parse_event(message, protocol.TerminatedEvent, .terminated);
             defer parsed.deinit();
 
             try data.set_terminated(parsed.value);
 
-            connection.handled_event(.terminated, parsed.value.seq);
+            connection.handled_event(message, .terminated);
         },
         .output => {
-            const parsed = try connection.get_and_parse_event(protocol.OutputEvent, .output);
+            const parsed = try connection.parse_event(message, protocol.OutputEvent, .output);
             defer parsed.deinit();
 
             try data.set_output(parsed.value);
 
-            connection.handled_event(.output, parsed.value.seq);
+            connection.handled_event(message, .output);
         },
         .module => {
-            const parsed = try connection.get_and_parse_event(protocol.ModuleEvent, .module);
+            const parsed = try connection.parse_event(message, protocol.ModuleEvent, .module);
             defer parsed.deinit();
 
             try data.set_modules(parsed.value);
 
-            connection.handled_event(.module, parsed.value.seq);
+            connection.handled_event(message, .module);
         },
         .initialized => {
-            const parsed = try connection.get_and_parse_event(protocol.InitializedEvent, .initialized);
+            const parsed = try connection.parse_event(message, protocol.InitializedEvent, .initialized);
             defer parsed.deinit();
-            connection.handle_event_initialized(parsed.value.seq);
+            connection.handle_event_initialized(message);
         },
         .breakpoint => {
-            const parsed = try connection.get_and_parse_event(protocol.BreakpointEvent, .breakpoint);
+            const parsed = try connection.parse_event(message, protocol.BreakpointEvent, .breakpoint);
             defer parsed.deinit();
 
             const body = parsed.value.body;
@@ -205,7 +211,7 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
                 ),
             }
 
-            connection.handled_event(.breakpoint, parsed.value.seq);
+            connection.handled_event(message, .breakpoint);
         },
 
         .thread => log.err("TODO event: {s}", .{@tagName(event)}),
@@ -218,20 +224,18 @@ pub fn handle_event(callbacks: *Callbacks, data: *SessionData, connection: *Conn
         .invalidated => log.err("TODO event: {s}", .{@tagName(event)}),
         .memory => log.err("TODO event: {s}", .{@tagName(event)}),
     }
-
-    return true;
 }
 
-pub fn handle_response(data: *SessionData, connection: *Connection, response: Connection.Response) !void {
+pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {
     switch (response.command) {
         .launch => {
-            try acknowledge_only(connection, response.request_seq, response.command);
-            connection.handle_response_launch(response);
+            try acknowledge_only(message, connection, response.request_seq, response.command);
+            connection.handle_response_launch(message, response);
         },
 
         .configurationDone,
         .pause,
-        => try acknowledge_and_handled(connection, response),
+        => try acknowledge_and_handled(message, connection, response),
 
         .next => {
             const retained = response.request_data.next;
@@ -248,22 +252,22 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                 );
             }
 
-            try acknowledge_and_handled(connection, response);
+            try acknowledge_and_handled(message, connection, response);
         },
 
-        .initialize => try connection.handle_response_init(response),
-        .disconnect => try connection.handle_response_disconnect(response),
+        .initialize => try connection.handle_response_init(message, response),
+        .disconnect => try connection.handle_response_disconnect(message, response),
 
         .threads => {
-            const parsed = try connection.get_parse_validate_response(protocol.ThreadsResponse, response.request_seq, .threads);
+            const parsed = try connection.parse_validate_response(message, protocol.ThreadsResponse, response.request_seq, .threads);
             defer parsed.deinit();
 
             try data.set_threads(parsed.value.body.threads);
 
-            connection.handled_response(response, .success);
+            connection.handled_response(message, response, .success);
         },
         .stackTrace => {
-            const parsed = try connection.get_parse_validate_response(protocol.StackTraceResponse, response.request_seq, .stackTrace);
+            const parsed = try connection.parse_validate_response(message, protocol.StackTraceResponse, response.request_seq, .stackTrace);
             defer parsed.deinit();
             const retained = response.request_data.stack_trace;
 
@@ -279,7 +283,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             const thread = data.threads.get(retained.thread_id) orelse return;
             // codelldb doesn't include totalFrames even when it should.
             // orelse 0 to avoid infinitely requesting stack traces
-            defer connection.handled_response(response, .success);
+            defer connection.handled_response(message, response, .success);
             if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
@@ -304,12 +308,12 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             }
         },
         .scopes => {
-            const parsed = try connection.get_parse_validate_response(protocol.ScopesResponse, response.request_seq, response.command);
+            const parsed = try connection.parse_validate_response(message, protocol.ScopesResponse, response.request_seq, response.command);
             defer parsed.deinit();
             const retained = response.request_data.scopes;
 
             try data.set_scopes(retained.frame_id, parsed.value.body.scopes);
-            defer connection.handled_response(response, .success);
+            defer connection.handled_response(message, response, .success);
 
             if (retained.request_variables) {
                 for (parsed.value.body.scopes) |scope| {
@@ -323,7 +327,8 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             }
         },
         .variables => {
-            const parsed = try connection.get_parse_validate_response(
+            const parsed = try connection.parse_validate_response(
+                message,
                 protocol.VariablesResponse,
                 response.request_seq,
                 .variables,
@@ -332,11 +337,12 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             const retained = response.request_data.variables;
             try data.set_variables(retained.variables_reference, parsed.value.body.variables);
 
-            connection.handled_response(response, .success);
+            connection.handled_response(message, response, .success);
         },
 
         .setFunctionBreakpoints => {
-            const parsed = try connection.get_parse_validate_response(
+            const parsed = try connection.parse_validate_response(
+                message,
                 protocol.SetFunctionBreakpointsResponse,
                 response.request_seq,
                 response.command,
@@ -345,10 +351,11 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
 
             try data.set_breakpoints(parsed.value.body.breakpoints);
 
-            connection.handled_response(response, .success);
+            connection.handled_response(message, response, .success);
         },
         .source => {
-            const parsed = try connection.get_parse_validate_response(
+            const parsed = try connection.parse_validate_response(
+                message,
                 protocol.SourceResponse,
                 response.request_seq,
                 response.command,
@@ -361,10 +368,11 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                 .mime_type = parsed.value.body.mimeType,
             });
 
-            connection.handled_response(response, .success);
+            connection.handled_response(message, response, .success);
         },
         .@"continue" => {
-            const parsed = try connection.get_parse_validate_response(
+            const parsed = try connection.parse_validate_response(
+                message,
                 protocol.ContinueResponse,
                 response.request_seq,
                 response.command,
@@ -375,7 +383,7 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                 data.set_continued_all();
             }
 
-            connection.handled_response(response, .success);
+            connection.handled_response(message, response, .success);
         },
 
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -458,14 +466,14 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
     }
 }
 
-fn acknowledge_and_handled(connection: *Connection, response: Connection.Response) !void {
-    const resp = try connection.get_parse_validate_response(protocol.Response, response.request_seq, response.command);
+fn acknowledge_and_handled(message: Connection.RawMessage, connection: *Connection, response: Connection.Response) !void {
+    const resp = try connection.parse_validate_response(message, protocol.Response, response.request_seq, response.command);
     defer resp.deinit();
-    connection.handled_response(response, .success);
+    connection.handled_response(message, response, .success);
 }
 
-fn acknowledge_only(connection: *Connection, request_seq: i32, command: Connection.Command) !void {
-    const resp = try connection.get_parse_validate_response(protocol.Response, request_seq, command);
+fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, request_seq: i32, command: Connection.Command) !void {
+    const resp = try connection.parse_validate_response(message, protocol.Response, request_seq, command);
     resp.deinit();
 }
 
