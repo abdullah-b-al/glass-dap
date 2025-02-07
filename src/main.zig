@@ -41,9 +41,13 @@ pub fn main() !void {
 
 fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     while (!window.shouldClose()) {
-        connection.queue_messages(1) catch |err| {
-            std.debug.print("{}\n", .{err});
-        };
+        while (true) {
+            const ok = connection.queue_messages(1) catch |err| blk: {
+                log.err("queue_messages: {}", .{err});
+                break :blk false;
+            };
+            if (!ok) break;
+        }
 
         handlers.handle_queued_events(callbacks, data, connection);
         handlers.send_queued_requests(connection);

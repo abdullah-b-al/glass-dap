@@ -615,8 +615,8 @@ pub fn new_seq(s: *Connection) i32 {
     return @intCast(seq);
 }
 
-pub fn queue_messages(connection: *Connection, timeout_ms: u64) !void {
-    const stdout = connection.adapter.stdout orelse return;
+pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
+    const stdout = connection.adapter.stdout orelse return false;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
         const responses_capacity = connection.total_responses_received + 1;
         try connection.responses.ensureUnusedCapacity(1);
@@ -651,7 +651,11 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !void {
         } else {
             return error.UnknownMessage;
         }
+
+        return true;
     }
+
+    return false;
 }
 
 pub fn get_response_by_request_seq(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
