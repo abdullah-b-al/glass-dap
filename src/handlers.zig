@@ -82,21 +82,26 @@ pub fn handle_queued_responses(data: *SessionData, connection: *Connection) void
             error.InvalidNumber,
             error.InvalidEnumTag,
             error.DuplicateField,
-            error.UnknownField,
-            error.MissingField,
             error.LengthMismatch,
             error.InvalidSeqFromAdapter,
             error.WrongCommandForResponse,
-            error.RequestResponseMismatchedRequestSeq,
-            error.RequestFailed,
             => {
                 log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
                 i += 1;
                 continue;
             },
+
             error.ResponseDoesNotExist => {
                 i += 1;
                 continue;
+            },
+
+            error.UnknownField,
+            error.MissingField,
+            error.RequestResponseMismatchedRequestSeq,
+            error.RequestFailed,
+            => {
+                log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
             },
         };
 
@@ -225,10 +230,27 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
             connection.handle_response_launch(response);
         },
 
-        .next,
         .configurationDone,
         .pause,
         => try acknowledge_and_handled(connection, response),
+
+        .next => {
+            const retained = response.request_data.next;
+            if (retained.request_stack_trace) {
+                _ = try connection.queue_request(
+                    .stackTrace,
+                    protocol.StackTraceArguments{ .threadId = retained.thread_id },
+                    .none,
+                    .{ .stack_trace = .{
+                        .thread_id = retained.thread_id,
+                        .request_scopes = retained.request_scopes,
+                        .request_variables = retained.request_variables,
+                    } },
+                );
+            }
+
+            try acknowledge_and_handled(connection, response);
+        },
 
         .initialize => try connection.handle_response_init(response),
         .disconnect => try connection.handle_response_disconnect(response),
@@ -250,13 +272,16 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                 return;
             }
 
-            try data.set_stack_frames(retained.thread_id, parsed.value.body.stackFrames);
+            const total: usize = @intCast(parsed.value.body.totalFrames orelse 0);
+            const request_more = total > parsed.value.body.stackFrames.len;
 
+            try data.set_stack(retained.thread_id, !request_more, parsed.value.body.stackFrames);
+
+            const thread = data.threads.get(retained.thread_id) orelse return;
             // codelldb doesn't include totalFrames even when it should.
             // orelse 0 to avoid infinitely requesting stack traces
-            const count = parsed.value.body.totalFrames orelse 0;
             defer connection.handled_response(response, .success);
-            if (count > data.stack_frames.items.len) {
+            if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
                     protocol.StackTraceArguments{ .threadId = retained.thread_id },
@@ -264,20 +289,18 @@ pub fn handle_response(data: *SessionData, connection: *Connection, response: Co
                     .{ .stack_trace = retained },
                 );
             } else if (retained.request_scopes) {
-                for (data.stack_frames.items) |item| {
-                    for (item.data) |frame| {
-                        _ = try connection.queue_request(
-                            .scopes,
-                            protocol.ScopesArguments{ .frameId = frame.id },
-                            .none,
-                            .{
-                                .scopes = .{
-                                    .frame_id = frame.id,
-                                    .request_variables = retained.request_variables,
-                                },
+                for (thread.stack.items) |frame| {
+                    _ = try connection.queue_request(
+                        .scopes,
+                        protocol.ScopesArguments{ .frameId = frame.id },
+                        .none,
+                        .{
+                            .scopes = .{
+                                .frame_id = frame.id,
+                                .request_variables = retained.request_variables,
                             },
-                        );
-                    }
+                        },
+                    );
                 }
             }
         },

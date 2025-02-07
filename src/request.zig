@@ -3,7 +3,8 @@ const Connection = @import("connection.zig");
 const SessionData = @import("session_data.zig");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
-const ThreadID = SessionData.ThreadID;
+const ui = @import("ui.zig");
+const handlers = @import("handlers.zig");
 
 pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
     // send and respond to initialize
@@ -75,7 +76,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 }
 
 // Causes a chain of requests to get the state
-pub fn get_debuggee_state(connection: *Connection, thread_id: ThreadID) !void {
+pub fn get_thread_state(connection: *Connection, thread_id: i32) !void {
     _ = try connection.queue_request(
         .stackTrace,
         protocol.StackTraceArguments{ .threadId = thread_id },
@@ -86,4 +87,35 @@ pub fn get_debuggee_state(connection: *Connection, thread_id: ThreadID) !void {
             .request_variables = true,
         } },
     );
+}
+
+pub fn next(callbacks: *handlers.Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+        if (!thread.unlocked) {
+            continue;
+        }
+        const arg = protocol.NextArguments{
+            .threadId = thread.id,
+            .singleThread = true,
+            .granularity = granularity,
+        };
+
+        _ = connection.queue_request(.next, arg, .none, .{ .next = .{
+            .thread_id = thread.id,
+            .request_stack_trace = true,
+            .request_scopes = false,
+            .request_variables = false,
+        } }) catch return;
+    }
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            ui.state.scroll_to_active_line = true;
+            ui.state.update_active_source_to_top_of_stack = true;
+        }
+    };
+
+    handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.func) catch return;
 }

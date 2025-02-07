@@ -50,7 +50,7 @@ fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Conne
         handlers.handle_queued_responses(data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 
-        ui.ui_tick(window, connection, data, args);
+        ui.ui_tick(window, callbacks, connection, data, args);
     }
 }
 

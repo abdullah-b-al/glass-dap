@@ -369,7 +369,7 @@ fn clone_protocol_array(cloner: anytype, array: protocol.Array) !protocol.Array 
 }
 
 pub fn entry_exists(slice: anytype, comptime field_name: []const u8, value: anytype) bool {
-    return get_entry_ptr(slice, field_name, value) != null;
+    return get_entry_index(slice, field_name, value) != null;
 }
 
 pub fn get_entry_ptr(slice: anytype, comptime field_name: []const u8, value: anytype) ?*@typeInfo(@TypeOf(slice)).pointer.child {
@@ -399,4 +399,12 @@ pub fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: a
     }
 
     return null;
+}
+
+pub fn source_is(source: protocol.Source, path_or_ref: anytype) bool {
+    return switch (@TypeOf(path_or_ref)) {
+        []const u8 => source.path != null and std.mem.eql(u8, source.path.?, path_or_ref),
+        i32 => source.sourceReference != null and source.sourceReference == path_or_ref,
+        else => @compileError("Type must be i32 or []const u8"),
+    };
 }

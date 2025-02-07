@@ -14,32 +14,30 @@ const DebuggeeStatus = union(enum) {
     exited: i32,
 };
 
-pub const StackFrames = struct {
-    thread_id: i32,
-    data: []const protocol.StackFrame,
-};
-
 pub const Scopes = struct {
     frame_id: i32,
     data: []const protocol.Scope,
 };
 
+pub const Stack = std.ArrayListUnmanaged(protocol.StackFrame);
+
 pub const Thread = struct {
-    id: i32,
-    name: []const u8,
-    state: ThreadState.State,
-};
-
-pub const ThreadID = i32;
-
-pub const ThreadState = struct {
     const State = union(enum) {
         stopped: ?Stopped,
         continued,
+        unknown,
     };
 
-    thread_id: ThreadID,
+    id: i32,
+    name: []const u8,
     state: State,
+    unlocked: bool,
+
+    stack: Stack,
+
+    pub fn deinit(thread: *Thread, allocator: std.mem.Allocator) void {
+        thread.stack.deinit(allocator);
+    }
 };
 
 pub const Variables = struct {
@@ -63,13 +61,11 @@ allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .{},
-threads: std.ArrayListUnmanaged(protocol.Thread) = .{},
+threads: std.AutoArrayHashMapUnmanaged(i32, Thread) = .{},
 modules: std.ArrayListUnmanaged(protocol.Module) = .{},
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
-stack_frames: std.ArrayListUnmanaged(StackFrames) = .{},
 scopes: std.ArrayListUnmanaged(Scopes) = .{},
 variables: std.ArrayListUnmanaged(Variables) = .{},
-threads_state: std.ArrayListUnmanaged(ThreadState) = .{},
 breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
 sources: std.ArrayListUnmanaged(protocol.Source) = .{},
 sources_content: std.ArrayListUnmanaged(SourceContent) = .{},
@@ -96,13 +92,20 @@ pub fn init(allocator: std.mem.Allocator) SessionData {
 
 pub fn deinit(data: *SessionData) void {
     data.string_storage.deinit(data.allocator);
+
+    {
+        var iter = data.threads.iterator();
+        while (iter.next()) |entry| {
+            const thread = entry.value_ptr;
+            thread.deinit(data.allocator);
+        }
+    }
     data.threads.deinit(data.allocator);
+
     data.modules.deinit(data.allocator);
     data.output.deinit(data.allocator);
     data.scopes.deinit(data.allocator);
-    data.stack_frames.deinit(data.allocator);
     data.variables.deinit(data.allocator);
-    data.threads_state.deinit(data.allocator);
     data.function_breakpoints.deinit(data.allocator);
     data.breakpoints.deinit(data.allocator);
     data.sources.deinit(data.allocator);
@@ -111,71 +114,36 @@ pub fn deinit(data: *SessionData) void {
     data.arena.deinit();
 }
 
-pub fn get_thread_data(data: SessionData, id: i32) ?Thread {
-    const thread = utils.get_entry_ptr(data.threads.items, "id", id) orelse return null;
-    const state = utils.get_entry_ptr(data.threads_state.items, "thread_id", id) orelse return null;
-
-    return Thread{
-        .id = thread.id,
-        .name = thread.name,
-        .state = state.state,
-    };
-}
-
 pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
     const stopped = try data.clone_anytype(event.body);
 
     if (stopped.threadId) |id| {
-        if (utils.get_entry_ptr(data.threads_state.items, "thread_id", id)) |entry| {
-            entry.* = .{
-                .thread_id = entry.thread_id,
-                .state = .{ .stopped = stopped },
-            };
-        } else {
-            try data.threads_state.append(data.allocator, .{
-                .thread_id = id,
-                .state = .{ .stopped = stopped },
-            });
-        }
+        try data.add_or_update_thread(id, null, .{ .stopped = stopped });
     }
 
     if (stopped.allThreadsStopped orelse false) {
-        for (data.threads_state.items) |*item| {
-            switch (item.state) {
-                .stopped => {},
-                .continued => {
-                    item.* = .{
-                        .thread_id = item.thread_id,
-                        .state = .{ .stopped = null },
-                    };
-                },
+        var iter = data.threads.iterator();
+        while (iter.next()) |entry| {
+            const thread = entry.value_ptr;
+            switch (thread.state) {
+                .unknown, .stopped => {},
+                .continued => thread.state = .{ .stopped = null },
             }
         }
     }
 }
 
 pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
-    if (utils.get_entry_ptr(data.threads_state.items, "thread_id", event.body.threadId)) |entry| {
-        entry.* = .{
-            .thread_id = entry.thread_id,
-            .state = .continued,
-        };
-    } else {
-        try data.threads_state.append(data.allocator, .{
-            .thread_id = event.body.threadId,
-            .state = .continued,
-        });
-    }
+    try data.add_or_update_thread(event.body.threadId, null, .continued);
 
-    for (data.threads_state.items) |*item| {
-        switch (item.state) {
-            .continued => {},
-            .stopped => {
-                item.* = .{
-                    .thread_id = item.thread_id,
-                    .state = .continued,
-                };
-            },
+    if (event.body.allThreadsContinued orelse false) {
+        var iter = data.threads.iterator();
+        while (iter.next()) |entry| {
+            const thread = entry.value_ptr;
+            switch (thread.state) {
+                .unknown, .continued => {},
+                .stopped => thread.state = .continued,
+            }
         }
     }
 }
@@ -205,49 +173,81 @@ pub fn set_terminated(data: *SessionData, event: protocol.TerminatedEvent) !void
 }
 
 pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
-    data.threads.clearRetainingCapacity();
-    try data.threads.ensureUnusedCapacity(data.allocator, threads.len);
-    for (threads) |thread| {
-        data.threads.appendAssumeCapacity(try data.clone_anytype(thread));
+    // Remove threads that no longer exist
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const old = entry.key_ptr.*;
+        if (!utils.entry_exists(threads, "id", old)) {
+            _ = data.threads.orderedRemove(old);
+            // iterator invalidated reset
+            iter = data.threads.iterator();
+        }
+    }
+
+    for (threads) |new| {
+        try data.add_or_update_thread(new.id, new.name, .unknown);
     }
 }
 
-pub fn set_stack_frames(data: *SessionData, thread_id: i32, response: []const protocol.StackFrame) !void {
-    try data.stack_frames.ensureUnusedCapacity(data.allocator, 1);
-    if (utils.get_entry_ptr(data.stack_frames.items, "thread_id", thread_id)) |entry| {
-        // FIXME: check docs: protocol.StackTraceResponse.body.totalFrames
-        entry.data = try data.clone_anytype(response);
+fn add_or_update_thread(data: *SessionData, id: i32, name: ?[]const u8, state: ?Thread.State) !void {
+    const gop = try data.threads.getOrPut(data.allocator, id);
+    if (gop.found_existing) {
+        const thread = gop.value_ptr;
+        thread.* = .{
+            .id = id,
+            .name = if (name) |n| try data.clone_anytype(n) else thread.name,
+            .state = state orelse thread.state,
+            .stack = thread.stack,
+
+            // user controlled
+            .unlocked = thread.unlocked,
+        };
     } else {
-        data.stack_frames.appendAssumeCapacity(.{
-            .thread_id = thread_id,
-            .data = try data.clone_anytype(response),
-        });
+        gop.value_ptr.* = .{
+            .id = id,
+            .name = try data.clone_anytype(name orelse ""),
+            .state = state orelse .unknown,
+            .unlocked = !(state == null or state.? == .unknown),
+            .stack = Stack{},
+        };
+    }
+}
+
+pub fn set_stack(data: *SessionData, thread_id: i32, clear: bool, response: []const protocol.StackFrame) !void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    if (clear) {
+        thread.stack.clearRetainingCapacity();
     }
 
-    for (data.stack_frames.items) |item| {
-        for (item.data) |frame| {
-            if (frame.source) |source| {
-                try data.set_source(source);
-            }
+    try thread.stack.ensureUnusedCapacity(data.allocator, response.len);
+
+    for (response) |frame| {
+        thread.stack.appendAssumeCapacity(try data.clone_anytype(frame));
+        if (frame.source) |source| {
+            try data.set_source(source);
         }
     }
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
-    const exists =
-        (source.path != null and utils.entry_exists(data.sources.items, "path", source.path)) or
-        (source.sourceReference != null and utils.entry_exists(data.sources.items, "sourceReference", source.sourceReference));
+    const exists = blk: {
+        for (data.sources.items) |s| {
+            if (source.path) |path| if (utils.source_is(s, path)) break :blk true;
+            if (source.sourceReference) |ref| if (utils.source_is(s, ref)) break :blk true;
+        }
+        break :blk false;
+    };
 
     if (!exists) {
         try data.sources.append(data.allocator, try data.clone_anytype(source));
     }
 }
 
-pub fn get_source_by_reference(data: *SessionData, reference: i32) ?protocol.Source {
+pub fn get_source_by_reference(data: SessionData, reference: i32) ?protocol.Source {
     return (utils.get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
 }
 
-pub fn get_source_by_path(data: *SessionData, path: []const u8) ?protocol.Source {
+pub fn get_source_by_path(data: SessionData, path: []const u8) ?protocol.Source {
     return (utils.get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
 }
 

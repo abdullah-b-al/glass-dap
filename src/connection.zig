@@ -98,7 +98,7 @@ const State = enum {
     }
 };
 
-const Dependency = union(enum) {
+pub const Dependency = union(enum) {
     response: Command,
     event: Event,
     seq: i32,
@@ -121,6 +121,12 @@ pub const RetainedRequestData = union(enum) {
     source: struct {
         path: ?[]const u8,
         source_reference: i32,
+    },
+    next: struct {
+        thread_id: i32,
+        request_stack_trace: bool,
+        request_scopes: bool,
+        request_variables: bool,
     },
     no_data,
 };

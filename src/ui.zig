@@ -9,6 +9,26 @@ const utils = @import("utils.zig");
 const Args = @import("main.zig").Args;
 const request = @import("request.zig");
 const io = @import("io.zig");
+const handlers = @import("handlers.zig");
+const Callbacks = handlers.Callbacks;
+const log = std.log.scoped(.ui);
+
+const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
+
+const State = struct {
+    active_source_thread_id: ?i32 = null,
+    active_source: union(enum) {
+        path: Path,
+        reference: i32,
+        none,
+    } = .none,
+
+    scroll_to_active_line: bool = false,
+    update_active_source_to_top_of_stack: bool = false,
+    home_path: Path = Path.init(0) catch unreachable,
+};
+
+pub var state = State{};
 
 pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     try glfw.init();
@@ -22,7 +42,11 @@ pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
 
-    const window = try glfw.Window.create(1000, 1000, "TestWindow:unidep", null);
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    state.home_path = try Path.fromSlice(env_map.get("HOME") orelse "");
+
+    const window = try glfw.Window.create(1000, 1000, "TestWindow:thabit", null);
     window.setSizeLimits(400, 400, -1, -1);
 
     glfw.makeContextCurrent(window);
@@ -59,7 +83,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData, args: Args) void {
+pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -72,14 +96,232 @@ pub fn ui_tick(window: *glfw.Window, connection: *Connection, data: *SessionData
 
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
-    debug_ui(arena.allocator(), connection, data, args) catch |err| std.log.err("{}", .{err});
+    const static = struct {
+        var built_layout = false;
+    };
+    if (!static.built_layout) {
+        static.built_layout = true;
+        var dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
+
+        zgui.dockBuilderRemoveNode(dockspace_id);
+        const viewport = zgui.getMainViewport();
+        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
+        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
+
+        const dock_main_id: ?*zgui.Ident = &dockspace_id;
+        const id_console = zgui.dockBuilderSplitNode(dock_main_id.?.*, .down, 0.30, null, &dockspace_id);
+
+        const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.30, null, &dockspace_id);
+        // const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .none, 0.50, null, &id_sources);
+
+        zgui.dockBuilderDockWindow("Source Code", dockspace_id);
+
+        // tabbed
+        zgui.dockBuilderDockWindow("Threads", id_threads);
+        zgui.dockBuilderDockWindow("Sources", id_threads);
+
+        zgui.dockBuilderDockWindow("Console", id_console);
+
+        zgui.dockBuilderFinish(dockspace_id);
+
+        _ = zgui.DockSpace("Main DockSpace", viewport.getSize(), .{});
+    }
+
+    source_code(arena.allocator(), "Source Code", callbacks, data, connection);
+    console(arena.allocator(), "Console", data.*, connection);
+    threads(arena.allocator(), "Threads", data, connection);
+    sources(arena.allocator(), "Sources", data.*, connection);
+
+    debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
     window.swapBuffers();
 }
 
-fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn source_code(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+    if (state.update_active_source_to_top_of_stack) blk: {
+        state.update_active_source_to_top_of_stack = false;
+        if (thread_of_active_source(data.*)) |thread| {
+            if (thread.stack.items.len > 0) {
+                const source = thread.stack.items[0].source orelse break :blk;
+                const eql = switch (state.active_source) {
+                    .none => break :blk,
+                    .path => |path| utils.source_is(source, path.slice()),
+                    .reference => |ref| utils.source_is(source, ref),
+                };
+
+                if (eql) set_active_source(thread.id, source, true);
+            }
+        } else if (data.threads.get(state.active_source_thread_id orelse break :blk)) |thread| {
+            if (thread.stack.items.len > 0) {
+                const source = thread.stack.items[0].source orelse break :blk;
+                set_active_source(thread.id, source, true);
+            }
+        }
+    }
+
+    defer zgui.end();
+    if (zgui.begin(name, .{})) {}
+
+    { // buttons
+        if (zgui.button("Next Line", .{})) {
+            request.next(callbacks, data.*, connection, .line);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Next Statement", .{})) {
+            request.next(callbacks, data.*, connection, .statement);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Next Instruction", .{})) {
+            request.next(callbacks, data.*, connection, .instruction);
+        }
+    } // buttons
+
+    _ = zgui.beginChild("Code View", .{});
+    defer zgui.endChild();
+
+    const content = get_source_content_of_active_source(data) orelse {
+        // Let's try again next frame
+        set_source_content_of_active_source(arena, data, connection) catch |err| {
+            log.err("{}", .{err});
+        };
+        return;
+    };
+
+    var dl = zgui.getWindowDrawList();
+    const line_height = zgui.getTextLineHeightWithSpacing();
+    const window_width = zgui.getWindowWidth();
+
+    const frame = get_frame_of_source_content(data.*, content);
+
+    var iter = std.mem.splitScalar(u8, content.content, '\n');
+    var line_number: usize = 0;
+    while (iter.next()) |line| {
+        defer line_number += 1;
+
+        const pos = zgui.getCursorScreenPos();
+        if (zgui.selectable(tmp_name("##selectable{}", .{line_number}), .{})) {
+            // TODO: allow operation on the clicked line
+        }
+
+        const active_line = if (frame) |f| (f.line == line_number) else false;
+        if (active_line) {
+            const f = frame.?;
+
+            dl.addRectFilled(.{
+                .pmin = pos,
+                .pmax = .{ pos[0] + window_width, pos[1] + line_height },
+                .col = color_u32(.text_selected_bg),
+            });
+
+            if (f.column < line.len) {
+                const column: usize = @intCast(@max(0, f.column - 1));
+                const size = zgui.calcTextSize(line[0..column], .{});
+                const char = zgui.calcTextSize(line[column .. column + 1], .{});
+
+                const x = pos[0] + size[0];
+                const y = pos[1] + size[1];
+                dl.addLine(.{
+                    .p1 = .{ x, y },
+                    .p2 = .{ x + char[0], y },
+                    .col = color_u32(.text),
+                    .thickness = 1,
+                });
+            }
+
+            if (state.scroll_to_active_line) {
+                state.scroll_to_active_line = false;
+
+                zgui.setScrollHereY(.{ .center_y_ratio = 0.5 });
+            }
+        }
+
+        dl.addText(pos, 0xFFFFFFFF, "{s}", .{line});
+    }
+}
+
+fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    _ = arena;
+    defer zgui.end();
+    if (zgui.begin(name, .{})) {}
+
+    const fn_name = @src().fn_name;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    for (data.sources.items) |source| {
+        const source_path = if (source.path) |path| tmp_shorten_path(path) else null;
+        const label = if (source_path) |path|
+            std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
+        else if (source.sourceReference) |ref|
+            std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.name orelse "", ref }) catch return
+        else
+            return;
+
+        if (zgui.button(label, .{})) {
+            if (thread_of_source(source, data)) |thread| {
+                set_active_source(thread.id, source, true);
+            } else {
+                set_active_source(null, source, true);
+            }
+        }
+    }
+}
+
+fn threads(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+
+    defer zgui.end();
+    if (zgui.begin(name, .{})) {}
+
+    var style = zgui.getStyle();
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+        const style_idx: zgui.StyleCol = if (thread.unlocked) .text else .text_disabled;
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(style_idx) });
+        defer zgui.popStyleColor(.{ .count = 1 });
+
+        {
+            const label = if (thread.unlocked) "Lock  " else "Unlock";
+            if (zgui.button(tmp_name("{s}##{}", .{ label, thread.id }), .{})) {
+                thread.unlocked = !thread.unlocked;
+            }
+        }
+
+        zgui.sameLine(.{});
+
+        const stack_name = tmp_name("{s} #{}", .{ thread.name, thread.id });
+        if (zgui.treeNode(stack_name)) {
+            zgui.indent(.{ .indent_w = 1 });
+
+            for (thread.stack.items) |frame| {
+                if (zgui.selectable(tmp_name("{s}", .{frame.name}), .{})) {
+                    if (frame.source) |s| set_active_source(thread.id, s, true);
+                }
+            }
+
+            zgui.unindent(.{ .indent_w = 1 });
+            zgui.treePop();
+        }
+    }
+}
+
+fn console(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = arena;
+    _ = connection;
+
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    for (data.output.items) |item| {
+        zgui.text("{s}", .{item.body.output});
+    }
+}
+
+fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: SessionData, connection: *Connection) void {
     _ = arena;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -98,14 +340,14 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
         }
         zgui.tableHeadersRow();
 
-        for (data.threads.items) |item| {
-            const thread = data.get_thread_data(item.id) orelse continue;
-
+        var iter = data.threads.iterator();
+        while (iter.next()) |entry| {
+            const thread = entry.value_ptr;
             zgui.tableNextRow(.{});
             { // column 1
                 _ = zgui.tableNextColumn();
                 if (zgui.button("Get Full State", .{})) {
-                    request.get_debuggee_state(connection, thread.id) catch return;
+                    request.get_thread_state(connection, thread.id) catch return;
                 }
                 if (zgui.button("Stack Trace", .{})) {
                     const args = protocol.StackTraceArguments{
@@ -125,22 +367,20 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
 
                 zgui.sameLine(.{});
                 if (zgui.button("Scopes", .{})) {
-                    for (data.stack_frames.items) |entry| {
-                        for (entry.data) |frame| {
-                            _ = connection.queue_request(
-                                .scopes,
-                                protocol.ScopesArguments{ .frameId = frame.id },
-                                .none,
-                                .{ .scopes = .{ .frame_id = frame.id, .request_variables = false } },
-                            ) catch return;
-                        }
+                    for (thread.stack.items) |frame| {
+                        _ = connection.queue_request(
+                            .scopes,
+                            protocol.ScopesArguments{ .frameId = frame.id },
+                            .none,
+                            .{ .scopes = .{ .frame_id = frame.id, .request_variables = false } },
+                        ) catch return;
                     }
                 }
 
                 zgui.sameLine(.{});
                 if (zgui.button("Variables", .{})) {
-                    for (data.scopes.items) |entry| {
-                        for (entry.data) |scope| {
+                    for (data.scopes.items) |scope_entry| {
+                        for (scope_entry.data) |scope| {
                             _ = connection.queue_request(
                                 .variables,
                                 protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
@@ -158,24 +398,16 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                     }, .none, .no_data) catch return;
                 }
 
-                var arg = protocol.NextArguments{
-                    .threadId = thread.id,
-                    .singleThread = true,
-                    .granularity = .line,
-                };
                 if (zgui.button("Next Line", .{})) {
-                    arg.granularity = .line;
-                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                    request.next(callbacks, data, connection, .line);
                 }
                 zgui.sameLine(.{});
                 if (zgui.button("Next Statement", .{})) {
-                    arg.granularity = .statement;
-                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                    request.next(callbacks, data, connection, .statement);
                 }
                 zgui.sameLine(.{});
                 if (zgui.button("Next Instruction", .{})) {
-                    arg.granularity = .instruction;
-                    _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+                    request.next(callbacks, data, connection, .instruction);
                 }
             } // column 1
 
@@ -238,10 +470,13 @@ fn debug_stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: Sessio
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    for (data.stack_frames.items) |item| {
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+
         var buf: [64]u8 = undefined;
-        const n = std.fmt.bufPrintZ(&buf, "Thread ID {}##variables slice", .{item.thread_id}) catch return;
-        draw_table_from_slice_of_struct(n, protocol.StackFrame, item.data);
+        const n = std.fmt.bufPrintZ(&buf, "Thread ID {}##variables slice", .{thread.id}) catch return;
+        draw_table_from_slice_of_struct(n, protocol.StackFrame, thread.stack.items);
         zgui.newLine();
     }
 }
@@ -367,13 +602,13 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
     }
 }
 
-fn debug_ui(arena: std.mem.Allocator, connection: *Connection, data: *SessionData, args: Args) !void {
+fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     const static = struct {
         var built_layout = false;
     };
     if (!static.built_layout) {
         static.built_layout = true;
-        const dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
+        const dockspace_id = zgui.DockSpaceOverViewport(1000, zgui.getMainViewport(), .{});
 
         zgui.dockBuilderRemoveNode(dockspace_id);
         const viewport = zgui.getMainViewport();
@@ -401,7 +636,7 @@ fn debug_ui(arena: std.mem.Allocator, connection: *Connection, data: *SessionDat
     }
 
     debug_modules(arena, "Debug Modules", data.*);
-    debug_threads(arena, "Debug Threads", data.*, connection);
+    debug_threads(arena, "Debug Threads", callbacks, data.*, connection);
     debug_stack_frames(arena, "Debug Stack Frames", data.*, connection);
     debug_scopes(arena, "Debug Scopes", data.*, connection);
     debug_variables(arena, "Debug Variables", data.*, connection);
@@ -465,17 +700,6 @@ fn debug_ui(arena: std.mem.Allocator, connection: *Connection, data: *SessionDat
         for (connection.handled_events.items) |event| {
             zgui.text("{s}", .{@tagName(event)});
         }
-    }
-
-    if (zgui.beginTabItem("Console Output", .{})) {
-        defer zgui.endTabItem();
-        console(data.*);
-    }
-}
-
-fn console(data: SessionData) void {
-    for (data.output.items) |item| {
-        zgui.text("{s}", .{item.body.output});
     }
 }
 
@@ -857,8 +1081,11 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
 }
 
 fn get_frame_of_source_content(data: SessionData, content: SessionData.SourceContent) ?protocol.StackFrame {
-    for (data.stack_frames.items) |stack| {
-        for (stack.data) |frame| {
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+
+        for (thread.stack.items) |frame| {
             const source: protocol.Source = frame.source orelse continue;
             if (content.path) |path| {
                 if (path.len > 0 and std.mem.eql(u8, source.path orelse "", path)) {
@@ -866,6 +1093,121 @@ fn get_frame_of_source_content(data: SessionData, content: SessionData.SourceCon
                 }
             } else if (content.source_reference == source.sourceReference) {
                 return frame;
+            }
+        }
+    }
+
+    return null;
+}
+
+fn get_stack_of_frame(data: *const SessionData, frame: protocol.StackFrame) ?SessionData.Stack {
+    for (data.stacks.items) |*stack| {
+        if (utils.entry_exists(stack.data, "id", frame.id)) {
+            return stack.*;
+        }
+    }
+
+    return null;
+}
+
+pub fn get_source_content_of_active_source(data: *const SessionData) ?SessionData.SourceContent {
+    const content = switch (state.active_source) {
+        .none => return null,
+        .path => |path| utils.get_entry_ptr(data.sources_content.items, "path", path.slice()),
+        .reference => |reference| utils.get_entry_ptr(data.sources_content.items, "source_reference", reference),
+    };
+
+    return if (content) |c| c.* else null;
+}
+
+pub fn set_source_content_of_active_source(arena: std.mem.Allocator, data: *SessionData, connection: *Connection) !void {
+    return switch (state.active_source) {
+        .none => return,
+        .path => |path| {
+            const content = try io.open_file_as_source_content(arena, path.slice());
+            try data.set_source_content(content);
+        },
+        .reference => |reference| {
+            _ = try connection.queue_request(.source, protocol.SourceArguments{
+                .source = null,
+                .sourceReference = reference,
+            }, .none, .{
+                .source = .{ .path = null, .source_reference = reference },
+            });
+        },
+    };
+}
+
+fn color_u32(tag: zgui.StyleCol) u32 {
+    const color = zgui.getStyle().getColor(tag);
+    return zgui.colorConvertFloat4ToU32(color);
+}
+
+fn tmp_name(comptime fmt: []const u8, args: anytype) [:0]const u8 {
+    const static = struct {
+        var buf: [1024]u8 = undefined;
+    };
+
+    return std.fmt.bufPrintZ(&static.buf, fmt, args) catch @panic("oh no!");
+}
+
+fn tmp_shorten_path(path: []const u8) []const u8 {
+    const static = struct {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+    };
+
+    const count = std.mem.replace(u8, path, state.home_path.slice(), "~", &static.buf);
+    const len = if (count > 0) path.len - state.home_path.len + 1 else path.len;
+    return static.buf[0..len];
+}
+
+fn set_active_source(thread_id: ?i32, source: protocol.Source, scroll_to_active_line: bool) void {
+    if (source.sourceReference) |ref| {
+        state.active_source = .{ .reference = ref };
+    } else if (source.path) |path| {
+        state.active_source = .{
+            .path = Path.fromSlice(path) catch return,
+        };
+    }
+
+    state.scroll_to_active_line = scroll_to_active_line;
+    state.active_source_thread_id = thread_id;
+}
+
+fn thread_of_active_source(data: SessionData) ?SessionData.Thread {
+    const thread = data.threads.get(state.active_source_thread_id orelse return null) orelse return null;
+    for (thread.stack.items) |frame| {
+        const source = frame.source orelse continue;
+        const eql = switch (state.active_source) {
+            .none => return null,
+            .path => |path| utils.source_is(source, path.slice()),
+            .reference => |ref| utils.source_is(source, ref),
+        };
+
+        if (eql) {
+            return thread;
+        }
+    }
+
+    return null;
+}
+
+fn thread_of_source(source: protocol.Source, data: SessionData) ?SessionData.Thread {
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+
+        for (thread.stack.items) |frame| {
+            const s = frame.source orelse continue;
+            const eql = if (s.path != null and source.path != null)
+                std.mem.eql(u8, s.path.?, source.path.?)
+            else if (s.sourceReference != null and source.sourceReference != null)
+                s.sourceReference.? == source.sourceReference.?
+            else
+                false;
+
+            if (eql) {
+                return thread.*;
             }
         }
     }
