@@ -148,8 +148,8 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
         while (iter.next()) |entry| {
             const thread = entry.value_ptr;
             switch (thread.state) {
-                .unknown, .stopped => {},
-                .continued => thread.state = .{ .stopped = null },
+                .stopped => {},
+                .unknown, .continued => thread.state = .{ .stopped = null },
             }
         }
     }
@@ -158,14 +158,18 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
 pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
     try data.add_or_update_thread(event.body.threadId, null, .continued);
 
-    if (event.body.allThreadsContinued orelse false) {
-        var iter = data.threads.iterator();
-        while (iter.next()) |entry| {
-            const thread = entry.value_ptr;
-            switch (thread.state) {
-                .unknown, .continued => {},
-                .stopped => thread.state = .continued,
-            }
+    if (event.body.allThreadsContinued orelse true) {
+        data.set_continued_all();
+    }
+}
+
+pub fn set_continued_all(data: *SessionData) void {
+    var iter = data.threads.iterator();
+    while (iter.next()) |entry| {
+        const thread = entry.value_ptr;
+        switch (thread.state) {
+            .continued => {},
+            .unknown, .stopped => thread.state = .continued,
         }
     }
 }
@@ -207,7 +211,7 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     }
 
     for (threads) |new| {
-        try data.add_or_update_thread(new.id, new.name, .unknown);
+        try data.add_or_update_thread(new.id, new.name, null);
     }
 }
 
