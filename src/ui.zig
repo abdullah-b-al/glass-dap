@@ -11,6 +11,7 @@ const request = @import("request.zig");
 const io = @import("io.zig");
 const handlers = @import("handlers.zig");
 const Callbacks = handlers.Callbacks;
+const config = @import("config.zig");
 const log = std.log.scoped(.ui);
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
@@ -361,6 +362,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
 
     const columns_count = std.meta.fields(@TypeOf(table)).len;
     if (zgui.beginTable("Thread Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        defer zgui.endTable();
         inline for (table) |entry| {
             zgui.tableSetupColumn(entry.name, .{});
         }
@@ -427,8 +429,6 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
             _ = zgui.tableNextColumn();
             zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
         }
-
-        zgui.endTable();
     }
 }
 
@@ -667,7 +667,7 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
 
     if (zgui.beginTabItem("Manully Send Requests", .{})) {
         defer zgui.endTabItem();
-        try manual_requests(connection, data, args);
+        try manual_requests(arena, connection, data, args);
     }
 
     if (zgui.beginTabItem("Adapter Capabilities", .{})) {
@@ -749,17 +749,20 @@ fn adapter_capabilities(connection: Connection) void {
     draw_table_from_slice_of_struct(@typeName(protocol.BreakpointMode), protocol.BreakpointMode, c.breakpointModes);
 }
 
-fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
+fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *SessionData, args: Args) !void {
+    _ = args;
     const static = struct {
         var name_buf: [512:0]u8 = .{0} ** 512;
         var source_buf: [512:0]u8 = .{0} ** 512;
     };
 
+    draw_launch_configurations(config.config.launch);
+
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
-        try request.begin_session(connection, args.debugee);
+        try request.begin_session(arena, connection);
     }
 
     zgui.sameLine(.{});
@@ -784,10 +787,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Send Launch Request", .{})) {
-        var extra = protocol.Object{};
-        defer extra.deinit(connection.allocator);
-        try extra.map.put(connection.allocator, "program", .{ .string = args.debugee });
-        _ = try connection.queue_request_launch(.{}, extra, .{ .response = .initialize });
+        request.launch(arena, connection, .{ .response = .initialize }) catch return;
     }
 
     zgui.sameLine(.{});
@@ -1229,4 +1229,50 @@ fn thread_of_source(source: protocol.Source, data: SessionData) ?SessionData.Thr
     }
 
     return null;
+}
+
+fn draw_launch_configurations(maybe_launch: ?config.Launch) void {
+    const launch = maybe_launch orelse return;
+
+    const table = .{
+        .{ .name = "Key" },
+        .{ .name = "Value" },
+    };
+
+    const columns_count = std.meta.fields(@TypeOf(table)).len;
+
+    for (launch.configurations, 0..) |conf, i| {
+        const name = tmp_name("Launch Configuration {}", .{i});
+        if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+            defer zgui.endTable();
+            inline for (table) |entry| zgui.tableSetupColumn(entry.name, .{});
+            zgui.tableHeadersRow();
+
+            var iter = conf.map.iterator();
+            while (iter.next()) |entry| {
+                zgui.tableNextRow(.{});
+
+                _ = zgui.tableNextColumn();
+                zgui.text("{s}", .{entry.key_ptr.*});
+                _ = zgui.tableNextColumn();
+                const value = entry.value_ptr.*;
+                if (@TypeOf(value) == std.json.Value and value == .array) {
+                    zgui.text("[", .{});
+                    for (value.array.items, 0..) |item, ai| {
+                        const last = ai + 1 == value.array.items.len;
+                        zgui.sameLine(.{});
+                        if (!last) {
+                            zgui.text("{s},", .{anytype_to_string(item, .{})});
+                        } else {
+                            zgui.text("{s}", .{anytype_to_string(item, .{})});
+                        }
+                    }
+                    zgui.sameLine(.{});
+                    zgui.text("]", .{});
+                } else {
+                    zgui.text("{s}", .{anytype_to_string(value, .{})});
+                }
+            }
+        }
+    }
 }

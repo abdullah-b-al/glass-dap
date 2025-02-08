@@ -413,3 +413,35 @@ pub fn source_is(source: protocol.Source, path_or_ref: anytype) bool {
         else => @compileError("Type must be i32 or []const u8"),
     };
 }
+
+pub fn to_protocol_value(allocator: std.mem.Allocator, value: std.json.Value) !protocol.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |v| .{ .bool = v },
+        .integer => |v| .{ .integer = v },
+        .float => |v| .{ .float = v },
+        .number_string => |v| .{ .number_string = v },
+        .string => |v| .{ .string = v },
+        .array => |json_array| blk: {
+            var array = protocol.Array{};
+            try array.ensureTotalCapacity(allocator, json_array.items.len);
+            for (json_array.items) |v| {
+                array.appendAssumeCapacity(try to_protocol_value(allocator, v));
+            }
+            break :blk .{ .array = array };
+        },
+        .object => |json_object| blk: {
+            var object = protocol.Object{};
+            try object.map.ensureTotalCapacity(allocator, json_object.count());
+            var iter = json_object.iterator();
+            while (iter.next()) |entry| {
+                object.map.putAssumeCapacity(
+                    entry.key_ptr.*,
+                    try to_protocol_value(allocator, entry.value_ptr.*),
+                );
+            }
+
+            break :blk .{ .object = object };
+        },
+    };
+}

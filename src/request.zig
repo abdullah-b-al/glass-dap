@@ -5,8 +5,9 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const ui = @import("ui.zig");
 const handlers = @import("handlers.zig");
+const config = @import("config.zig");
 
-pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
+pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     // send and respond to initialize
     // send launch or attach
     // when the adapter is ready it'll send a initialized event
@@ -25,13 +26,7 @@ pub fn begin_session(connection: *Connection, debugee: []const u8) !void {
     }
 
     const init_seq = try connection.queue_request_init(init_args, .none);
-
-    {
-        var extra = protocol.Object{};
-        defer extra.deinit(connection.allocator);
-        try extra.map.put(connection.allocator, "program", .{ .string = debugee });
-        _ = try connection.queue_request_launch(.{}, extra, .{ .seq = init_seq });
-    }
+    try launch(arena, connection, .{ .seq = init_seq });
 
     // TODO: Send configurations here
 
@@ -73,6 +68,22 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
             }
         },
     }
+}
+
+pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
+    var extra = protocol.Object{};
+    defer extra.deinit(connection.allocator);
+    if (config.config.launch) |l| {
+        if (l.configurations.len >= 1) {
+            const object = l.configurations[0];
+            var iter = object.map.iterator();
+            while (iter.next()) |entry| {
+                const value = try utils.to_protocol_value(arena, entry.value_ptr.*);
+                try extra.map.put(connection.allocator, entry.key_ptr.*, value);
+            }
+        }
+    }
+    _ = try connection.queue_request_launch(.{}, extra, dependency);
 }
 
 // Causes a chain of requests to get the state

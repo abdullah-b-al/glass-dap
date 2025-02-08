@@ -10,11 +10,28 @@ const time = std.time;
 const ui = @import("ui.zig");
 const log = std.log.scoped(.main);
 const handlers = @import("handlers.zig");
+const config = @import("config.zig");
 
 pub fn main() !void {
     const args = try parse_args();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
+
+    if (args.cwd.len > 0) {
+        const dir = if (std.fs.path.isAbsolute(args.cwd))
+            try std.fs.openDirAbsolute(args.cwd, .{})
+        else
+            try std.fs.cwd().openDir(args.cwd, .{});
+
+        try dir.setAsCwd();
+    }
+
+    const file = try config.find_launch_json();
+    const launch = if (file) |path| try config.open_and_parse_launch_json(gpa.allocator(), path) else null;
+    defer if (launch) |l| l.deinit();
+    if (launch) |l| {
+        config.config.launch = l.value;
+    }
 
     const window = try ui.init_ui(gpa.allocator());
     defer ui.deinit_ui(window);
@@ -59,7 +76,7 @@ fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Conne
 
 pub const Args = struct {
     adapter: []const u8 = "",
-    debugee: []const u8 = "",
+    cwd: []const u8 = "",
     debug_connection: bool = false,
 };
 fn parse_args() !Args {
@@ -74,8 +91,8 @@ fn parse_args() !Args {
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--adapter")) {
             result.adapter = try get_arg_without_double_dash(&iter, error.MissingAdapterPath);
-        } else if (std.mem.eql(u8, arg, "--debugee")) {
-            result.debugee = try get_arg_without_double_dash(&iter, error.MissingDebugeePath);
+        } else if (std.mem.eql(u8, arg, "--cwd")) {
+            result.cwd = try get_arg_without_double_dash(&iter, error.MissingCurrentWorkingDirectory);
         } else if (std.mem.eql(u8, arg, "--debug_connection")) {
             result.debug_connection = true;
         } else {
