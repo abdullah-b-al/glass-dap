@@ -53,13 +53,18 @@ pub fn value_to_object(arena: std.mem.Allocator, value: anytype) !protocol.Objec
 
 /// This function does NOT duplicate memory but it does allocate memory to store slices
 fn value_to_object_recurse(arena: std.mem.Allocator, name: []const u8, value: anytype, object: *protocol.Object) error{OutOfMemory}!void {
+    const Cloner = struct { allocator: std.mem.Allocator };
+    const cloner = Cloner{ .allocator = arena };
+
     if (@TypeOf(value) == protocol.Object) {
-        try object.map.put(arena, name, .{ .object = value });
+        const cloned = try clone_protocol_object(cloner, value);
+        try object.map.put(arena, name, .{ .object = cloned });
         return;
     }
 
     if (@TypeOf(value) == protocol.Array) {
-        try object.map.put(arena, name, .{ .array = value });
+        const cloned = try clone_protocol_array(cloner, value);
+        try object.map.put(arena, name, .{ .array = cloned });
         return;
     }
 
@@ -349,7 +354,7 @@ fn clone_protocol_object(cloner: anytype, object: protocol.Object) !protocol.Obj
     var cloned: protocol.Object = .{};
     var iter = object.map.iterator();
     while (iter.next()) |entry| {
-        const key = try cloner.clone_string(entry.key_ptr.*);
+        const key = try clone_anytype(cloner, entry.key_ptr.*);
         const value = try clone_anytype(cloner, entry.value_ptr.*);
         try cloned.map.put(cloner.allocator, key, value);
     }
