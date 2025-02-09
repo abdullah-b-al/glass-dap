@@ -26,7 +26,13 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     }
 
     const init_seq = try connection.queue_request_init(init_args, .none);
-    try launch(arena, connection, .{ .seq = init_seq });
+    launch(arena, connection, .{ .seq = init_seq }) catch |err| switch (err) {
+        error.NoLaunchConfig => {
+            ui.state.ask_for_launch_config = true;
+            return;
+        },
+        else => return err,
+    };
 
     // TODO: Send configurations here
 
@@ -71,18 +77,22 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 }
 
 pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
-    var extra = protocol.Object{};
-    defer extra.deinit(connection.allocator);
-    if (config.config.launch) |l| {
-        if (l.configurations.len >= 1) {
-            const object = l.configurations[0];
-            var iter = object.map.iterator();
-            while (iter.next()) |entry| {
-                const value = try utils.to_protocol_value(arena, entry.value_ptr.*);
-                try extra.map.put(connection.allocator, entry.key_ptr.*, value);
-            }
-        }
+    const l = config.config.launch orelse return error.NoLaunchConfig;
+    const i = ui.state.launch_config_index orelse return error.NoLaunchConfig;
+    if (i >= l.configurations.len) {
+        ui.state.launch_config_index = null;
+        return error.NoLaunchConfig;
     }
+
+    var extra = protocol.Object{};
+
+    const object = l.configurations[i];
+    var iter = object.map.iterator();
+    while (iter.next()) |entry| {
+        const value = try utils.to_protocol_value(arena, entry.value_ptr.*);
+        try extra.map.put(arena, entry.key_ptr.*, value);
+    }
+
     _ = try connection.queue_request_launch(.{}, extra, dependency);
 }
 
