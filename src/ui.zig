@@ -102,6 +102,43 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
 
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
+    if (state.ask_for_launch_config) {
+        state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
+    }
+
+    if (state.begin_session) {
+        state.begin_session = !(request.begin_session(arena.allocator(), connection) catch |err| blk: {
+            log_err(err, @src());
+            break :blk true;
+        });
+    }
+
+    if (state.update_active_source_to_top_of_stack) blk: {
+        state.update_active_source_to_top_of_stack = false;
+        if (thread_of_active_source(data.*)) |thread| {
+            if (thread.stack.items.len > 0) {
+                const source = thread.stack.items[0].source orelse break :blk;
+                const eql = switch (state.active_source) {
+                    .none => break :blk,
+                    .path => |path| utils.source_is(source, path.slice()),
+                    .reference => |ref| utils.source_is(source, ref),
+                };
+
+                if (eql) set_active_source(thread.id, source, true);
+            }
+        } else if (data.threads.get(state.active_source_thread_id orelse break :blk)) |thread| {
+            if (thread.stack.items.len > 0) {
+                const source = thread.stack.items[0].source orelse break :blk;
+                set_active_source(thread.id, source, true);
+            }
+        }
+    }
+
+    const action = get_action();
+    if (action) |act| {
+        handle_action(act, callbacks, data, connection) catch return;
+    }
+
     const static = struct {
         var built_layout = false;
     };
@@ -140,49 +177,13 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
 
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
 
-    if (state.ask_for_launch_config) {
-        state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
-    }
-
-    if (state.begin_session) {
-        state.begin_session = !(request.begin_session(arena.allocator(), connection) catch |err| blk: {
-            log_err(err, @src());
-            break :blk true;
-        });
-    }
-
-    const action = get_action();
-    if (action) |act| {
-        handle_action(act, callbacks, data, connection) catch return;
-    }
-
     zgui.backend.draw();
 
     window.swapBuffers();
 }
 
+
 fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
-    if (state.update_active_source_to_top_of_stack) blk: {
-        state.update_active_source_to_top_of_stack = false;
-        if (thread_of_active_source(data.*)) |thread| {
-            if (thread.stack.items.len > 0) {
-                const source = thread.stack.items[0].source orelse break :blk;
-                const eql = switch (state.active_source) {
-                    .none => break :blk,
-                    .path => |path| utils.source_is(source, path.slice()),
-                    .reference => |ref| utils.source_is(source, ref),
-                };
-
-                if (eql) set_active_source(thread.id, source, true);
-            }
-        } else if (data.threads.get(state.active_source_thread_id orelse break :blk)) |thread| {
-            if (thread.stack.items.len > 0) {
-                const source = thread.stack.items[0].source orelse break :blk;
-                set_active_source(thread.id, source, true);
-            }
-        }
-    }
-
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
 
