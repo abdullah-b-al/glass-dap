@@ -140,7 +140,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
 
     if (state.ask_for_launch_config) {
-        state.ask_for_launch_config = !pick("Pick Launch configuration", config.config.launch, .launch_config);
+        state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
     }
 
     zgui.backend.draw();
@@ -764,7 +764,7 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
         var source_buf: [512:0]u8 = .{0} ** 512;
     };
 
-    draw_launch_configurations(config.config.launch);
+    draw_launch_configurations(config.launch);
 
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});

@@ -1,9 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
-pub const config = struct {
-    pub var launch: ?Launch = null;
-};
+pub var launch: ?Launch = null;
 
 pub const Launch = struct {
     configurations: []std.json.ArrayHashMap(std.json.Value),

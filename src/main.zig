@@ -30,7 +30,7 @@ pub fn main() !void {
     const launch = if (file) |path| try config.open_and_parse_launch_json(gpa.allocator(), path) else null;
     defer if (launch) |l| l.deinit();
     if (launch) |l| {
-        config.config.launch = l.value;
+        config.launch = l.value;
     }
 
     const window = try ui.init_ui(gpa.allocator());

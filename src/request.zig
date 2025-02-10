@@ -77,7 +77,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 }
 
 pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
-    const l = config.config.launch orelse return error.NoLaunchConfig;
+    const l = config.launch orelse return error.NoLaunchConfig;
     const i = ui.state.launch_config_index orelse return error.NoLaunchConfig;
     if (i >= l.configurations.len) {
         ui.state.launch_config_index = null;
