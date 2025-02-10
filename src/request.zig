@@ -9,13 +9,18 @@ const config = @import("config.zig");
 const Callbacks = handlers.Callbacks;
 const Dependency = Connection.Dependency;
 
-pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
+pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !bool {
     // send and respond to initialize
     // send launch or attach
     // when the adapter is ready it'll send a initialized event
     // send configuration
     // send configuration done
     // respond to launch or attach
+
+    if (get_launch_config() == null) {
+        ui.state.ask_for_launch_config = true;
+        return false;
+    }
 
     const static = struct {
         var init_done = false;
@@ -40,11 +45,7 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     }
     if (!static.launch_done) {
         launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = static.launch_when }) catch |err| switch (err) {
-            error.NoLaunchConfig => {
-                ui.state.ask_for_launch_config = true;
-                static.launch_when = .before_queueing;
-                return;
-            },
+            error.NoLaunchConfig => unreachable,
             else => return err,
         };
         static.launch_done = true;
@@ -57,6 +58,8 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
         .{},
         .{ .dep = .{ .event = .initialized }, .handled_when = .any },
     );
+
+    return true;
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !void {
@@ -97,12 +100,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 }
 
 pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
-    const l = config.launch orelse return error.NoLaunchConfig;
-    const i = ui.state.launch_config_index orelse return error.NoLaunchConfig;
-    if (i >= l.configurations.len) {
-        ui.state.launch_config_index = null;
-        return error.NoLaunchConfig;
-    }
+    const l, const i = get_launch_config() orelse return error.NoLaunchConfig;
 
     var extra = protocol.Object{};
 
@@ -206,3 +204,14 @@ pub const UnlockedThreadsIterator = struct {
         return null;
     }
 };
+
+fn get_launch_config() ?struct { config.Launch, usize } {
+    const l = config.launch orelse return null;
+    const i = ui.state.launch_config_index orelse return null;
+    if (i >= l.configurations.len) {
+        ui.state.launch_config_index = null;
+        return null;
+    }
+
+    return .{ l, i };
+}

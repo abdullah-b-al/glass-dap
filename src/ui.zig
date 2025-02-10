@@ -24,13 +24,14 @@ const State = struct {
         none,
     } = .none,
 
-    scroll_to_active_line: bool = false,
-    update_active_source_to_top_of_stack: bool = false,
     home_path: Path = Path.init(0) catch unreachable,
+    picker: ?Picker = null,
 
     launch_config_index: ?usize = null,
     ask_for_launch_config: bool = false,
-    picker: ?Picker = null,
+    begin_session: bool = false,
+    scroll_to_active_line: bool = false,
+    update_active_source_to_top_of_stack: bool = false,
 };
 
 pub var state = State{};
@@ -141,6 +142,13 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
 
     if (state.ask_for_launch_config) {
         state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
+    }
+
+    if (state.begin_session) {
+        state.begin_session = !(request.begin_session(arena.allocator(), connection) catch |err| blk: {
+            log_err(err, @src());
+            break :blk true;
+        });
     }
 
     const action = get_action();
@@ -785,7 +793,7 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
 
     if (zgui.button("Begin Debug Sequence", .{})) {
-        try request.begin_session(arena, connection);
+        state.begin_session = true;
     }
 
     zgui.sameLine(.{});
@@ -1586,5 +1594,6 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
         .next_line => request.next(callbacks, data.*, connection, .line),
         .next_statement => request.next(callbacks, data.*, connection, .statement),
         .next_instruction => request.next(callbacks, data.*, connection, .instruction),
+        .begin_session => state.begin_session = true,
     }
 }

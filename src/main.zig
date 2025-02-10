@@ -147,4 +147,8 @@ fn set_mappings(allocator: std.mem.Allocator) !void {
         .{ .mods = mods(.{ .control = true }), .key = .c },
         .continue_threads,
     );
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .b },
+        .begin_session,
+    );
 }

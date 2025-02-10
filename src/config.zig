@@ -17,6 +17,7 @@ pub const Action = enum {
     next_line,
     next_statement,
     next_instruction,
+    begin_session,
 };
 
 pub const Key = struct {
