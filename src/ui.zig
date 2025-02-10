@@ -182,7 +182,6 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     window.swapBuffers();
 }
 
-
 fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
@@ -195,32 +194,66 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
         return;
     };
 
-    var dl = zgui.getWindowDrawList();
+    const frame = get_frame_of_source_content(data.*, key);
+
+    if (!zgui.beginTable("Source Code Table", .{
+        .column = 2,
+        .flags = .{
+            .sizing = .fixed_fit,
+            .borders = .{
+                .inner_h = false,
+                .outer_h = false,
+                .inner_v = true,
+                .outer_v = false,
+            },
+        },
+    })) return;
+    defer zgui.endTable();
+
+    const dl = zgui.getWindowDrawList();
     const line_height = zgui.getTextLineHeightWithSpacing();
     const window_width = zgui.getWindowWidth();
-
-    const frame = get_frame_of_source_content(data.*, key);
 
     var iter = std.mem.splitScalar(u8, content.content, '\n');
     var line_number: usize = 0;
     while (iter.next()) |line| {
         defer line_number += 1;
+        const active_line = if (frame) |f| (f.line == line_number) else false;
 
-        const pos = zgui.getCursorScreenPos();
-        if (zgui.selectable(tmp_name("##selectable{}", .{line_number}), .{})) {
-            // TODO: allow operation on the clicked line
+        zgui.tableNextRow(.{});
+
+        if (zgui.tableSetColumnIndex(0)) { // line numbers
+            if (active_line) {
+                const pos = zgui.getCursorScreenPos();
+                dl.addRectFilled(.{
+                    .pmin = pos,
+                    .pmax = .{ pos[0] + window_width, pos[1] + line_height },
+                    .col = color_u32(.text_selected_bg),
+                });
+            }
+            if (zgui.selectable(
+                tmp_name("##Source Code Selectable {}", .{line_number}),
+                .{ .flags = .{ .span_all_columns = true } },
+            )) {
+                // TODO
+            }
+            zgui.sameLine(.{ .spacing = 0 });
+
+            if (zgui.isItemClicked(.right)) {
+                // TODO
+            }
+
+            zgui.text("{} ", .{line_number + 1});
         }
 
-        const active_line = if (frame) |f| (f.line == line_number) else false;
+        var pos: [2]f32 = .{ 0, 0 };
+        if (zgui.tableSetColumnIndex(1)) { // text
+            pos = zgui.getCursorScreenPos();
+            zgui.text("{s}", .{line});
+        }
+
         if (active_line) {
             const f = frame.?;
-
-            dl.addRectFilled(.{
-                .pmin = pos,
-                .pmax = .{ pos[0] + window_width, pos[1] + line_height },
-                .col = color_u32(.text_selected_bg),
-            });
-
             if (f.column < line.len) {
                 const column: usize = @intCast(@max(0, f.column - 1));
                 const size = zgui.calcTextSize(line[0..column], .{});
@@ -238,12 +271,9 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
 
             if (state.scroll_to_active_line) {
                 state.scroll_to_active_line = false;
-
                 zgui.setScrollHereY(.{ .center_y_ratio = 0.5 });
             }
         }
-
-        dl.addText(pos, 0xFFFFFFFF, "{s}", .{line});
     }
 }
 
