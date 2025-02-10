@@ -143,6 +143,11 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
         state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
     }
 
+    const action = get_action();
+    if (action) |act| {
+        handle_action(act, callbacks, data, connection) catch return;
+    }
+
     zgui.backend.draw();
 
     window.swapBuffers();
@@ -1543,4 +1548,33 @@ fn log_err(err: anyerror, src: std.builtin.SourceLocation) void {
         src.column,
         src.fn_name,
     });
+}
+
+fn get_action() ?config.Action {
+    const mods = config.Key.Mods.init(.{
+        .shift = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift),
+        .control = zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl),
+        .alt = zgui.isKeyDown(.left_alt) or zgui.isKeyDown(.right_alt),
+    });
+
+    var iter = config.mappings.iterator();
+    while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const action = entry.value_ptr.*;
+        if (zgui.isKeyPressed(key.key, true) and key.mods.eql(mods)) {
+            return action;
+        }
+    }
+
+    return null;
+}
+
+fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionData, connection: *Connection) !void {
+    switch (action) {
+        .continue_threads => request.continue_threads(data.*, connection),
+        .pause => request.pause(data.*, connection),
+        .next_line => request.next(callbacks, data.*, connection, .line),
+        .next_statement => request.next(callbacks, data.*, connection, .statement),
+        .next_instruction => request.next(callbacks, data.*, connection, .instruction),
+    }
 }

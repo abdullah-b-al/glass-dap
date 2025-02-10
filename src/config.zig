@@ -1,10 +1,30 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const zgui = @import("zgui");
 
 pub var launch: ?Launch = null;
+pub var mappings: Mappings = .empty;
+
+pub const Mappings = std.AutoArrayHashMapUnmanaged(Key, Action);
 
 pub const Launch = struct {
     configurations: []std.json.ArrayHashMap(std.json.Value),
+};
+
+pub const Action = enum {
+    continue_threads,
+    pause,
+    next_line,
+    next_statement,
+    next_instruction,
+};
+
+pub const Key = struct {
+    pub const Mod = enum { alt, control, shift };
+    pub const Mods = std.EnumSet(Mod);
+
+    mods: Mods,
+    key: zgui.Key,
 };
 
 pub const Path = std.BoundedArray(u8, std.fs.max_path_bytes);

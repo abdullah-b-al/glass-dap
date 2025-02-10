@@ -6,6 +6,7 @@ const utils = @import("utils.zig");
 const ui = @import("ui.zig");
 const handlers = @import("handlers.zig");
 const config = @import("config.zig");
+const Callbacks = handlers.Callbacks;
 
 pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     // send and respond to initialize
@@ -110,7 +111,7 @@ pub fn get_thread_state(connection: *Connection, thread_id: i32) !void {
     );
 }
 
-pub fn next(callbacks: *handlers.Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
@@ -155,6 +156,17 @@ pub fn pause(data: SessionData, connection: *Connection) void {
         _ = connection.queue_request(.pause, protocol.PauseArguments{
             .threadId = thread.id,
         }, .none, .no_data) catch return;
+
+        _ = connection.queue_request(
+            .stackTrace,
+            protocol.StackTraceArguments{ .threadId = thread.id },
+            .{ .response = .threads },
+            .{ .stack_trace = .{
+                .thread_id = thread.id,
+                .request_scopes = false,
+                .request_variables = false,
+            } },
+        ) catch return;
     }
 }
 

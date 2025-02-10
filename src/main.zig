@@ -26,12 +26,19 @@ pub fn main() !void {
         try dir.setAsCwd();
     }
 
+    // set configurations
+
+    // launch json
     const file = try config.find_launch_json();
     const launch = if (file) |path| try config.open_and_parse_launch_json(gpa.allocator(), path) else null;
     defer if (launch) |l| l.deinit();
     if (launch) |l| {
         config.launch = l.value;
     }
+
+    // key mappings
+    try set_mappings(gpa.allocator());
+    defer config.mappings.deinit(gpa.allocator());
 
     const window = try ui.init_ui(gpa.allocator());
     defer ui.deinit_ui(window);
@@ -111,4 +118,33 @@ fn get_arg_without_double_dash(iter: *std.process.ArgIterator, err: anyerror) ![
     }
 
     return arg;
+}
+
+fn set_mappings(allocator: std.mem.Allocator) !void {
+    const mods = config.Key.Mods.init;
+    const m = &config.mappings;
+
+    config.mappings = .empty;
+    try config.mappings.ensureTotalCapacity(allocator, 512);
+
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .l },
+        .next_line,
+    );
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .s },
+        .next_statement,
+    );
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .i },
+        .next_instruction,
+    );
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .p },
+        .pause,
+    );
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{ .control = true }), .key = .c },
+        .continue_threads,
+    );
 }
