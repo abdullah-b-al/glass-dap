@@ -382,10 +382,10 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
             zgui.tableNextRow(.{});
             { // column 1
                 _ = zgui.tableNextColumn();
-                if (zgui.button("Get Full State", .{})) {
+                if (zgui.button(tmp_name("Get Full State##{*}", .{entry.key_ptr}), .{})) {
                     request.get_thread_state(connection, thread.id) catch return;
                 }
-                if (zgui.button("Stack Trace", .{})) {
+                if (zgui.button(tmp_name("Stack Trace##{*}", .{entry.key_ptr}), .{})) {
                     const args = protocol.StackTraceArguments{
                         .threadId = thread.id,
                         .startFrame = null, // request all frames
@@ -402,7 +402,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                 }
 
                 zgui.sameLine(.{});
-                if (zgui.button("Scopes", .{})) {
+                if (zgui.button(tmp_name("Scopes##{*}", .{entry.key_ptr}), .{})) {
                     for (thread.stack.items) |frame| {
                         _ = connection.queue_request(
                             .scopes,
@@ -414,7 +414,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                 }
 
                 zgui.sameLine(.{});
-                if (zgui.button("Variables", .{})) {
+                if (zgui.button(tmp_name("Variables##{*}", .{entry.key_ptr}), .{})) {
                     for (data.scopes.items) |scope_entry| {
                         for (scope_entry.data) |scope| {
                             _ = connection.queue_request(
