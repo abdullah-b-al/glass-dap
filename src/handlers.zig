@@ -87,7 +87,7 @@ pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connect
 }
 
 pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32, data: *SessionData, connection: *Connection) bool {
-    const resp, const index = connection.foo_get_response_by_request_seq(request_seq).?;
+    const resp, const index = connection.get_response_by_request_seq(request_seq).?;
     const err = handle_response(message, data, connection, resp);
 
     err catch |e| switch (e) {
@@ -475,27 +475,4 @@ fn acknowledge_and_handled(message: Connection.RawMessage, connection: *Connecti
 fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, request_seq: i32, command: Connection.Command) !void {
     const resp = try connection.parse_validate_response(message, protocol.Response, request_seq, command);
     resp.deinit();
-}
-
-fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
-    switch (to_send.depends_on) {
-        .event => |event| {
-            for (connection.handled_events.items) |item| {
-                if (item == event) return true;
-            }
-        },
-        .seq => |seq| {
-            for (connection.handled_responses.items) |item| {
-                if (item.response.request_seq == seq) return true;
-            }
-        },
-        .response => |command| {
-            for (connection.handled_responses.items) |item| {
-                if (item.response.command == command) return true;
-            }
-        },
-        .none => return true,
-    }
-
-    return false;
 }

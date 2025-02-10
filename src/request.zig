@@ -7,6 +7,7 @@ const ui = @import("ui.zig");
 const handlers = @import("handlers.zig");
 const config = @import("config.zig");
 const Callbacks = handlers.Callbacks;
+const Dependency = Connection.Dependency;
 
 pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     // send and respond to initialize
@@ -15,6 +16,13 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
     // send configuration
     // send configuration done
     // respond to launch or attach
+
+    const static = struct {
+        var init_done = false;
+        var launch_done = false;
+        var launch_when = Dependency.When.after_queueing;
+    };
+
     const init_args = protocol.InitializeRequestArguments{
         .clientName = "thabit",
         .adapterID = "???",
@@ -26,18 +34,29 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !void {
         try connection.adapter_spawn();
     }
 
-    const init_seq = try connection.queue_request_init(init_args, .none);
-    launch(arena, connection, .{ .seq = init_seq }) catch |err| switch (err) {
-        error.NoLaunchConfig => {
-            ui.state.ask_for_launch_config = true;
-            return;
-        },
-        else => return err,
-    };
+    if (!static.init_done) {
+        try connection.queue_request_init(init_args, .none);
+        static.init_done = true;
+    }
+    if (!static.launch_done) {
+        launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = static.launch_when }) catch |err| switch (err) {
+            error.NoLaunchConfig => {
+                ui.state.ask_for_launch_config = true;
+                static.launch_when = .before_queueing;
+                return;
+            },
+            else => return err,
+        };
+        static.launch_done = true;
+    }
 
     // TODO: Send configurations here
 
-    _ = try connection.queue_request_configuration_done(null, .{}, .{ .event = .initialized });
+    _ = try connection.queue_request_configuration_done(
+        null,
+        .{},
+        .{ .dep = .{ .event = .initialized }, .handled_when = .any },
+    );
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !void {
@@ -146,7 +165,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
             .singleThread = true,
         };
 
-        _ = connection.queue_request(.@"continue", args, .none, .no_data) catch return;
+        _ = connection.queue_request(.@"continue", args, Dependency.none, .no_data) catch return;
     }
 }
 
@@ -155,12 +174,12 @@ pub fn pause(data: SessionData, connection: *Connection) void {
     while (iter.next()) |thread| {
         _ = connection.queue_request(.pause, protocol.PauseArguments{
             .threadId = thread.id,
-        }, .none, .no_data) catch return;
+        }, Dependency.none, .no_data) catch return;
 
         _ = connection.queue_request(
             .stackTrace,
             protocol.StackTraceArguments{ .threadId = thread.id },
-            .{ .response = .threads },
+            .{ .dep = .{ .response = .threads }, .handled_when = .after_queueing },
             .{ .stack_trace = .{
                 .thread_id = thread.id,
                 .request_scopes = false,

@@ -692,8 +692,8 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
         defer zgui.endTabItem();
         for (connection.debug_requests.items) |item| {
             var buf: [512]u8 = undefined;
-            const slice = std.fmt.bufPrint(&buf, "seq({}){s}", .{ item.seq, @tagName(item.command) }) catch unreachable;
-            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.object });
+            const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.debug_request_seq, @tagName(item.command) }) catch unreachable;
+            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.args });
         }
     }
 
@@ -722,9 +722,19 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
 
     if (zgui.beginTabItem("Handled Events", .{})) {
         defer zgui.endTabItem();
-        for (connection.handled_events.items) |event| {
-            zgui.text("{s}", .{@tagName(event)});
+        for (connection.handled_events.items) |item| {
+            zgui.text("{s}", .{@tagName(item.event)});
         }
+    }
+
+    if (zgui.beginTabItem("Queued Requests", .{})) {
+        defer zgui.endTabItem();
+        draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.queued_requests.items);
+        // for (connection.queued_requests.items) |item| {
+        //     zgui.text("{s}", .{
+        //         @tagName(item.command),
+        //     });
+        // }
     }
 }
 
@@ -795,12 +805,12 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
             .linesStartAt1 = false,
         };
 
-        _ = try connection.queue_request_init(init_args, .none);
+        try connection.queue_request_init(init_args, .none);
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Send Launch Request", .{})) {
-        request.launch(arena, connection, .{ .response = .initialize }) catch |err| switch (err) {
+        request.launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .before_queueing }) catch |err| switch (err) {
             error.NoLaunchConfig => state.ask_for_launch_config = true,
             else => log_err(err, @src()),
         };
@@ -810,7 +820,7 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
     if (zgui.button("Send configurationDone Request", .{})) {
         _ = try connection.queue_request_configuration_done(null, .{
             .map = .{},
-        }, .{ .event = .initialized });
+        }, .{ .dep = .{ .event = .initialized }, .handled_when = .before_queueing });
     }
 
     if (zgui.button("end connection: disconnect", .{})) {

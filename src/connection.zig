@@ -98,11 +98,15 @@ const State = enum {
     }
 };
 
-pub const Dependency = union(enum) {
-    response: Command,
-    event: Event,
-    seq: i32,
-    none,
+pub const Dependency = struct {
+    pub const When = enum { any, after_queueing, before_queueing };
+    pub const none = Dependency{ .dep = .none, .handled_when = .any };
+    handled_when: When,
+    dep: union(enum) {
+        response: Command,
+        event: Event,
+        none,
+    },
 };
 
 pub const RetainedRequestData = union(enum) {
@@ -141,15 +145,19 @@ pub const ResponseStatus = enum { success, failure };
 pub const HandledResponse = struct {
     response: Response,
     status: ResponseStatus,
+    timestamp: i128,
 };
 
 pub const Request = struct {
+    debug_request_seq: ?i32 = null,
     arena: std.heap.ArenaAllocator,
-    object: protocol.Object,
+    args: protocol.Object,
     command: Command,
-    seq: i32,
+    /// Kept for expected_responses. Do not free when freeing the request
+    request_data: RetainedRequestData,
     /// Send request when dependency is satisfied
     depends_on: Dependency,
+    queued_timestamp: i128,
 };
 
 pub const MessagesContext = struct {
@@ -195,6 +203,11 @@ pub const Command = blk: {
         .decls = &.{},
         .is_exhaustive = true,
     } });
+};
+
+pub const HandledEvent = struct {
+    event: Event,
+    timestamp: i128,
 };
 
 pub const Event = blk: {
@@ -243,7 +256,7 @@ adapter_capabilities: AdapterCapabilities = .{},
 queued_requests: std.ArrayList(Request),
 expected_responses: std.ArrayList(Response),
 handled_responses: std.ArrayList(HandledResponse),
-handled_events: std.ArrayList(Event),
+handled_events: std.ArrayList(HandledEvent),
 
 total_requests: u32 = 0,
 debug_requests: std.ArrayList(Request),
@@ -283,7 +296,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .messages = Messages.init(allocator, {}),
         .expected_responses = std.ArrayList(Response).init(allocator),
         .handled_responses = std.ArrayList(HandledResponse).init(allocator),
-        .handled_events = std.ArrayList(Event).init(allocator),
+        .handled_events = std.ArrayList(HandledEvent).init(allocator),
 
         .debug_failed_messages = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
@@ -328,54 +341,47 @@ pub fn deinit(connection: *Connection) void {
     connection.arena.deinit();
 }
 
-pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !i32 {
-    connection.total_requests += 1;
+pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
+    const total_requests = connection.total_requests + 1;
     try connection.queued_requests.ensureUnusedCapacity(1);
     try connection.expected_responses.ensureUnusedCapacity(1);
-    try connection.debug_requests.ensureTotalCapacity(connection.total_requests);
+    try connection.debug_requests.ensureTotalCapacity(total_requests);
 
     // don't use the request's arena so as not to free the expected_responses data
     // when the request is sent
-    const cloner = connection.create_cloner();
-    const cloned_request_data = try utils.clone_anytype(cloner, request_data);
+    const cloned_request_data = blk: {
+        const cloner = connection.create_cloner();
+        break :blk try utils.clone_anytype(cloner, request_data);
+    };
 
     // FIXME: This leaks for some reason.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     errdefer arena.deinit();
 
-    const args = switch (@TypeOf(arguments)) {
+    const cloner = .{ .allocator = arena.allocator() };
+
+    const object = switch (@TypeOf(arguments)) {
         @TypeOf(null) => protocol.Object{},
         protocol.Object => arguments,
         else => try utils.value_to_object(arena.allocator(), arguments),
     };
 
-    const request = protocol.Request{
-        .seq = connection.new_seq(),
-        .type = .request,
-        .command = @tagName(command),
-        .arguments = .{ .object = args },
-    };
+    const args = try utils.clone_anytype(cloner, object);
 
     connection.queued_requests.appendAssumeCapacity(.{
         .arena = arena,
-        .object = try utils.value_to_object(arena.allocator(), request),
-        .seq = request.seq,
+        .args = args,
         .command = command,
         .depends_on = depends_on,
-    });
-
-    connection.expected_responses.appendAssumeCapacity(.{
-        .request_seq = request.seq,
-        .command = command,
         .request_data = cloned_request_data,
+        .queued_timestamp = std.time.nanoTimestamp(),
     });
-
-    return request.seq;
+    connection.total_requests = total_requests;
 }
 
 pub fn send_request(connection: *Connection, index: usize) !void {
-    const request = connection.queued_requests.items[index];
-    if (!dependency_satisfied(connection.*, request)) return error.DependencyNotSatisfied;
+    var request = &connection.queued_requests.items[index];
+    if (!connection.dependency_satisfied(request.*)) return error.DependencyNotSatisfied;
 
     switch (connection.state) {
         .partially_initialized => {
@@ -394,34 +400,59 @@ pub fn send_request(connection: *Connection, index: usize) !void {
         .initialized, .spawned, .attached, .launched => {},
     }
 
+    const protocol_request = protocol.Request{
+        .seq = connection.new_seq(),
+        .type = .request,
+        .command = @tagName(request.command),
+        .arguments = .{ .object = request.args },
+    };
+
+    const as_object = try utils.value_to_object(request.arena.allocator(), protocol_request);
+
     try connection.check_request_capability(request.command);
-    const message = try io.create_message(connection.allocator, request.object);
+    const message = try io.create_message(connection.allocator, as_object);
     defer connection.allocator.free(message);
     try connection.adapter_write_all(message);
 
-    _ = connection.queued_requests.orderedRemove(index);
+    connection.expected_responses.appendAssumeCapacity(.{
+        .request_seq = protocol_request.seq,
+        .command = request.command,
+        .request_data = request.request_data,
+    });
+
     if (connection.debug) {
-        connection.debug_requests.appendAssumeCapacity(request);
+        request.debug_request_seq = protocol_request.seq;
+        connection.debug_requests.appendAssumeCapacity(request.*);
     } else {
         request.arena.deinit();
     }
+
+    _ = connection.queued_requests.orderedRemove(index);
 }
 
 fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
-    switch (to_send.depends_on) {
-        .event => |event| {
-            for (connection.handled_events.items) |item| {
-                if (item == event) return true;
+    const check = struct {
+        fn func(to: Connection.Request, cond: bool, prev: i128) bool {
+            switch (to.depends_on.handled_when) {
+                .any => if (cond) return true,
+                .after_queueing => if (cond and prev > to.queued_timestamp) return true,
+                .before_queueing => if (cond and prev < to.queued_timestamp) return true,
             }
-        },
-        .seq => |seq| {
-            for (connection.handled_responses.items) |item| {
-                if (item.response.request_seq == seq) return true;
+            return false;
+        }
+    }.func;
+
+    switch (to_send.depends_on.dep) {
+        .event => |event| {
+            for (connection.handled_events.items) |prev| {
+                if (check(to_send, prev.event == event, prev.timestamp))
+                    return true;
             }
         },
         .response => |command| {
-            for (connection.handled_responses.items) |item| {
-                if (item.response.command == command) return true;
+            for (connection.handled_responses.items) |prev| {
+                if (check(to_send, prev.response.command == command, prev.timestamp))
+                    return true;
             }
         },
         .none => return true,
@@ -445,7 +476,10 @@ pub fn delayed_handled_event(connection: *Connection, event: Event, raw_event: R
 }
 
 pub fn handled_event(connection: *Connection, message: RawMessage, event: Event) void {
-    connection.handled_events.appendAssumeCapacity(event);
+    connection.handled_events.appendAssumeCapacity(.{
+        .event = event,
+        .timestamp = std.time.nanoTimestamp(),
+    });
     if (connection.debug) {
         connection.debug_handled_events.appendAssumeCapacity(message);
     } else {
@@ -457,6 +491,7 @@ pub fn handled_response(connection: *Connection, message: RawMessage, response: 
     connection.handled_responses.appendAssumeCapacity(.{
         .response = response,
         .status = status,
+        .timestamp = std.time.nanoTimestamp(),
     });
     if (connection.debug) {
         connection.debug_handled_responses.appendAssumeCapacity(message);
@@ -474,16 +509,15 @@ pub fn failed_message(connection: *Connection, message: RawMessage) void {
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn queue_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments, depends_on: Dependency) !i32 {
+pub fn queue_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments, depends_on: Dependency) !void {
     if (connection.state.fully_initialized()) {
         return error.AdapterAlreadyInitalized;
     }
 
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
-    const seq = try connection.queue_request(.initialize, arguments, depends_on, .no_data);
+    try connection.queue_request(.initialize, arguments, depends_on, .no_data);
     connection.state = .initializing;
-    return seq;
 }
 
 pub fn handle_response_init(connection: *Connection, message: RawMessage, response: Response) !void {
@@ -506,10 +540,10 @@ pub fn handle_response_init(connection: *Connection, message: RawMessage, respon
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
-pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
+pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchRequestArguments, extra_arguments: protocol.Object, depends_on: Dependency) !void {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.launch, args, depends_on, .no_data);
+    try connection.queue_request(.launch, args, depends_on, .no_data);
 }
 
 pub fn handle_response_launch(connection: *Connection, message: RawMessage, response: Response) void {
@@ -517,10 +551,10 @@ pub fn handle_response_launch(connection: *Connection, message: RawMessage, resp
     connection.handled_response(message, response, .success);
 }
 
-pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !i32 {
+pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object, depends_on: Dependency) !void {
     var args = try utils.value_to_object(connection.arena.allocator(), arguments);
     try utils.object_merge(connection.arena.allocator(), &args, extra_arguments);
-    return try connection.queue_request(.configurationDone, args, depends_on, .no_data);
+    try connection.queue_request(.configurationDone, args, depends_on, .no_data);
 }
 
 pub fn handle_response_disconnect(connection: *Connection, message: RawMessage, response: Response) !void {
@@ -636,6 +670,10 @@ pub fn new_seq(s: *Connection) i32 {
     return @intCast(seq);
 }
 
+pub fn peek_seq(s: Connection) i32 {
+    return @intCast(s.seq + 1);
+}
+
 pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     const stdout = connection.adapter.stdout orelse return false;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
@@ -680,28 +718,12 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     return false;
 }
 
-pub fn foo_get_response_by_request_seq(connection: *Connection, request_seq: i32) ?struct { Response, usize } {
+pub fn get_response_by_request_seq(connection: *Connection, request_seq: i32) ?struct { Response, usize } {
     for (connection.expected_responses.items, 0..) |resp, i| {
         if (resp.request_seq == request_seq) return .{ resp, i };
     }
 
     return null;
-}
-
-pub fn get_response_message_by_request_seq(connection: *Connection, request_seq: i32) !struct { RawMessage, usize } {
-    for (connection.responses.items, 0..) |resp, i| {
-        const object = resp.value.object; // messages shouldn't be queued up unless they're an object
-        const raw_seq = object.get("request_seq") orelse continue;
-        const seq = switch (raw_seq) {
-            .integer => |int| int,
-            else => return error.InvalidSeqFromAdapter,
-        };
-        if (seq == request_seq) {
-            return .{ resp, i };
-        }
-    }
-
-    return error.ResponseDoesNotExist;
 }
 
 pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoesNotExist}!struct { RawMessage, usize } {
