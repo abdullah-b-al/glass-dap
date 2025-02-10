@@ -60,19 +60,21 @@ fn build_gen(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 }
 
 fn build_exe(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, install: bool) void {
-    _ = optimize;
-
     const zglfw = b.dependency("zglfw", .{
         .target = target,
+        .optimize = optimize,
     });
     exe.root_module.addImport("zglfw", zglfw.module("root"));
     exe.linkLibrary(zglfw.artifact("glfw"));
 
-    const zopengl = b.dependency("zopengl", .{});
+    const zopengl = b.dependency("zopengl", .{
+        .target = target,
+    });
     exe.root_module.addImport("zopengl", zopengl.module("root"));
 
     const zgui = b.dependency("zgui", .{
         .target = target,
+        .optimize = optimize,
         .backend = .glfw_opengl3,
     });
     exe.root_module.addImport("zgui", zgui.module("root"));
