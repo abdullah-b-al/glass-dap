@@ -60,6 +60,11 @@ fn build_gen(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
 }
 
 fn build_exe(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, install: bool) void {
+    const assets = b.addModule("assets", .{
+        .root_source_file = b.path("assets/assets.zig"),
+    });
+    exe.root_module.addImport("assets", assets);
+
     const zglfw = b.dependency("zglfw", .{
         .target = target,
         .optimize = optimize,
@@ -76,6 +81,8 @@ fn build_exe(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.Reso
         .target = target,
         .optimize = optimize,
         .backend = .glfw_opengl3,
+        .with_freetype = true,
+        .use_wchar32 = true,
     });
     exe.root_module.addImport("zgui", zgui.module("root"));
     exe.linkLibrary(zgui.artifact("imgui"));

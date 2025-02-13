@@ -15,6 +15,7 @@ const config = @import("config.zig");
 const log = std.log.scoped(.ui);
 const Dir = std.fs.Dir;
 const fs = std.fs;
+const assets = @import("assets");
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
@@ -25,6 +26,8 @@ const State = struct {
         reference: i32,
         none,
     } = .none,
+
+    icons_solid: zgui.Font = undefined,
 
     files: Files = undefined,
     home_path: Path = Path.init(0) catch unreachable,
@@ -75,10 +78,28 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
         break :scale_factor @max(scale[0], scale[1]);
     };
 
-    _ = zgui.io.addFontFromFile(
-        "/home/ab55al/.local/share/fonts/JetBrainsMono-Regular.ttf",
-        std.math.floor(24.0 * scale_factor),
-    );
+    {
+        var font_config = zgui.FontConfig.init();
+        const size = std.math.floor(24.0 * scale_factor);
+        font_config.font_data_owned_by_atlas = false;
+
+        state.icons_solid = zgui.io.addFontFromMemoryWithConfig(
+            assets.jet_brains,
+            size,
+            font_config,
+            null,
+        );
+        font_config.merge_mode = true;
+        _ = zgui.io.addFontFromMemoryWithConfig(
+            assets.font_awesome_free_solid,
+            size,
+            font_config,
+            &.{
+                0xF111, '',
+                0, // null byte
+            },
+        );
+    }
 
     zgui.getStyle().scaleAllSizes(scale_factor);
 
@@ -227,6 +248,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
     var line_number: usize = 0;
     while (iter.next()) |line| {
         defer line_number += 1;
+        const int_line: i32 = @truncate(@as(i64, @intCast(line_number)));
         const active_line = if (frame) |f| (f.line == line_number) else false;
 
         zgui.tableNextRow(.{});
@@ -245,7 +267,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
                 .{ .flags = .{ .span_all_columns = true } },
             )) {
                 data.add_source_breakpoint(source_id, .{
-                    .line = @truncate(@as(i64, @intCast(line_number))),
+                    .line = int_line,
                 }) catch return;
 
                 request.set_breakpoints(arena, data.*, connection, source_id) catch return;
@@ -253,6 +275,11 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
 
             if (zgui.isItemClicked(.right)) {
                 // TODO
+            }
+
+            if (breakpoint_in_line(data.*, source_id, int_line)) {
+                zgui.sameLine(.{ .spacing = 0 });
+                zgui.textColored(.{ 1, 0, 0, 1 }, "", .{});
             }
         }
 
@@ -1765,3 +1792,18 @@ pub const Files = struct {
         set_active_source(null, data.get_source(.{ .path = path.slice() }).?, false);
     }
 };
+
+fn breakpoint_in_line(data: SessionData, source_id: SessionData.SourceID, line: i32) bool {
+    for (data.breakpoints.items) |item| {
+        const id = switch (item.origin) {
+            .source => |id| id,
+            .event, .function => continue,
+        };
+
+        if (source_id.eql(id) and line == item.breakpoint.line) {
+            return true;
+        }
+    }
+
+    return false;
+}
