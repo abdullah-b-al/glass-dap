@@ -46,22 +46,11 @@ pub const Variables = struct {
     data: []const protocol.Variable,
 };
 
-pub const SourceContentKey = union(enum) {
+pub const SourceID = union(enum) {
     path: []const u8,
     reference: i32,
-};
 
-const SourceContentHash = struct {
-    pub fn hash(_: @This(), key: SourceContentKey) u32 {
-        var hasher = std.hash.Wyhash.init(0);
-        switch (key) {
-            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
-            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
-        }
-
-        return @as(u32, @truncate(hasher.final()));
-    }
-    pub fn eql(_: @This(), a: SourceContentKey, b: SourceContentKey, _: usize) bool {
+    pub fn eql(a: SourceID, b: SourceID) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
             .path => std.mem.eql(u8, a.path, b.path),
@@ -70,9 +59,36 @@ const SourceContentHash = struct {
     }
 };
 
+pub const SourceIDHash = union(enum) {
+    pub fn hash(_: @This(), key: SourceID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
+            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
+        }
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: SourceID, b: SourceID, _: usize) bool {
+        return a.eql(b);
+    }
+};
+
 pub const SourceContent = struct {
     content: []const u8,
     mime_type: ?[]const u8,
+};
+
+pub const BreakpointOrigin = union(enum) {
+    event,
+    source: SourceID,
+    function,
+};
+
+pub const Breakpoint = struct {
+    origin: BreakpointOrigin,
+    breakpoint: protocol.Breakpoint,
 };
 
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
@@ -89,13 +105,14 @@ modules: std.ArrayListUnmanaged(protocol.Module) = .empty,
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
 scopes: std.ArrayListUnmanaged(Scopes) = .empty,
 variables: std.ArrayListUnmanaged(Variables) = .empty,
-breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .empty,
+breakpoints: std.ArrayListUnmanaged(Breakpoint) = .empty,
 sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
-sources_content: std.ArrayHashMapUnmanaged(SourceContentKey, SourceContent, SourceContentHash, false) = .empty,
+sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
-/// This is here to allow adding and removing individual breakpoints.
+/// These are here to allow adding and removing individual breakpoints.
 function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .empty,
+source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, protocol.SourceBreakpoint, SourceIDHash, false) = .empty,
 
 status: DebuggeeStatus,
 
@@ -129,10 +146,13 @@ pub fn deinit(data: *SessionData) void {
     data.output.deinit(data.allocator);
     data.scopes.deinit(data.allocator);
     data.variables.deinit(data.allocator);
-    data.function_breakpoints.deinit(data.allocator);
-    data.breakpoints.deinit(data.allocator);
+
     data.sources.deinit(data.allocator);
     data.sources_content.deinit(data.allocator);
+
+    data.function_breakpoints.deinit(data.allocator);
+    data.source_breakpoints.deinit(data.allocator);
+    data.breakpoints.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -270,6 +290,13 @@ pub fn set_source(data: *SessionData, source: protocol.Source) !void {
     }
 }
 
+pub fn get_source(data: SessionData, source_id: SourceID) ?protocol.Source {
+    return switch (source_id) {
+        .path => |path| data.get_source_by_path(path),
+        .reference => |ref| data.get_source_by_reference(ref),
+    };
+}
+
 pub fn get_source_by_reference(data: SessionData, reference: i32) ?protocol.Source {
     return (utils.get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
 }
@@ -278,8 +305,8 @@ pub fn get_source_by_path(data: SessionData, path: []const u8) ?protocol.Source 
     return (utils.get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
 }
 
-pub fn set_source_content(data: *SessionData, key: SourceContentKey, content: SourceContent) !void {
-    const real_key: SourceContentKey = switch (key) {
+pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceContent) !void {
+    const real_key: SourceID = switch (key) {
         .path => |path| .{ .path = try data.string_storage.get_and_put(data.allocator, path) },
         .reference => key,
     };
@@ -319,32 +346,39 @@ pub fn add_module(data: *SessionData, module: protocol.Module) !void {
     }
 }
 
-pub fn set_breakpoints(data: *SessionData, breakpoints: []const protocol.Breakpoint) !void {
+pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
     for (breakpoints) |bp| {
-        if (utils.entry_exists(data.breakpoints.items, "id", bp.id)) {
+        if (data.breakpoint_index(bp.id) != null) {
             try data.update_breakpoint(bp);
         } else {
-            try data.breakpoints.append(data.allocator, try data.clone_anytype(bp));
+            try data.breakpoints.append(data.allocator, .{
+                .origin = origin,
+                .breakpoint = try data.clone_anytype(bp),
+            });
         }
     }
 }
 
 pub fn remove_breakpoint(data: *SessionData, id: ?i32) void {
-    const index = utils.get_entry_index(
-        data.breakpoints.items,
-        "id",
-        id orelse return,
-    ) orelse return;
-
+    const index = data.breakpoint_index(id) orelse return;
     _ = data.breakpoints.orderedRemove(index);
 }
 
 fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void {
     const id = breakpoint.id orelse return error.NoBreakpointIDGiven;
-    const entry = utils.get_entry_ptr(data.breakpoints.items, "id", id) orelse return error.BreakpointDoesNotExist;
+    const index = data.breakpoint_index(id) orelse return error.BreakpointDoesNotExist;
 
-    entry.* = try data.clone_anytype(breakpoint);
-    entry.id = id;
+    data.breakpoints.items[index].breakpoint = try data.clone_anytype(breakpoint);
+}
+
+pub fn add_source_breakpoint(data: *SessionData, source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
+    try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
+    const cloned = try data.clone_anytype(breakpoint);
+    data.source_breakpoints.putAssumeCapacity(source_id, cloned);
+}
+
+pub fn remove_source_breakpoint(data: *SessionData, source_id: SourceID) !void {
+    _ = data.source_breakpoints.orderedRemove(source_id);
 }
 
 pub fn add_function_breakpoint(data: *SessionData, breakpoint: protocol.FunctionBreakpoint) !void {
@@ -356,6 +390,17 @@ pub fn add_function_breakpoint(data: *SessionData, breakpoint: protocol.Function
 pub fn remove_function_breakpoint(data: *SessionData, name: []const u8) void {
     const index = utils.get_entry_index(data.function_breakpoints.items, "name", name) orelse return;
     _ = data.function_breakpoints.orderedRemove(index);
+}
+
+fn breakpoint_index(data: SessionData, maybe_id: ?i32) ?usize {
+    const id = maybe_id orelse return null;
+    for (data.breakpoints.items, 0..) |item, i| {
+        if (item.breakpoint.id == id) {
+            return i;
+        }
+    }
+
+    return null;
 }
 
 fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {

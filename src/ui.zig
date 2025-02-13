@@ -162,6 +162,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
         // tabbed
         zgui.dockBuilderDockWindow("Threads", id_threads);
         zgui.dockBuilderDockWindow("Sources", id_threads);
+        zgui.dockBuilderDockWindow("Breakpoints", id_threads);
 
         zgui.dockBuilderDockWindow("Console", id_console);
 
@@ -174,6 +175,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     console(arena.allocator(), "Console", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
     sources(arena.allocator(), "Sources", data.*, connection);
+    breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
 
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
 
@@ -186,7 +188,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
 
-    const key, const content = get_source_content_of_active_source(data) orelse {
+    const source_id, const content = get_source_content_of_active_source(data) orelse {
         // Let's try again next frame
         set_source_content_of_active_source(arena, data, connection) catch |err| {
             log.err("{}", .{err});
@@ -194,7 +196,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
         return;
     };
 
-    const frame = get_frame_of_source_content(data.*, key);
+    const frame = get_frame_of_source_content(data.*, source_id);
 
     if (!zgui.beginTable("Source Code Table", .{
         .column = 2,
@@ -232,18 +234,19 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
                 });
             }
             if (zgui.selectable(
-                tmp_name("##Source Code Selectable {}", .{line_number}),
+                tmp_name("{} ##Source Code Selectable", .{line_number + 1}),
                 .{ .flags = .{ .span_all_columns = true } },
             )) {
-                // TODO
+                data.add_source_breakpoint(source_id, .{
+                    .line = @truncate(@as(i64, @intCast(line_number))),
+                }) catch return;
+
+                request.set_breakpoints(arena, data.*, connection, source_id) catch return;
             }
-            zgui.sameLine(.{ .spacing = 0 });
 
             if (zgui.isItemClicked(.right)) {
                 // TODO
             }
-
-            zgui.text("{} ", .{line_number + 1});
         }
 
         var pos: [2]f32 = .{ 0, 0 };
@@ -302,6 +305,24 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
                 set_active_source(null, source, true);
             }
         }
+    }
+}
+
+fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    _ = arena;
+    defer zgui.end();
+    if (zgui.begin(name, .{})) {}
+
+    for (data.breakpoints.items, 0..) |item, i| {
+        const origin = switch (item.origin) {
+            .event => "event",
+            .source => |id| tmp_shorten_path(anytype_to_string(id, .{})),
+            .function => "function",
+        };
+
+        const n = tmp_name("{s} {?}##{}", .{ origin, item.breakpoint.line, i });
+        if (zgui.selectable(n, .{})) {}
     }
 }
 
@@ -574,7 +595,7 @@ fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: Session
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    draw_table_from_slice_of_struct("breakpoints", protocol.Breakpoint, data.breakpoints.items);
+    draw_table_from_slice_of_struct("breakpoints", SessionData.Breakpoint, data.breakpoints.items);
 }
 
 fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
@@ -920,7 +941,11 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
         data.remove_function_breakpoint(static.name_buf[0..len]);
         static.name_buf[0] = 0; // clear
     }
-    draw_table_from_slice_of_struct("Function Breakpoints", protocol.FunctionBreakpoint, data.function_breakpoints.items);
+    draw_table_from_slice_of_struct(
+        "Function Breakpoints",
+        protocol.FunctionBreakpoint,
+        data.function_breakpoints.items,
+    );
 }
 
 fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_value: ?[]const T) void {
@@ -1157,7 +1182,7 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
     };
 }
 
-fn get_frame_of_source_content(data: SessionData, key: SessionData.SourceContentKey) ?protocol.StackFrame {
+fn get_frame_of_source_content(data: SessionData, key: SessionData.SourceID) ?protocol.StackFrame {
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
@@ -1188,7 +1213,7 @@ fn get_stack_of_frame(data: *const SessionData, frame: protocol.StackFrame) ?Ses
     return null;
 }
 
-pub fn get_source_content_of_active_source(data: *const SessionData) ?struct { SessionData.SourceContentKey, SessionData.SourceContent } {
+pub fn get_source_content_of_active_source(data: *const SessionData) ?struct { SessionData.SourceID, SessionData.SourceContent } {
     const entry = switch (state.active_source) {
         .none => return null,
         .path => |path| data.sources_content.getEntry(.{ .path = path.slice() }),

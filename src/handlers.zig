@@ -203,7 +203,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
 
             const body = parsed.value.body;
             switch (body.reason) {
-                .changed, .new => try data.set_breakpoints(&.{body.breakpoint}),
+                .changed, .new => try data.set_breakpoints(.event, &.{body.breakpoint}),
                 .removed => data.remove_breakpoint(body.breakpoint.id),
                 .string => |string| log.err(
                     "TODO event: {s} in switch case {s}",
@@ -349,7 +349,24 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             );
             defer parsed.deinit();
 
-            try data.set_breakpoints(parsed.value.body.breakpoints);
+            try data.set_breakpoints(.function, parsed.value.body.breakpoints);
+
+            connection.handled_response(message, response, .success);
+        },
+        .setBreakpoints => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.SetBreakpointsResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            const retained = response.request_data.set_breakpoints;
+
+            try data.set_breakpoints(.{
+                .source = retained.source_id,
+            }, parsed.value.body.breakpoints);
 
             connection.handled_response(message, response, .success);
         },
@@ -393,7 +410,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .restart => log.err("TODO: {s}", .{@tagName(response.command)}),
         .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
         .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),

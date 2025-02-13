@@ -85,7 +85,7 @@ pub fn read_all(allocator: std.mem.Allocator, header: Header, reader: anytype) !
     return list.toOwnedSlice();
 }
 
-pub fn open_file_as_source_content(allocator: std.mem.Allocator, path: []const u8) !struct { SessionData.SourceContentKey, SessionData.SourceContent } {
+pub fn open_file_as_source_content(allocator: std.mem.Allocator, path: []const u8) !struct { SessionData.SourceID, SessionData.SourceContent } {
     std.debug.assert(std.fs.path.isAbsolute(path));
 
     const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });

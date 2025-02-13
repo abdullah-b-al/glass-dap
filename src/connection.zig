@@ -1,6 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
+const SessionData = @import("session_data.zig");
 const io = @import("io.zig");
 
 const log = std.log.scoped(.connection);
@@ -131,6 +132,9 @@ pub const RetainedRequestData = union(enum) {
         request_stack_trace: bool,
         request_scopes: bool,
         request_variables: bool,
+    },
+    set_breakpoints: struct {
+        source_id: SessionData.SourceID,
     },
     no_data,
 };
