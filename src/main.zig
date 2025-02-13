@@ -26,6 +26,9 @@ pub fn main() !void {
         try dir.setAsCwd();
     }
 
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = try std.fs.cwd().realpath(".", &cwd_buf);
+
     // set configurations
 
     // launch json
@@ -40,7 +43,7 @@ pub fn main() !void {
     try set_mappings(gpa.allocator());
     defer config.mappings.deinit(gpa.allocator());
 
-    const window = try ui.init_ui(gpa.allocator());
+    const window = try ui.init_ui(gpa.allocator(), cwd);
     defer ui.deinit_ui(window);
 
     var data = SessionData.init(gpa.allocator());

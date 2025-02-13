@@ -13,6 +13,8 @@ const handlers = @import("handlers.zig");
 const Callbacks = handlers.Callbacks;
 const config = @import("config.zig");
 const log = std.log.scoped(.ui);
+const Dir = std.fs.Dir;
+const fs = std.fs;
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
@@ -24,6 +26,7 @@ const State = struct {
         none,
     } = .none,
 
+    files: Files = undefined,
     home_path: Path = Path.init(0) catch unreachable,
     picker: ?Picker = null,
 
@@ -36,7 +39,13 @@ const State = struct {
 
 pub var state = State{};
 
-pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
+pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+
+    state.files = Files.init(allocator, cwd);
+    state.home_path = try Path.fromSlice(env_map.get("HOME") orelse "");
+
     try glfw.init();
 
     const gl_major = 4;
@@ -47,10 +56,6 @@ pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
     glfw.windowHint(.opengl_forward_compat, true);
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
-
-    var env_map = try std.process.getEnvMap(allocator);
-    defer env_map.deinit();
-    state.home_path = try Path.fromSlice(env_map.get("HOME") orelse "");
 
     const window = try glfw.Window.create(1000, 1000, "TestWindow:thabit", null);
     window.setSizeLimits(400, 400, -1, -1);
@@ -83,6 +88,8 @@ pub fn init_ui(allocator: std.mem.Allocator) !*glfw.Window {
 }
 
 pub fn deinit_ui(window: *glfw.Window) void {
+    state.files.deinit();
+
     zgui.backend.deinit();
     zgui.deinit();
     window.destroy();
@@ -174,7 +181,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     source_code(arena.allocator(), "Source Code", data, connection);
     console(arena.allocator(), "Console", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
-    sources(arena.allocator(), "Sources", data.*, connection);
+    sources(arena.allocator(), "Sources", data, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
 
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
@@ -280,29 +287,61 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
     }
 }
 
-fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = connection;
+fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     _ = arena;
+    _ = connection;
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
 
-    const fn_name = @src().fn_name;
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    defer zgui.endTabBar();
+    if (!zgui.beginTabBar("Sources Tabs", .{})) return;
 
-    for (data.sources.items) |source| {
-        const source_path = if (source.path) |path| tmp_shorten_path(path) else null;
-        const label = if (source_path) |path|
-            std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
-        else if (source.sourceReference) |ref|
-            std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.name orelse "", ref }) catch return
-        else
-            return;
+    if (zgui.beginTabItem("Files", .{})) files_blk: {
+        defer zgui.endTabItem();
+        if (state.files.entries.items.len == 0) {
+            state.files.fill() catch |err| {
+                zgui.text("{}", .{err});
+                break :files_blk;
+            };
+        }
 
-        if (zgui.button(label, .{})) {
-            if (thread_of_source(source, data)) |thread| {
-                set_active_source(thread.id, source, true);
-            } else {
-                set_active_source(null, source, true);
+        for (state.files.entries.items) |entry| {
+            const s_name = if (entry.kind == .directory)
+                tmp_name("{s}/", .{entry.name})
+            else
+                tmp_name("{s}", .{entry.name});
+            if (zgui.selectable(s_name, .{})) {
+                if (entry.kind == .directory) {
+                    state.files.cd(entry) catch break :files_blk;
+                    break; // cd frees the files_entries
+                } else {
+                    state.files.open(data, entry) catch break :files_blk;
+                }
+            }
+        }
+    }
+
+    if (zgui.beginTabItem("Loaded Sources", .{})) {
+        defer zgui.endTabItem();
+
+        const fn_name = @src().fn_name;
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        for (data.sources.items) |source| {
+            const source_path = if (source.path) |path| tmp_shorten_path(path) else null;
+            const label = if (source_path) |path|
+                std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
+            else if (source.sourceReference) |ref|
+                std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.name orelse "", ref }) catch return
+            else
+                return;
+
+            if (zgui.button(label, .{})) {
+                if (thread_of_source(source, data.*)) |thread| {
+                    set_active_source(thread.id, source, true);
+                } else {
+                    set_active_source(null, source, true);
+                }
             }
         }
     }
@@ -1653,3 +1692,76 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
         .begin_session => state.begin_session = true,
     }
 }
+
+pub const Files = struct {
+    allocator: std.mem.Allocator,
+    dir: Path = Path.init(0) catch unreachable,
+    entries: std.ArrayListUnmanaged(Dir.Entry) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator, dir: []const u8) Files {
+        std.debug.assert(fs.path.isAbsolute(dir));
+        return .{
+            .allocator = allocator,
+            .dir = Path.fromSlice(dir) catch unreachable,
+        };
+    }
+
+    fn deinit(files: *Files) void {
+        files.clear();
+        files.entries.deinit(files.allocator);
+    }
+
+    fn clear(files: *Files) void {
+        for (files.entries.items) |entry| files.allocator.free(entry.name);
+        files.entries.clearRetainingCapacity();
+    }
+
+    fn fill(files: *Files) !void {
+        std.debug.assert(files.entries.items.len == 0);
+
+        var dir = try fs.openDirAbsolute(files.dir.slice(), .{ .iterate = true });
+
+        try files.entries.append(files.allocator, .{
+            .name = try files.allocator.dupe(u8, ".."),
+            .kind = .directory,
+        });
+
+        var iter = dir.iterate();
+        while (true) {
+            const entry = iter.next() catch |err| switch (err) {
+                error.AccessDenied,
+                error.InvalidUtf8,
+                error.Unexpected,
+                error.SystemResources,
+                => continue,
+            } orelse break;
+
+            try files.entries.append(files.allocator, .{
+                .name = try files.allocator.dupe(u8, entry.name),
+                .kind = entry.kind,
+            });
+        }
+    }
+
+    fn cd(files: *Files, entry: Dir.Entry) !void {
+        if (std.mem.eql(u8, entry.name, "..")) {
+            const parent = fs.path.dirname(files.dir.slice()) orelse return;
+            files.dir = Path.fromSlice(parent) catch unreachable;
+        } else {
+            files.dir.append(fs.path.sep) catch unreachable;
+            files.dir.appendSlice(entry.name) catch unreachable;
+        }
+        files.clear();
+        try files.fill();
+    }
+
+    fn open(files: *Files, data: *SessionData, entry: Dir.Entry) !void {
+        var path = Path.init(0) catch unreachable;
+        path.appendSlice(files.dir.slice()) catch unreachable;
+        path.append(fs.path.sep) catch unreachable;
+        path.appendSlice(entry.name) catch unreachable;
+
+        try data.set_source(.{ .path = path.slice() });
+        set_active_source(null, data.get_source(.{ .path = path.slice() }).?, false);
+    }
+};
