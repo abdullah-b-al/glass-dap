@@ -61,8 +61,9 @@ pub fn SliceStorageUnmanaged(comptime T: type, comptime HashContext: type) type 
         const Self = @This();
         pub const Slice = []const T;
 
+        pub const empty = Self{ .set = .empty };
         pub const HashMapUnmanaged = std.HashMapUnmanaged(Slice, void, HashContext, std.hash_map.default_max_load_percentage);
-        set: HashMapUnmanaged = .{},
+        set: HashMapUnmanaged,
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             var iter = self.set.keyIterator();

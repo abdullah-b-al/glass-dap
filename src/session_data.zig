@@ -83,19 +83,19 @@ allocator: std.mem.Allocator,
 /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
 arena: std.heap.ArenaAllocator,
 
-string_storage: StringStorageUnmanaged = .{},
+string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
-modules: std.ArrayListUnmanaged(protocol.Module) = .{},
-output: std.ArrayListUnmanaged(protocol.OutputEvent) = .{},
-scopes: std.ArrayListUnmanaged(Scopes) = .{},
-variables: std.ArrayListUnmanaged(Variables) = .{},
-breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .{},
-sources: std.ArrayListUnmanaged(protocol.Source) = .{},
+modules: std.ArrayListUnmanaged(protocol.Module) = .empty,
+output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
+scopes: std.ArrayListUnmanaged(Scopes) = .empty,
+variables: std.ArrayListUnmanaged(Variables) = .empty,
+breakpoints: std.ArrayListUnmanaged(protocol.Breakpoint) = .empty,
+sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceContentKey, SourceContent, SourceContentHash, false) = .empty,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// This is here to allow adding and removing individual breakpoints.
-function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .{},
+function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .empty,
 
 status: DebuggeeStatus,
 
