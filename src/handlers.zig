@@ -443,7 +443,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
     }
 }
 
-/// `container` is a container type with a function named `function`
 pub fn callback(
     callbacks: *Callbacks,
     call_if: Callback.CallIf,
