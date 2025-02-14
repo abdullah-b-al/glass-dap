@@ -266,20 +266,21 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
                 tmp_name("{} ##Source Code Selectable", .{line_number + 1}),
                 .{ .flags = .{ .span_all_columns = true } },
             )) {
-                data.add_source_breakpoint(source_id, .{
-                    .line = int_line,
-                }) catch return;
-
-                request.set_breakpoints(arena, data.*, connection, source_id) catch return;
+                breakpoint_toggle(source_id, int_line, data, connection);
             }
 
             if (zgui.isItemClicked(.right)) {
                 // TODO
             }
 
-            if (breakpoint_in_line(data.*, source_id, int_line)) {
+            const bp_count = breakpoint_in_line(data, source_id, int_line);
+            if (bp_count > 0) {
                 zgui.sameLine(.{ .spacing = 0 });
                 zgui.textColored(.{ 1, 0, 0, 1 }, "", .{});
+                if (bp_count > 1) {
+                    zgui.sameLine(.{ .spacing = 0 });
+                    zgui.textColored(.{ 1, 0, 0, 1 }, "{}", .{bp_count});
+                }
             }
         }
 
@@ -387,7 +388,8 @@ fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, 
             .function => "function",
         };
 
-        const n = tmp_name("{s} {?}##{}", .{ origin, item.breakpoint.line, i });
+        const line = item.breakpoint.line orelse continue;
+        const n = tmp_name("{s} {?}##{}", .{ origin, line + 1, i });
         if (zgui.selectable(n, .{})) {}
     }
 }
@@ -1793,7 +1795,8 @@ pub const Files = struct {
     }
 };
 
-fn breakpoint_in_line(data: SessionData, source_id: SessionData.SourceID, line: i32) bool {
+fn breakpoint_in_line(data: *const SessionData, source_id: SessionData.SourceID, line: i32) usize {
+    var count: usize = 0;
     for (data.breakpoints.items) |item| {
         const id = switch (item.origin) {
             .source => |id| id,
@@ -1801,9 +1804,21 @@ fn breakpoint_in_line(data: SessionData, source_id: SessionData.SourceID, line: 
         };
 
         if (source_id.eql(id) and line == item.breakpoint.line) {
-            return true;
+            count += 1;
         }
     }
 
-    return false;
+    return count;
+}
+
+fn breakpoint_toggle(source_id: SessionData.SourceID, line: i32, data: *SessionData, connection: *Connection) void {
+    if (breakpoint_in_line(data, source_id, line) > 0) {
+        data.remove_source_breakpoint(source_id, line);
+    } else {
+        data.add_source_breakpoint(source_id, .{
+            .line = line,
+        }) catch return;
+    }
+
+    request.set_breakpoints(data.*, connection, source_id) catch return;
 }

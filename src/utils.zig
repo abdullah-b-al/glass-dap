@@ -389,16 +389,16 @@ pub fn get_entry_index(slice: anytype, comptime field_name: []const u8, value: a
     const is_slice = info == .pointer and info.pointer.size == .slice;
     for (slice, 0..) |item, i| {
         const field = @field(item, field_name);
-        if (is_slice) {
-            const unwraped_field = if (@typeInfo(@TypeOf(field)) == .optional)
-                field orelse continue
-            else
-                field;
+        const unwraped_field = if (@typeInfo(@TypeOf(field)) == .optional)
+            field orelse continue
+        else
+            field;
 
+        if (is_slice) {
             if (std.mem.eql(info.pointer.child, unwraped_field, value)) {
                 return i;
             }
-        } else if (std.meta.eql(field, value)) {
+        } else if (std.meta.eql(unwraped_field, value)) {
             return i;
         }
     }

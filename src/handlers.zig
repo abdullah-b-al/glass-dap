@@ -93,6 +93,7 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
     err catch |e| switch (e) {
         error.NoBreakpointIDGiven,
         error.BreakpointDoesNotExist,
+        error.InvalidBreakpointResponse,
 
         error.OutOfMemory,
         error.Overflow,

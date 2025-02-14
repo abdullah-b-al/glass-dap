@@ -187,21 +187,13 @@ pub fn pause(data: SessionData, connection: *Connection) void {
     }
 }
 
-pub fn set_breakpoints(arena: std.mem.Allocator, data: SessionData, connection: *Connection, source_id: SessionData.SourceID) !void {
+pub fn set_breakpoints(data: SessionData, connection: *Connection, source_id: SessionData.SourceID) !void {
     const source = data.get_source(source_id) orelse return error.NoSource;
-    var breakpoints = try std.ArrayList(protocol.SourceBreakpoint).initCapacity(
-        arena,
-        data.source_breakpoints.count(),
-    );
-    var iter = data.source_breakpoints.iterator();
-    while (iter.next()) |entry| {
-        if (!entry.key_ptr.eql(source_id)) continue;
-        breakpoints.appendAssumeCapacity(entry.value_ptr.*);
-    }
+    const breakpoints = data.source_breakpoints.getPtr(source_id) orelse return;
 
     try connection.queue_request(.setBreakpoints, protocol.SetBreakpointsArguments{
         .source = source,
-        .breakpoints = breakpoints.items,
+        .breakpoints = breakpoints.values(),
         .lines = null,
         .sourceModified = null,
     }, .none, .{ .set_breakpoints = .{ .source_id = source_id } });

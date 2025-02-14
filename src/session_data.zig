@@ -91,6 +91,8 @@ pub const Breakpoint = struct {
     breakpoint: protocol.Breakpoint,
 };
 
+pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.SourceBreakpoint);
+
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 
@@ -112,7 +114,7 @@ sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
 function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .empty,
-source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, protocol.SourceBreakpoint, SourceIDHash, false) = .empty,
+source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false) = .empty,
 
 status: DebuggeeStatus,
 
@@ -151,8 +153,11 @@ pub fn deinit(data: *SessionData) void {
     data.sources_content.deinit(data.allocator);
 
     data.function_breakpoints.deinit(data.allocator);
-    data.source_breakpoints.deinit(data.allocator);
     data.breakpoints.deinit(data.allocator);
+    for (data.source_breakpoints.values()) |*list| {
+        list.deinit(data.allocator);
+    }
+    data.source_breakpoints.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -347,14 +352,34 @@ pub fn add_module(data: *SessionData, module: protocol.Module) !void {
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
+    if (origin != .event) {
+        data.clear_breakpoints(origin);
+    }
+
+    if (origin == .source) {
+        try data.update_source_breakpoints_line(origin.source, breakpoints);
+    }
+
     for (breakpoints) |bp| {
-        if (data.breakpoint_index(bp.id) != null) {
+        if (origin == .event) {
             try data.update_breakpoint(bp);
         } else {
             try data.breakpoints.append(data.allocator, .{
                 .origin = origin,
                 .breakpoint = try data.clone_anytype(bp),
             });
+        }
+    }
+}
+
+pub fn clear_breakpoints(data: *SessionData, origin: BreakpointOrigin) void {
+    var i: usize = 0;
+    while (i < data.breakpoints.items.len) {
+        const entry = data.breakpoints.items[i];
+        if (std.meta.activeTag(entry.origin) == std.meta.activeTag(origin)) {
+            _ = data.breakpoints.orderedRemove(i);
+        } else {
+            i += 1;
         }
     }
 }
@@ -373,12 +398,41 @@ fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void 
 
 pub fn add_source_breakpoint(data: *SessionData, source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
     try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
-    const cloned = try data.clone_anytype(breakpoint);
-    data.source_breakpoints.putAssumeCapacity(source_id, cloned);
+
+    const gop = data.source_breakpoints.getOrPut(data.allocator, source_id) catch |err| switch (err) {
+        error.OutOfMemory => unreachable,
+    };
+
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .empty;
+    }
+
+    if (!gop.value_ptr.contains(breakpoint.line)) {
+        const cloned = try data.clone_anytype(breakpoint);
+        try gop.value_ptr.put(data.allocator, breakpoint.line, cloned);
+    } else {
+        std.debug.print("dupe {}\n", .{breakpoint.line});
+    }
 }
 
-pub fn remove_source_breakpoint(data: *SessionData, source_id: SourceID) !void {
-    _ = data.source_breakpoints.orderedRemove(source_id);
+pub fn remove_source_breakpoint(data: *SessionData, source_id: SourceID, line: i32) void {
+    var breakpoints = data.source_breakpoints.getPtr(source_id) orelse return;
+    _ = breakpoints.swapRemove(line);
+}
+
+fn update_source_breakpoints_line(data: *SessionData, source_id: SourceID, new_breakpoints: []const protocol.Breakpoint) !void {
+    const breakpoints = data.source_breakpoints.getPtr(source_id) orelse return;
+
+    // https://microsoft.github.io/debug-adapter-protocol/specification#Requests_SetBreakpoints
+    if (new_breakpoints.len != breakpoints.count()) return error.InvalidBreakpointResponse;
+    for (breakpoints.keys(), breakpoints.values(), new_breakpoints) |*key, *a, b| {
+        key.* = b.line orelse continue;
+        a.line = b.line orelse continue;
+    }
+
+    breakpoints.reIndex(data.allocator) catch |err| switch (err) {
+        error.OutOfMemory => unreachable,
+    };
 }
 
 pub fn add_function_breakpoint(data: *SessionData, breakpoint: protocol.FunctionBreakpoint) !void {
