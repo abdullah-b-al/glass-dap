@@ -29,10 +29,15 @@ const State = struct {
     picker: ?Picker = null,
 
     launch_config_index: ?usize = null,
+
+    // handled in ui_tick
     ask_for_launch_config: bool = false,
     begin_session: bool = false,
-    scroll_to_active_line: bool = false,
     update_active_source_to_top_of_stack: bool = false,
+
+    // handled in a widget
+    scroll_to_active_line: bool = false,
+    waiting_for_scopes_and_variables: bool = false,
 };
 
 pub var state = State{};
@@ -112,7 +117,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -158,8 +163,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
         }
     }
 
-    const action = get_action();
-    if (action) |act| {
+    if (get_action()) |act| {
         handle_action(act, callbacks, data, connection) catch return;
     }
 
@@ -200,10 +204,10 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     console(arena.allocator(), "Console", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
     sources(arena.allocator(), "Sources", data, connection);
-    variables(arena.allocator(), "Variables", data, connection);
+    variables(arena.allocator(), "Variables", callbacks, data, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
 
-    debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
+    debug_ui(arena.allocator(), callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
@@ -379,9 +383,7 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
     }
 }
 
-fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
-    _ = connection;
-
+fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -389,7 +391,21 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, c
     if (thread.state != .stopped) return;
 
     const frame = state.active_source.get_frame(data) orelse return;
-    const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse return;
+    const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse {
+        if (state.waiting_for_scopes_and_variables) return;
+
+        request.scopes(connection, thread.id, @enumFromInt(frame.id), true) catch return;
+
+        const static = struct {
+            fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+                state.waiting_for_scopes_and_variables = false;
+            }
+        };
+
+        handlers.callback(callbacks, .success, .{ .response = .variables }, null, static.func) catch return;
+        state.waiting_for_scopes_and_variables = true;
+        return;
+    };
 
     var scopes_name = std.StringArrayHashMap(void).init(arena);
     for (scopes) |scope| {
