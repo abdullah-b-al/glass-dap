@@ -300,6 +300,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                         .none,
                         .{
                             .scopes = .{
+                                .thread_id = retained.thread_id,
                                 .frame_id = frame.id,
                                 .request_variables = retained.request_variables,
                             },
@@ -313,7 +314,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
             const retained = response.request_data.scopes;
 
-            try data.set_scopes(retained.frame_id, parsed.value.body.scopes);
+            try data.set_scopes(retained.thread_id, retained.frame_id, parsed.value.body.scopes);
             defer connection.handled_response(message, response, .success);
 
             if (retained.request_variables) {
@@ -322,7 +323,10 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                         .variables,
                         protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
                         .none,
-                        .{ .variables = .{ .variables_reference = scope.variablesReference } },
+                        .{ .variables = .{
+                            .thread_id = retained.thread_id,
+                            .variables_reference = scope.variablesReference,
+                        } },
                     );
                 }
             }
@@ -336,7 +340,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             );
             defer parsed.deinit();
             const retained = response.request_data.variables;
-            try data.set_variables(retained.variables_reference, parsed.value.body.variables);
+            try data.set_variables(retained.thread_id, retained.variables_reference, parsed.value.body.variables);
 
             connection.handled_response(message, response, .success);
         },

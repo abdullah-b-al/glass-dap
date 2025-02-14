@@ -14,12 +14,9 @@ const DebuggeeStatus = union(enum) {
     exited: i32,
 };
 
-pub const Scopes = struct {
-    frame_id: i32,
-    data: []const protocol.Scope,
-};
-
-pub const Stack = std.ArrayListUnmanaged(protocol.StackFrame);
+pub const FrameID = enum(i32) { _ };
+pub const ScopeID = enum(i32) { _ };
+pub const VariableReference = enum(i32) { _ };
 
 pub const Threads = std.AutoArrayHashMapUnmanaged(i32, Thread);
 pub const Thread = struct {
@@ -34,16 +31,15 @@ pub const Thread = struct {
     state: State,
     unlocked: bool,
 
-    stack: Stack,
+    stack: std.ArrayListUnmanaged(protocol.StackFrame) = .empty,
+    scopes: std.AutoArrayHashMapUnmanaged(FrameID, []protocol.Scope) = .empty,
+    variables: std.AutoArrayHashMapUnmanaged(VariableReference, []protocol.Variable) = .empty,
 
     pub fn deinit(thread: *Thread, allocator: std.mem.Allocator) void {
         thread.stack.deinit(allocator);
+        thread.scopes.deinit(allocator);
+        thread.variables.deinit(allocator);
     }
-};
-
-pub const Variables = struct {
-    reference: i32,
-    data: []const protocol.Variable,
 };
 
 pub const SourceID = union(enum) {
@@ -105,8 +101,6 @@ string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
 modules: std.ArrayListUnmanaged(protocol.Module) = .empty,
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
-scopes: std.ArrayListUnmanaged(Scopes) = .empty,
-variables: std.ArrayListUnmanaged(Variables) = .empty,
 breakpoints: std.ArrayListUnmanaged(Breakpoint) = .empty,
 sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
@@ -146,8 +140,6 @@ pub fn deinit(data: *SessionData) void {
 
     data.modules.deinit(data.allocator);
     data.output.deinit(data.allocator);
-    data.scopes.deinit(data.allocator);
-    data.variables.deinit(data.allocator);
 
     data.sources.deinit(data.allocator);
     data.sources_content.deinit(data.allocator);
@@ -260,7 +252,7 @@ fn add_or_update_thread(data: *SessionData, id: i32, name: ?[]const u8, state: ?
             .name = try data.clone_anytype(name orelse ""),
             .state = state orelse .unknown,
             .unlocked = !(state == null or state.? == .unknown),
-            .stack = Stack{},
+            .stack = .empty,
         };
     }
 }
@@ -319,28 +311,19 @@ pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceCont
     gop.value_ptr.* = try data.clone_anytype(content);
 }
 
-pub fn set_scopes(data: *SessionData, frame_id: i32, response: []const protocol.Scope) !void {
-    try data.scopes.ensureUnusedCapacity(data.allocator, 1);
-    if (utils.get_entry_ptr(data.scopes.items, "frame_id", frame_id)) |entry| {
-        entry.data = try data.clone_anytype(response);
-    } else {
-        data.scopes.appendAssumeCapacity(.{
-            .frame_id = frame_id,
-            .data = try data.clone_anytype(response),
-        });
-    }
+pub fn set_scopes(data: *SessionData, thread_id: i32, frame_id: i32, response: []protocol.Scope) !void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    const gop = try thread.scopes.getOrPut(data.allocator, @enumFromInt(frame_id));
+    gop.value_ptr.* = try data.clone_anytype(response);
 }
 
-pub fn set_variables(data: *SessionData, variables_reference: i32, response: []const protocol.Variable) !void {
-    try data.variables.ensureUnusedCapacity(data.allocator, 1);
-    if (utils.get_entry_ptr(data.variables.items, "reference", variables_reference)) |entry| {
-        entry.data = try data.clone_anytype(response);
-    } else {
-        data.variables.appendAssumeCapacity(.{
-            .reference = variables_reference,
-            .data = try data.clone_anytype(response),
-        });
-    }
+pub fn set_variables(data: *SessionData, thread_id: i32, variables_reference: i32, response: []protocol.Variable) !void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    try thread.variables.put(
+        data.allocator,
+        @enumFromInt(variables_reference),
+        try data.clone_anytype(response),
+    );
 }
 
 pub fn add_module(data: *SessionData, module: protocol.Module) !void {

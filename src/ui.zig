@@ -541,20 +541,27 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                             .scopes,
                             protocol.ScopesArguments{ .frameId = frame.id },
                             .none,
-                            .{ .scopes = .{ .frame_id = frame.id, .request_variables = false } },
+                            .{ .scopes = .{
+                                .thread_id = thread.id,
+                                .frame_id = frame.id,
+                                .request_variables = false,
+                            } },
                         ) catch return;
                     }
                 }
 
                 zgui.sameLine(.{});
                 if (zgui.button(tmp_name("Variables##{*}", .{entry.key_ptr}), .{})) {
-                    for (data.scopes.items) |scope_entry| {
-                        for (scope_entry.data) |scope| {
+                    for (thread.scopes.values()) |scopes| {
+                        for (scopes) |scope| {
                             _ = connection.queue_request(
                                 .variables,
                                 protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
                                 .none,
-                                .{ .variables = .{ .variables_reference = scope.variablesReference } },
+                                .{ .variables = .{
+                                    .thread_id = thread.id,
+                                    .variables_reference = scope.variablesReference,
+                                } },
                             ) catch return;
                         }
                     }
@@ -635,11 +642,13 @@ fn debug_scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    for (data.scopes.items) |item| {
-        var buf: [64]u8 = undefined;
-        const n = std.fmt.bufPrintZ(&buf, "Frame ID {}##scopes slice", .{item.frame_id}) catch return;
-        draw_table_from_slice_of_struct(n, protocol.Scope, item.data);
-        zgui.newLine();
+    for (data.threads.values()) |thread| {
+        for (thread.scopes.keys(), thread.scopes.values()) |frame, item| {
+            var buf: [64]u8 = undefined;
+            const n = std.fmt.bufPrintZ(&buf, "Frame ID {}##scopes slice", .{frame}) catch return;
+            draw_table_from_slice_of_struct(n, protocol.Scope, item);
+            zgui.newLine();
+        }
     }
 }
 
@@ -649,11 +658,13 @@ fn debug_variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionDa
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    for (data.variables.items) |item| {
-        var buf: [64]u8 = undefined;
-        const n = std.fmt.bufPrintZ(&buf, "Reference {}##variables slice", .{item.reference}) catch return;
-        draw_table_from_slice_of_struct(n, protocol.Variable, item.data);
-        zgui.newLine();
+    for (data.threads.values()) |thread| {
+        for (thread.variables.keys(), thread.variables.values()) |ref, vars| {
+            var buf: [64]u8 = undefined;
+            const n = std.fmt.bufPrintZ(&buf, "Reference {}##variables slice", .{ref}) catch return;
+            draw_table_from_slice_of_struct(n, protocol.Variable, vars);
+            zgui.newLine();
+        }
     }
 }
 
