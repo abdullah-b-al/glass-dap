@@ -26,6 +26,7 @@ pub const Callback = struct {
     message: ?Connection.RawMessage,
     call_if: CallIf,
     when_to_call: WhenToCall,
+    timestamp: i128,
 };
 
 pub fn send_queued_requests(connection: *Connection) void {
@@ -455,6 +456,7 @@ pub fn callback(
         .message = message,
         .call_if = call_if,
         .when_to_call = when_to_call,
+        .timestamp = std.time.nanoTimestamp(),
     };
 
     try callbacks.append(cb);
@@ -465,6 +467,7 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
         var i: usize = 0;
         while (i < callbacks.items.len) {
             const cb = callbacks.items[i];
+
             const call_if = switch (cb.call_if) {
                 .success => handled.status == .success,
                 .fail => handled.status == .failure,
@@ -477,7 +480,7 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
                 .any => true,
             };
 
-            if (call_if and when_to_call) {
+            if (handled.timestamp >= cb.timestamp and call_if and when_to_call) {
                 cb.function(data, connection, cb.message);
                 _ = callbacks.orderedRemove(i);
             } else {
