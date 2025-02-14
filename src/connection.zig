@@ -112,25 +112,25 @@ pub const Dependency = struct {
 
 pub const RetainedRequestData = union(enum) {
     stack_trace: struct {
-        thread_id: i32,
+        thread_id: SessionData.ThreadID,
         request_scopes: bool,
         request_variables: bool,
     },
     scopes: struct {
-        thread_id: i32,
-        frame_id: i32,
+        thread_id: SessionData.ThreadID,
+        frame_id: SessionData.FrameID,
         request_variables: bool,
     },
     variables: struct {
-        thread_id: i32,
-        variables_reference: i32,
+        thread_id: SessionData.ThreadID,
+        variables_reference: SessionData.VariableReference,
     },
     source: struct {
         path: ?[]const u8,
         source_reference: i32,
     },
     next: struct {
-        thread_id: i32,
+        thread_id: SessionData.ThreadID,
         request_stack_trace: bool,
         request_scopes: bool,
         request_variables: bool,

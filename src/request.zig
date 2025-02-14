@@ -115,10 +115,10 @@ pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Con
 }
 
 // Causes a chain of requests to get the state
-pub fn get_thread_state(connection: *Connection, thread_id: i32) !void {
+pub fn get_thread_state(connection: *Connection, thread_id: SessionData.ThreadID) !void {
     _ = try connection.queue_request(
         .stackTrace,
-        protocol.StackTraceArguments{ .threadId = thread_id },
+        protocol.StackTraceArguments{ .threadId = @intFromEnum(thread_id) },
         .none,
         .{ .stack_trace = .{
             .thread_id = thread_id,
@@ -132,7 +132,7 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
-            .threadId = thread.id,
+            .threadId = @intFromEnum(thread.id),
             .singleThread = true,
             .granularity = granularity,
         };
@@ -159,7 +159,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const args = protocol.ContinueArguments{
-            .threadId = thread.id,
+            .threadId = @intFromEnum(thread.id),
             .singleThread = true,
         };
 
@@ -171,12 +171,12 @@ pub fn pause(data: SessionData, connection: *Connection) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         _ = connection.queue_request(.pause, protocol.PauseArguments{
-            .threadId = thread.id,
+            .threadId = @intFromEnum(thread.id),
         }, Dependency.none, .no_data) catch return;
 
         _ = connection.queue_request(
             .stackTrace,
-            protocol.StackTraceArguments{ .threadId = thread.id },
+            protocol.StackTraceArguments{ .threadId = @intFromEnum(thread.id) },
             .{ .dep = .{ .response = .threads }, .handled_when = .after_queueing },
             .{ .stack_trace = .{
                 .thread_id = thread.id,

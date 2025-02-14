@@ -14,11 +14,13 @@ const DebuggeeStatus = union(enum) {
     exited: i32,
 };
 
-pub const FrameID = enum(i32) { _ };
-pub const ScopeID = enum(i32) { _ };
-pub const VariableReference = enum(i32) { _ };
+pub const ID = i32;
+pub const ThreadID = enum(ID) { _ };
+pub const FrameID = enum(ID) { _ };
+pub const ScopeID = enum(ID) { _ };
+pub const VariableReference = enum(ID) { _ };
 
-pub const Threads = std.AutoArrayHashMapUnmanaged(i32, Thread);
+pub const Threads = std.AutoArrayHashMapUnmanaged(ThreadID, Thread);
 pub const Thread = struct {
     const State = union(enum) {
         stopped: ?Stopped,
@@ -26,7 +28,7 @@ pub const Thread = struct {
         unknown,
     };
 
-    id: i32,
+    id: ThreadID,
     name: []const u8,
     state: State,
     unlocked: bool,
@@ -158,7 +160,7 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
     const stopped = try data.clone_anytype(event.body);
 
     if (stopped.threadId) |id| {
-        try data.add_or_update_thread(id, null, .{ .stopped = stopped });
+        try data.add_or_update_thread(@enumFromInt(id), null, .{ .stopped = stopped });
     }
 
     if (stopped.allThreadsStopped orelse false) {
@@ -174,7 +176,7 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
 }
 
 pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
-    try data.add_or_update_thread(event.body.threadId, null, .continued);
+    try data.add_or_update_thread(@enumFromInt(event.body.threadId), null, .continued);
 
     if (event.body.allThreadsContinued orelse true) {
         data.set_continued_all();
@@ -221,7 +223,7 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const old = entry.key_ptr.*;
-        if (!utils.entry_exists(threads, "id", old)) {
+        if (!utils.entry_exists(threads, "id", @as(ID, @intFromEnum(old)))) {
             _ = data.threads.orderedRemove(old);
             // iterator invalidated reset
             iter = data.threads.iterator();
@@ -229,11 +231,11 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     }
 
     for (threads) |new| {
-        try data.add_or_update_thread(new.id, new.name, null);
+        try data.add_or_update_thread(@enumFromInt(new.id), new.name, null);
     }
 }
 
-fn add_or_update_thread(data: *SessionData, id: i32, name: ?[]const u8, state: ?Thread.State) !void {
+fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, state: ?Thread.State) !void {
     const gop = try data.threads.getOrPut(data.allocator, id);
     if (gop.found_existing) {
         const thread = gop.value_ptr;
@@ -257,7 +259,7 @@ fn add_or_update_thread(data: *SessionData, id: i32, name: ?[]const u8, state: ?
     }
 }
 
-pub fn set_stack(data: *SessionData, thread_id: i32, clear: bool, response: []const protocol.StackFrame) !void {
+pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response: []const protocol.StackFrame) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
     if (clear) {
         thread.stack.clearRetainingCapacity();
@@ -311,17 +313,17 @@ pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceCont
     gop.value_ptr.* = try data.clone_anytype(content);
 }
 
-pub fn set_scopes(data: *SessionData, thread_id: i32, frame_id: i32, response: []protocol.Scope) !void {
+pub fn set_scopes(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, response: []protocol.Scope) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
-    const gop = try thread.scopes.getOrPut(data.allocator, @enumFromInt(frame_id));
+    const gop = try thread.scopes.getOrPut(data.allocator, frame_id);
     gop.value_ptr.* = try data.clone_anytype(response);
 }
 
-pub fn set_variables(data: *SessionData, thread_id: i32, variables_reference: i32, response: []protocol.Variable) !void {
+pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_reference: VariableReference, response: []protocol.Variable) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
     try thread.variables.put(
         data.allocator,
-        @enumFromInt(variables_reference),
+        variables_reference,
         try data.clone_anytype(response),
     );
 }

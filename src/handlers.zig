@@ -243,7 +243,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             if (retained.request_stack_trace) {
                 _ = try connection.queue_request(
                     .stackTrace,
-                    protocol.StackTraceArguments{ .threadId = retained.thread_id },
+                    protocol.StackTraceArguments{ .threadId = @intFromEnum(retained.thread_id) },
                     .none,
                     .{ .stack_trace = .{
                         .thread_id = retained.thread_id,
@@ -288,7 +288,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
-                    protocol.StackTraceArguments{ .threadId = retained.thread_id },
+                    protocol.StackTraceArguments{ .threadId = @intFromEnum(retained.thread_id) },
                     .none,
                     .{ .stack_trace = retained },
                 );
@@ -301,7 +301,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                         .{
                             .scopes = .{
                                 .thread_id = retained.thread_id,
-                                .frame_id = frame.id,
+                                .frame_id = @enumFromInt(frame.id),
                                 .request_variables = retained.request_variables,
                             },
                         },
@@ -325,7 +325,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                         .none,
                         .{ .variables = .{
                             .thread_id = retained.thread_id,
-                            .variables_reference = scope.variablesReference,
+                            .variables_reference = @enumFromInt(scope.variablesReference),
                         } },
                     );
                 }
