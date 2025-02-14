@@ -128,6 +128,19 @@ pub fn get_thread_state(connection: *Connection, thread_id: SessionData.ThreadID
     );
 }
 
+pub fn scopes(connection: *Connection, thread_id: SessionData.ThreadID, frame_id: SessionData.FrameID, request_variables: bool) !void {
+    _ = try connection.queue_request(
+        .scopes,
+        protocol.ScopesArguments{ .frameId = @intFromEnum(frame_id) },
+        .none,
+        .{ .scopes = .{
+            .thread_id = thread_id,
+            .frame_id = frame_id,
+            .request_variables = request_variables,
+        } },
+    );
+}
+
 pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {

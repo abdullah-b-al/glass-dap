@@ -15,6 +15,7 @@ const config = @import("config.zig");
 const log = std.log.scoped(.ui);
 const Dir = std.fs.Dir;
 const fs = std.fs;
+const meta = std.meta;
 const assets = @import("assets");
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
@@ -185,6 +186,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
         // tabbed
         zgui.dockBuilderDockWindow("Threads", id_threads);
         zgui.dockBuilderDockWindow("Sources", id_threads);
+        zgui.dockBuilderDockWindow("Variables", id_threads);
         zgui.dockBuilderDockWindow("Breakpoints", id_threads);
 
         zgui.dockBuilderDockWindow("Console", id_console);
@@ -198,6 +200,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     console(arena.allocator(), "Console", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
     sources(arena.allocator(), "Sources", data, connection);
+    variables(arena.allocator(), "Variables", data, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
 
     debug_ui(arena.allocator(), callbacks, connection, data, args) catch |err| std.log.err("{}", .{err});
@@ -209,7 +212,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
 
 fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
-    if (zgui.begin(name, .{})) {}
+    if (!zgui.begin(name, .{})) return;
 
     const source_id, const content = state.active_source.get_source_content(data) orelse {
         // Let's try again next frame
@@ -245,6 +248,10 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
         defer line_number += 1;
         const int_line: i32 = @truncate(@as(i64, @intCast(line_number)));
         const active_line = if (frame) |f| (f.line == line_number) else false;
+
+        if (active_line) {
+            state.active_source.line = int_line;
+        }
 
         zgui.tableNextRow(.{});
 
@@ -314,7 +321,7 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
     _ = arena;
     _ = connection;
     defer zgui.end();
-    if (zgui.begin(name, .{})) {}
+    if (!zgui.begin(name, .{})) return;
 
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Sources Tabs", .{})) return;
@@ -372,12 +379,44 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
     }
 }
 
+fn variables(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
+    _ = connection;
+
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const thread = state.active_source.get_thread(data) orelse return;
+    if (thread.state != .stopped) return;
+
+    const frame = state.active_source.get_frame(data) orelse return;
+    const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse return;
+
+    var scopes_name = std.StringArrayHashMap(void).init(arena);
+    for (scopes) |scope| {
+        scopes_name.put(scope.name, {}) catch return;
+    }
+
+    defer zgui.endTabBar();
+    if (!zgui.beginTabBar("Variables Tab Bar", .{})) return;
+    for (scopes_name.keys()) |n| {
+        if (!zgui.beginTabItem(tmp_name("{s}", .{n}), .{})) continue;
+        defer zgui.endTabItem();
+
+        for (scopes) |scope| {
+            if (!std.mem.eql(u8, n, scope.name)) continue;
+            const vars = thread.variables.get(@enumFromInt(scope.variablesReference)) orelse continue;
+            for (vars) |v| {
+                zgui.text("{s} = {s}", .{ v.name, v.value });
+            }
+        }
+    }
+}
 
 fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     _ = arena;
     defer zgui.end();
-    if (zgui.begin(name, .{})) {}
+    if (!zgui.begin(name, .{})) return;
 
     for (data.breakpoints.items, 0..) |item, i| {
         const origin = switch (item.origin) {
@@ -396,7 +435,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, 
     _ = arena;
 
     defer zgui.end();
-    if (zgui.begin(name, .{})) {}
+    if (!zgui.begin(name, .{})) return;
 
     { // buttons
         // line 1
@@ -538,16 +577,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                 zgui.sameLine(.{});
                 if (zgui.button(tmp_name("Scopes##{*}", .{entry.key_ptr}), .{})) {
                     for (thread.stack.items) |frame| {
-                        _ = connection.queue_request(
-                            .scopes,
-                            protocol.ScopesArguments{ .frameId = frame.id },
-                            .none,
-                            .{ .scopes = .{
-                                .thread_id = thread.id,
-                                .frame_id = @enumFromInt(frame.id),
-                                .request_variables = false,
-                            } },
-                        ) catch return;
+                        request.scopes(connection, thread.id, @enumFromInt(frame.id), false) catch return;
                     }
                 }
 
@@ -1759,6 +1789,7 @@ pub const ActiveSource = struct {
     };
 
     thread_id: ?SessionData.ThreadID,
+    line: ?i32 = null,
     source: union(enum) {
         path: Path,
         reference: i32,
@@ -1817,8 +1848,7 @@ pub const ActiveSource = struct {
     }
 
     fn get_thread(active: *ActiveSource, data: *SessionData) ?*SessionData.Thread {
-        const th = data.threads.getPtr(active.thread_id orelse return null) orelse return null;
-        return th;
+        return data.threads.getPtr(active.thread_id orelse return null) orelse return null;
         // const source_id = state.active_source.id() orelse return null;
         // for (th.stack.items) |frame| {
         //     const source = frame.source orelse continue;
@@ -1828,6 +1858,19 @@ pub const ActiveSource = struct {
         // }
 
         // return null;
+    }
+
+    fn get_frame(active: *ActiveSource, data: *SessionData) ?protocol.StackFrame {
+        const thread = active.get_thread(data) orelse return null;
+        const id = active.get_id().?;
+        for (thread.stack.items) |frame| {
+            const source = frame.source orelse continue;
+            if (utils.source_is(source, id)) {
+                return frame;
+            }
+        }
+
+        return null;
     }
 };
 
