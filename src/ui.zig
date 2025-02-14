@@ -20,13 +20,7 @@ const assets = @import("assets");
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
 const State = struct {
-    active_source_thread_id: ?i32 = null,
-    active_source: union(enum) {
-        path: Path,
-        reference: i32,
-        none,
-    } = .none,
-
+    active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
 
     files: Files = undefined,
@@ -143,21 +137,22 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
 
     if (state.update_active_source_to_top_of_stack) blk: {
         state.update_active_source_to_top_of_stack = false;
-        if (thread_of_active_source(data.*)) |thread| {
+        if (state.active_source.get_thread(data)) |thread| {
             if (thread.stack.items.len > 0) {
                 const source = thread.stack.items[0].source orelse break :blk;
-                const eql = switch (state.active_source) {
-                    .none => break :blk,
-                    .path => |path| utils.source_is(source, path.slice()),
-                    .reference => |ref| utils.source_is(source, ref),
-                };
+                const id = state.active_source.get_id() orelse break :blk;
+                const eql = utils.source_is(source, id);
 
-                if (eql) set_active_source(thread.id, source, true);
+                if (eql) {
+                    state.active_source.set_source(thread.id, source);
+                    state.scroll_to_active_line = true;
+                }
             }
-        } else if (data.threads.get(state.active_source_thread_id orelse break :blk)) |thread| {
+        } else if (data.threads.get(state.active_source.thread_id orelse break :blk)) |thread| {
             if (thread.stack.items.len > 0) {
                 const source = thread.stack.items[0].source orelse break :blk;
-                set_active_source(thread.id, source, true);
+                state.active_source.set_source(thread.id, source);
+                state.scroll_to_active_line = true;
             }
         }
     }
@@ -216,9 +211,9 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
     defer zgui.end();
     if (zgui.begin(name, .{})) {}
 
-    const source_id, const content = get_source_content_of_active_source(data) orelse {
+    const source_id, const content = state.active_source.get_source_content(data) orelse {
         // Let's try again next frame
-        set_source_content_of_active_source(arena, data, connection) catch |err| {
+        state.active_source.set_source_content(arena, data, connection) catch |err| {
             log.err("{}", .{err});
         };
         return;
@@ -366,14 +361,17 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
 
             if (zgui.button(label, .{})) {
                 if (thread_of_source(source, data.*)) |thread| {
-                    set_active_source(thread.id, source, true);
+                    state.active_source.set_source(thread.id, source);
+                    state.scroll_to_active_line = true;
                 } else {
-                    set_active_source(null, source, true);
+                    state.active_source.set_source(null, source);
+                    state.scroll_to_active_line = true;
                 }
             }
         }
     }
 }
+
 
 fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
@@ -467,7 +465,10 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, 
 
             for (thread.stack.items) |frame| {
                 if (zgui.selectable(tmp_name("{s}", .{frame.name}), .{})) {
-                    if (frame.source) |s| set_active_source(thread.id, s, true);
+                    if (frame.source) |s| {
+                        state.active_source.set_source(thread.id, s);
+                        state.scroll_to_active_line = true;
+                    }
                 }
             }
 
@@ -520,7 +521,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                 }
                 if (zgui.button(tmp_name("Stack Trace##{*}", .{entry.key_ptr}), .{})) {
                     const args = protocol.StackTraceArguments{
-                        .threadId = thread.id,
+                        .threadId = @intFromEnum(thread.id),
                         .startFrame = null, // request all frames
                         .levels = null, // request all levels
                         .format = null,
@@ -543,7 +544,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                             .none,
                             .{ .scopes = .{
                                 .thread_id = thread.id,
-                                .frame_id = frame.id,
+                                .frame_id = @enumFromInt(frame.id),
                                 .request_variables = false,
                             } },
                         ) catch return;
@@ -560,7 +561,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                                 .none,
                                 .{ .variables = .{
                                     .thread_id = thread.id,
-                                    .variables_reference = scope.variablesReference,
+                                    .variables_reference = @enumFromInt(scope.variablesReference),
                                 } },
                             ) catch return;
                         }
@@ -1209,7 +1210,13 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts:
         .float, .int => {
             return std.fmt.allocPrint(allocator, "{}", .{value}) catch unreachable;
         },
-        .@"enum" => return @tagName(value),
+        .@"enum" => |info| {
+            if (info.fields.len == 0) {
+                return std.fmt.allocPrint(allocator, "{s}:{}", .{ @typeName(T), value }) catch unreachable;
+            } else {
+                return @tagName(value);
+            }
+        },
         .@"union" => {
             switch (value) {
                 inline else => |v| {
@@ -1292,37 +1299,6 @@ fn get_stack_of_frame(data: *const SessionData, frame: protocol.StackFrame) ?Ses
     return null;
 }
 
-pub fn get_source_content_of_active_source(data: *const SessionData) ?struct { SessionData.SourceID, SessionData.SourceContent } {
-    const entry = switch (state.active_source) {
-        .none => return null,
-        .path => |path| data.sources_content.getEntry(.{ .path = path.slice() }),
-        .reference => |ref| data.sources_content.getEntry(.{ .reference = ref }),
-    };
-
-    return if (entry) |e|
-        .{ e.key_ptr.*, e.value_ptr.* }
-    else
-        null;
-}
-
-pub fn set_source_content_of_active_source(arena: std.mem.Allocator, data: *SessionData, connection: *Connection) !void {
-    return switch (state.active_source) {
-        .none => return,
-        .path => |path| {
-            _, const content = try io.open_file_as_source_content(arena, path.slice());
-            try data.set_source_content(.{ .path = path.slice() }, content);
-        },
-        .reference => |reference| {
-            _ = try connection.queue_request(.source, protocol.SourceArguments{
-                .source = null,
-                .sourceReference = reference,
-            }, .none, .{
-                .source = .{ .path = null, .source_reference = reference },
-            });
-        },
-    };
-}
-
 fn color_u32(tag: zgui.StyleCol) u32 {
     const color = zgui.getStyle().getColor(tag);
     return zgui.colorConvertFloat4ToU32(color);
@@ -1344,37 +1320,6 @@ fn tmp_shorten_path(path: []const u8) []const u8 {
     const count = std.mem.replace(u8, path, state.home_path.slice(), "~", &static.buf);
     const len = if (count > 0) path.len - state.home_path.len + 1 else path.len;
     return static.buf[0..len];
-}
-
-fn set_active_source(thread_id: ?i32, source: protocol.Source, scroll_to_active_line: bool) void {
-    if (source.sourceReference) |ref| {
-        state.active_source = .{ .reference = ref };
-    } else if (source.path) |path| {
-        state.active_source = .{
-            .path = Path.fromSlice(path) catch return,
-        };
-    }
-
-    state.scroll_to_active_line = scroll_to_active_line;
-    state.active_source_thread_id = thread_id;
-}
-
-fn thread_of_active_source(data: SessionData) ?SessionData.Thread {
-    const thread = data.threads.get(state.active_source_thread_id orelse return null) orelse return null;
-    for (thread.stack.items) |frame| {
-        const source = frame.source orelse continue;
-        const eql = switch (state.active_source) {
-            .none => return null,
-            .path => |path| utils.source_is(source, path.slice()),
-            .reference => |ref| utils.source_is(source, ref),
-        };
-
-        if (eql) {
-            return thread;
-        }
-    }
-
-    return null;
 }
 
 fn thread_of_source(source: protocol.Source, data: SessionData) ?SessionData.Thread {
@@ -1802,7 +1747,87 @@ pub const Files = struct {
         path.appendSlice(entry.name) catch unreachable;
 
         try data.set_source(.{ .path = path.slice() });
-        set_active_source(null, data.get_source(.{ .path = path.slice() }).?, false);
+        state.active_source.set_source(null, data.get_source(.{ .path = path.slice() }).?);
+        state.scroll_to_active_line = false;
+    }
+};
+
+pub const ActiveSource = struct {
+    pub const defualt = ActiveSource{
+        .thread_id = null,
+        .source = .none,
+    };
+
+    thread_id: ?SessionData.ThreadID,
+    source: union(enum) {
+        path: Path,
+        reference: i32,
+        none,
+    },
+
+    pub fn get_id(active: ActiveSource) ?SessionData.SourceID {
+        return switch (active.source) {
+            .none => null,
+            .path => |path| .{ .path = path.slice() },
+            .reference => |ref| .{ .reference = ref },
+        };
+    }
+
+    pub fn get_source_content(active: *ActiveSource, data: *const SessionData) ?struct { SessionData.SourceID, SessionData.SourceContent } {
+        const entry = switch (active.source) {
+            .none => return null,
+            .path => |path| data.sources_content.getEntry(.{ .path = path.slice() }),
+            .reference => |ref| data.sources_content.getEntry(.{ .reference = ref }),
+        };
+
+        return if (entry) |e|
+            .{ e.key_ptr.*, e.value_ptr.* }
+        else
+            null;
+    }
+
+    pub fn set_source_content(active: *ActiveSource, arena: std.mem.Allocator, data: *SessionData, connection: *Connection) !void {
+        return switch (active.source) {
+            .none => return,
+            .path => |path| {
+                _, const content = try io.open_file_as_source_content(arena, path.slice());
+                try data.set_source_content(.{ .path = path.slice() }, content);
+            },
+            .reference => |reference| {
+                _ = try connection.queue_request(.source, protocol.SourceArguments{
+                    .source = null,
+                    .sourceReference = reference,
+                }, .none, .{
+                    .source = .{ .path = null, .source_reference = reference },
+                });
+            },
+        };
+    }
+
+    fn set_source(active: *ActiveSource, thread_id: ?SessionData.ThreadID, source: protocol.Source) void {
+        if (source.sourceReference) |ref| {
+            active.source = .{ .reference = ref };
+        } else if (source.path) |path| {
+            active.source = .{
+                .path = Path.fromSlice(path) catch return,
+            };
+        }
+
+        active.thread_id = thread_id;
+    }
+
+    fn get_thread(active: *ActiveSource, data: *SessionData) ?*SessionData.Thread {
+        const th = data.threads.getPtr(active.thread_id orelse return null) orelse return null;
+        return th;
+        // const source_id = state.active_source.id() orelse return null;
+        // for (th.stack.items) |frame| {
+        //     const source = frame.source orelse continue;
+        //     if (utils.source_is(source, source_id)) {
+        //         return th;
+        //     }
+        // }
+
+        // return null;
     }
 };
 

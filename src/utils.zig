@@ -1,5 +1,6 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const SessionData = @import("session_data.zig");
 const log = std.log.scoped(.utils);
 
 pub fn object_inject_merge(allocator: std.mem.Allocator, object: *protocol.Object, ancestors: []const []const u8, extra: protocol.Object) !void {
@@ -410,6 +411,9 @@ pub fn source_is(source: protocol.Source, path_or_ref: anytype) bool {
     return switch (@TypeOf(path_or_ref)) {
         []const u8 => source.path != null and std.mem.eql(u8, source.path.?, path_or_ref),
         i32 => source.sourceReference != null and source.sourceReference == path_or_ref,
+        SessionData.SourceID => switch (path_or_ref) {
+            inline else => |v| source_is(source, v),
+        },
         else => @compileError("Type must be i32 or []const u8"),
     };
 }
