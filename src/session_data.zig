@@ -68,6 +68,15 @@ pub const SourceID = union(enum) {
             .reference => a.reference == b.reference,
         };
     }
+
+    pub fn from_source(source: protocol.Source) ?SourceID {
+        return if (source.sourceReference) |ref|
+            .{ .reference = ref }
+        else if (source.path) |path|
+            .{ .path = path }
+        else
+            null;
+    }
 };
 
 pub const SourceIDHash = union(enum) {
@@ -140,7 +149,7 @@ string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
 modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false) = .empty,
 breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)) = .empty,
-sources: std.ArrayHashMapUnmanaged(SourceID, protocol.Source, SourceIDHash, false) = .empty,
+sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
 
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
@@ -180,7 +189,6 @@ pub fn deinit(data: *SessionData) void {
 
     data.output.deinit(data.allocator);
 
-    data.sources.deinit(data.allocator);
     data.sources_content.deinit(data.allocator);
 
     data.function_breakpoints.deinit(data.allocator);
@@ -193,6 +201,7 @@ pub fn deinit(data: *SessionData) void {
     const mem_objects = .{
         data.modules.values(),
         data.breakpoints.items,
+        data.sources.values(),
     };
     inline for (mem_objects) |slice| {
         for (slice) |*mo| {
@@ -202,6 +211,7 @@ pub fn deinit(data: *SessionData) void {
 
     data.modules.deinit(data.allocator);
     data.breakpoints.deinit(data.allocator);
+    data.sources.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -347,36 +357,32 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
-    const id: SourceID = if (source.sourceReference) |ref|
-        .{ .reference = ref }
-    else if (source.path) |path|
-        .{ .path = path }
-    else
-        return error.SourceWithoutAnID;
+    const id = try data.get_or_clone_source_id(
+        SourceID.from_source(source) orelse return error.SourceWithoutID,
+    );
 
     try data.sources.ensureUnusedCapacity(data.allocator, 1);
-    const cloned = try data.clone_anytype(source);
+    var cloned = try utils.mem_object(data.allocator, source);
+    errdefer cloned.deinit();
     const gop = data.sources.getOrPutAssumeCapacity(id);
     if (gop.found_existing) {
-        //
+        gop.value_ptr.deinit();
     }
-
     gop.value_ptr.* = cloned;
 }
 
 pub fn get_source(data: SessionData, source_id: SourceID) ?protocol.Source {
-    return switch (source_id) {
+    const maybe = switch (source_id) {
         .path => |path| data.sources.get(.{ .path = path }),
         .reference => |ref| data.sources.get(.{ .reference = ref }),
     };
+
+    return (maybe orelse return null).value;
 }
 
-pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceContent) !void {
-    const real_key: SourceID = switch (key) {
-        .path => |path| .{ .path = try data.string_storage.get_and_put(data.allocator, path) },
-        .reference => key,
-    };
-    const gop = try data.sources_content.getOrPut(data.allocator, real_key);
+pub fn set_source_content(data: *SessionData, not_owned_key: SourceID, content: SourceContent) !void {
+    const key = try data.get_or_clone_source_id(not_owned_key);
+    const gop = try data.sources_content.getOrPut(data.allocator, key);
     gop.value_ptr.* = try data.clone_anytype(content);
 }
 
@@ -459,12 +465,11 @@ fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void 
     data.breakpoints.items[index] = cloned;
 }
 
-pub fn add_source_breakpoint(data: *SessionData, source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
+pub fn add_source_breakpoint(data: *SessionData, not_owned_source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
     try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
 
-    const gop = data.source_breakpoints.getOrPut(data.allocator, source_id) catch |err| switch (err) {
-        error.OutOfMemory => unreachable,
-    };
+    const source_id = try data.get_or_clone_source_id(not_owned_source_id);
+    const gop = data.source_breakpoints.getOrPutAssumeCapacity(source_id);
 
     if (!gop.found_existing) {
         gop.value_ptr.* = .empty;
@@ -473,8 +478,6 @@ pub fn add_source_breakpoint(data: *SessionData, source_id: SourceID, breakpoint
     if (!gop.value_ptr.contains(breakpoint.line)) {
         const cloned = try data.clone_anytype(breakpoint);
         try gop.value_ptr.put(data.allocator, breakpoint.line, cloned);
-    } else {
-        std.debug.print("dupe {}\n", .{breakpoint.line});
     }
 }
 
@@ -539,4 +542,11 @@ fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(
 
 fn get_or_clone_string(data: *SessionData, string: []const u8) ![]const u8 {
     return try data.string_storage.get_and_put(data.allocator, string);
+}
+
+fn get_or_clone_source_id(data: *SessionData, source_id: SourceID) !SourceID {
+    return switch (source_id) {
+        .path => |path| .{ .path = try data.string_storage.get_and_put(data.allocator, path) },
+        .reference => |ref| .{ .reference = ref },
+    };
 }

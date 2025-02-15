@@ -363,20 +363,20 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
         var buf: [std.fs.max_path_bytes]u8 = undefined;
 
         for (data.sources.values()) |source| {
-            const source_path = if (source.path) |path| tmp_shorten_path(path) else null;
+            const source_path = if (source.value.path) |path| tmp_shorten_path(path) else null;
             const label = if (source_path) |path|
                 std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
-            else if (source.sourceReference) |ref|
-                std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.name orelse "", ref }) catch return
+            else if (source.value.sourceReference) |ref|
+                std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.value.name orelse "", ref }) catch return
             else
                 return;
 
             if (zgui.button(label, .{})) {
-                if (thread_of_source(source, data.*)) |thread| {
-                    state.active_source.set_source(thread.id, source);
+                if (thread_of_source(source.value, data.*)) |thread| {
+                    state.active_source.set_source(thread.id, source.value);
                     state.scroll_to_active_line = true;
                 } else {
-                    state.active_source.set_source(null, source);
+                    state.active_source.set_source(null, source.value);
                     state.scroll_to_active_line = true;
                 }
             }
@@ -743,25 +743,25 @@ fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionDat
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
             if (zgui.button(button_name, .{})) blk: {
-                if (source.path) |path| {
+                if (source.value.path) |path| {
                     const key, const new_source = io.open_file_as_source_content(arena, path) catch break :blk;
                     data.set_source_content(key, new_source) catch break :blk;
                 } else {
                     _ = connection.queue_request(
                         .source,
                         protocol.SourceArguments{
-                            .source = source,
-                            .sourceReference = source.sourceReference.?,
+                            .source = source.value,
+                            .sourceReference = source.value.sourceReference.?,
                         },
                         .none,
-                        .{ .source = .{ .path = source.path, .source_reference = source.sourceReference.? } },
+                        .{ .source = .{ .path = source.value.path, .source_reference = source.value.sourceReference.? } },
                     ) catch return;
                 }
             }
 
             inline for (std.meta.fields(protocol.Source)) |field| {
                 _ = zgui.tableNextColumn();
-                const value = @field(source, field.name);
+                const value = @field(source.value, field.name);
                 zgui.text("{s}", .{anytype_to_string(value, .{})});
             }
         }
@@ -1077,11 +1077,11 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
             _ = try connection.queue_request(
                 .source,
                 protocol.SourceArguments{
-                    .source = s,
-                    .sourceReference = s.sourceReference.?,
+                    .source = s.value,
+                    .sourceReference = s.value.sourceReference.?,
                 },
                 .none,
-                .{ .source = .{ .path = s.path, .source_reference = s.sourceReference.? } },
+                .{ .source = .{ .path = s.value.path, .source_reference = s.value.sourceReference.? } },
             );
         }
     }
