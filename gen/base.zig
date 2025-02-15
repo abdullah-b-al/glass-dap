@@ -15,8 +15,9 @@ pub fn UnionParser(comptime T: type) type {
 
         pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!T {
             inline for (std.meta.fields(T)) |field| {
+                const active_field = source == .string and std.mem.eql(u8, source.string, field.name);
                 if (field.type == void) {
-                    return @unionInit(T, field.name, {});
+                    if (active_field) return @unionInit(T, field.name, {});
                 } else if (std.json.parseFromValueLeaky(field.type, allocator, source, options)) |result| {
                     return @unionInit(T, field.name, result);
                 } else |_| {}
