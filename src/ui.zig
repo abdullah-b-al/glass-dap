@@ -542,7 +542,7 @@ fn console(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conn
     if (!zgui.begin(name, .{})) return;
 
     for (data.output.items) |item| {
-        zgui.text("{s}", .{item.body.output});
+        zgui.text("{s}", .{item.output});
     }
 }
 

@@ -144,6 +144,7 @@ pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.Source
 
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
+pub const Output = utils.get_field_type(protocol.OutputEvent, "body");
 
 allocator: mem.Allocator,
 
@@ -157,10 +158,12 @@ breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)) = .empty,
 sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
 
-output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
+// Output needs to be available for the whole session so MemObject isn't needed.
+output: std.ArrayListUnmanaged(Output) = .empty,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
+// These are cheap to store so for now don't use a MemObject
 function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .empty,
 source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false) = .empty,
 
@@ -274,7 +277,7 @@ pub fn set_existed(data: *SessionData, event: protocol.ExitedEvent) !void {
 
 pub fn set_output(data: *SessionData, event: protocol.OutputEvent) !void {
     try data.output.ensureUnusedCapacity(data.allocator, 1);
-    const output = try data.clone_anytype(event);
+    const output = try data.clone_anytype(event.body);
     data.output.appendAssumeCapacity(output);
 }
 
