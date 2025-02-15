@@ -156,7 +156,7 @@ fn generateTypeWithWriter(allocator: std.mem.Allocator, writer: std.ArrayList(u8
             try writer.print("}}", .{});
         },
         .json_null => {
-            try writer.print("null", .{});
+            try writer.print("void", .{});
         },
         .json_array => {
             try writer.print("Array", .{});
