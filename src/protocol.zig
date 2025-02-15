@@ -1718,7 +1718,7 @@ pub const DataBreakpointInfoResponse = struct {
         dataId: union(enum) {
             pub usingnamespace UnionParser(@This());
             string: []const u8,
-            null: null,
+            null: void,
         },
 
         /// UI string that describes on what data the breakpoint is set on or why a data breakpoint is not available.
