@@ -139,10 +139,11 @@ arena: std.heap.ArenaAllocator,
 string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
 modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false) = .empty,
-output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
-breakpoints: std.ArrayListUnmanaged(Breakpoint) = .empty,
+breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)) = .empty,
 sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
+
+output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
@@ -177,22 +178,30 @@ pub fn deinit(data: *SessionData) void {
     }
     data.threads.deinit(data.allocator);
 
-    for (data.modules.values()) |*mo| {
-        mo.deinit();
-    }
-    data.modules.deinit(data.allocator);
-
     data.output.deinit(data.allocator);
 
     data.sources.deinit(data.allocator);
     data.sources_content.deinit(data.allocator);
 
     data.function_breakpoints.deinit(data.allocator);
-    data.breakpoints.deinit(data.allocator);
+
     for (data.source_breakpoints.values()) |*list| {
         list.deinit(data.allocator);
     }
     data.source_breakpoints.deinit(data.allocator);
+
+    const mem_objects = .{
+        data.modules.values(),
+        data.breakpoints.items,
+    };
+    inline for (mem_objects) |slice| {
+        for (slice) |*mo| {
+            mo.deinit();
+        }
+    }
+
+    data.modules.deinit(data.allocator);
+    data.breakpoints.deinit(data.allocator);
 
     data.arena.deinit();
 }
@@ -411,10 +420,12 @@ pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints
         if (origin == .event) {
             try data.update_breakpoint(bp);
         } else {
-            try data.breakpoints.append(data.allocator, .{
+            try data.breakpoints.ensureUnusedCapacity(data.allocator, 1);
+            const cloned = try utils.mem_object(data.allocator, Breakpoint{
                 .origin = origin,
-                .breakpoint = try data.clone_anytype(bp),
+                .breakpoint = bp,
             });
+            data.breakpoints.appendAssumeCapacity(cloned);
         }
     }
 }
@@ -423,8 +434,9 @@ pub fn clear_breakpoints(data: *SessionData, origin: BreakpointOrigin) void {
     var i: usize = 0;
     while (i < data.breakpoints.items.len) {
         const entry = data.breakpoints.items[i];
-        if (std.meta.activeTag(entry.origin) == std.meta.activeTag(origin)) {
-            _ = data.breakpoints.orderedRemove(i);
+        if (std.meta.activeTag(entry.value.origin) == std.meta.activeTag(origin)) {
+            var value = data.breakpoints.orderedRemove(i);
+            value.deinit();
         } else {
             i += 1;
         }
@@ -433,14 +445,22 @@ pub fn clear_breakpoints(data: *SessionData, origin: BreakpointOrigin) void {
 
 pub fn remove_breakpoint(data: *SessionData, id: ?i32) void {
     const index = data.breakpoint_index(id) orelse return;
-    _ = data.breakpoints.orderedRemove(index);
+    var value = data.breakpoints.orderedRemove(index);
+    value.deinit();
 }
 
 fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void {
     const id = breakpoint.id orelse return error.NoBreakpointIDGiven;
     const index = data.breakpoint_index(id) orelse return error.BreakpointDoesNotExist;
 
-    data.breakpoints.items[index].breakpoint = try data.clone_anytype(breakpoint);
+    var old = data.breakpoints.items[index];
+    const cloned = try utils.mem_object(data.allocator, Breakpoint{
+        .origin = old.value.origin,
+        .breakpoint = breakpoint,
+    });
+
+    old.deinit();
+    data.breakpoints.items[index] = cloned;
 }
 
 pub fn add_source_breakpoint(data: *SessionData, source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
@@ -496,7 +516,7 @@ pub fn remove_function_breakpoint(data: *SessionData, name: []const u8) void {
 fn breakpoint_index(data: SessionData, maybe_id: ?i32) ?usize {
     const id = maybe_id orelse return null;
     for (data.breakpoints.items, 0..) |item, i| {
-        if (item.breakpoint.id == id) {
+        if (item.value.breakpoint.id == id) {
             return i;
         }
     }

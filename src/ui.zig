@@ -436,13 +436,13 @@ fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, 
     if (!zgui.begin(name, .{})) return;
 
     for (data.breakpoints.items, 0..) |item, i| {
-        const origin = switch (item.origin) {
+        const origin = switch (item.value.origin) {
             .event => "event",
             .source => |id| tmp_shorten_path(anytype_to_string(id, .{})),
             .function => "function",
         };
 
-        const line = item.breakpoint.line orelse continue;
+        const line = item.value.breakpoint.line orelse continue;
         const n = tmp_name("{s} {?}##{}", .{ origin, line + 1, i });
         if (zgui.selectable(n, .{})) {}
     }
@@ -723,7 +723,7 @@ fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: Session
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    draw_table_from_slice_of_struct("breakpoints", SessionData.Breakpoint, data.breakpoints.items);
+    draw_table_from_slice_of_struct("breakpoints", utils.MemObject(SessionData.Breakpoint), data.breakpoints.items);
 }
 
 fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
@@ -1940,12 +1940,12 @@ pub const ActiveSource = struct {
 fn breakpoint_in_line(data: *const SessionData, source_id: SessionData.SourceID, line: i32) usize {
     var count: usize = 0;
     for (data.breakpoints.items) |item| {
-        const id = switch (item.origin) {
+        const id = switch (item.value.origin) {
             .source => |id| id,
             .event, .function => continue,
         };
 
-        if (source_id.eql(id) and line == item.breakpoint.line) {
+        if (source_id.eql(id) and line == item.value.breakpoint.line) {
             count += 1;
         }
     }
