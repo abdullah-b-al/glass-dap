@@ -17,6 +17,7 @@ const Dir = std.fs.Dir;
 const fs = std.fs;
 const meta = std.meta;
 const assets = @import("assets");
+const GPA = @import("main.zig").GPA;
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
@@ -117,7 +118,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
+pub fn ui_tick(gpa: GPA, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -207,7 +208,7 @@ pub fn ui_tick(window: *glfw.Window, callbacks: *Callbacks, connection: *Connect
     variables(arena.allocator(), "Variables", callbacks, data, connection);
     breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
 
-    debug_ui(arena.allocator(), callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
+    debug_ui(gpa, arena.allocator(), callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
@@ -811,7 +812,7 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
     }
 }
 
-fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
+fn debug_ui(gpa: GPA, arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
     const static = struct {
@@ -860,6 +861,31 @@ fn debug_ui(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connec
 
     defer zgui.end();
     if (!zgui.begin("Debug General", .{})) return;
+
+    if (@TypeOf(gpa.total_requested_bytes) != void) {
+        const s = struct {
+            var max_bytes: usize = 0;
+        };
+        s.max_bytes = @max(s.max_bytes, gpa.total_requested_bytes);
+        const table = .{
+            .{ s.max_bytes, "Max Memory Usage:" },
+            .{ gpa.total_requested_bytes, "Memory Usage:" },
+        };
+        inline for (table) |entry| {
+            const bytes = entry.@"0";
+            const text = entry.@"1";
+            const color = [4]f32{ 0.5, 0.5, 1, 1 };
+            // zig fmt: off
+            zgui.text(text, .{});
+            zgui.sameLine(.{}); zgui.text("{}", .{bytes});
+            zgui.sameLine(.{.spacing = 0}); zgui.textColored(color, "B", .{});
+            zgui.sameLine(.{}); zgui.text("{}", .{bytes / 1024});
+            zgui.sameLine(.{.spacing = 0}); zgui.textColored(color, "KiB", .{});
+            zgui.sameLine(.{}); zgui.text("{}", .{bytes / 1024 / 1024});
+            zgui.sameLine(.{.spacing = 0}); zgui.textColored(color, "MiB", .{});
+        }
+        // zig fmt: on
+    }
 
     defer zgui.endTabBar();
     if (!zgui.beginTabBar("Debug Tabs", .{})) return;

@@ -12,9 +12,13 @@ const log = std.log.scoped(.main);
 const handlers = @import("handlers.zig");
 const config = @import("config.zig");
 
+pub const GPA = std.heap.GeneralPurposeAllocator(.{
+    .enable_memory_limit = true,
+});
+
 pub fn main() !void {
     const args = try parse_args();
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: GPA = .init;
     defer _ = gpa.deinit();
 
     if (args.cwd.len > 0) {
@@ -61,12 +65,12 @@ pub fn main() !void {
         callbacks.deinit();
     }
 
-    loop(window, &callbacks, &connection, &data, args);
+    loop(gpa, window, &callbacks, &connection, &data, args);
 
     log.info("Window Closed", .{});
 }
 
-fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+fn loop(gpa: GPA, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     while (!window.shouldClose()) {
         while (true) {
             const ok = connection.queue_messages(1) catch |err| blk: {
@@ -80,7 +84,7 @@ fn loop(window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Conne
         handlers.handle_queued_messages(callbacks, data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 
-        ui.ui_tick(window, callbacks, connection, data, args);
+        ui.ui_tick(gpa, window, callbacks, connection, data, args);
     }
 }
 
