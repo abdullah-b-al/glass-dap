@@ -189,6 +189,11 @@ pub fn deinit(data: *SessionData) void {
 
     data.output.deinit(data.allocator);
 
+    for (data.sources_content.values()) |content| {
+        // content.mime_type is interned
+        data.allocator.free(content.content);
+    }
+
     data.sources_content.deinit(data.allocator);
 
     data.function_breakpoints.deinit(data.allocator);
@@ -357,7 +362,7 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
-    const id = try data.get_or_clone_source_id(
+    const id = try data.intern_source_id(
         SourceID.from_source(source) orelse return error.SourceWithoutID,
     );
 
@@ -381,9 +386,21 @@ pub fn get_source(data: SessionData, source_id: SourceID) ?protocol.Source {
 }
 
 pub fn set_source_content(data: *SessionData, not_owned_key: SourceID, content: SourceContent) !void {
-    const key = try data.get_or_clone_source_id(not_owned_key);
-    const gop = try data.sources_content.getOrPut(data.allocator, key);
-    gop.value_ptr.* = try data.clone_anytype(content);
+    try data.sources_content.ensureUnusedCapacity(data.allocator, 1);
+    const key = try data.intern_source_id(not_owned_key);
+
+    const mime_type = if (content.mime_type) |mt| try data.intern_string(mt) else null;
+    const content_string = try data.allocator.dupe(u8, content.content);
+
+    const gop = data.sources_content.getOrPutAssumeCapacity(key);
+
+    if (gop.found_existing) {
+        data.allocator.free(gop.value_ptr.content);
+    }
+    gop.value_ptr.* = .{
+        .mime_type = mime_type,
+        .content = content_string,
+    };
 }
 
 pub fn set_scopes(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, response: []protocol.Scope) !void {
@@ -468,7 +485,7 @@ fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void 
 pub fn add_source_breakpoint(data: *SessionData, not_owned_source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
     try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
 
-    const source_id = try data.get_or_clone_source_id(not_owned_source_id);
+    const source_id = try data.intern_source_id(not_owned_source_id);
     const gop = data.source_breakpoints.getOrPutAssumeCapacity(source_id);
 
     if (!gop.found_existing) {
@@ -529,7 +546,7 @@ fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(
         data: *SessionData,
         allocator: mem.Allocator,
         pub fn clone_string(cloner: Cloner, string: []const u8) ![]const u8 {
-            return try cloner.data.get_or_clone_string(string);
+            return try cloner.data.intern_string(string);
         }
     };
 
@@ -540,11 +557,11 @@ fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(
     return try utils.clone_anytype(cloner, value);
 }
 
-fn get_or_clone_string(data: *SessionData, string: []const u8) ![]const u8 {
+fn intern_string(data: *SessionData, string: []const u8) ![]const u8 {
     return try data.string_storage.get_and_put(data.allocator, string);
 }
 
-fn get_or_clone_source_id(data: *SessionData, source_id: SourceID) !SourceID {
+fn intern_source_id(data: *SessionData, source_id: SourceID) !SourceID {
     return switch (source_id) {
         .path => |path| .{ .path = try data.string_storage.get_and_put(data.allocator, path) },
         .reference => |ref| .{ .reference = ref },
