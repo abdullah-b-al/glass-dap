@@ -24,13 +24,15 @@ const Type = struct {
         value: []const u8,
     };
     const TypeUnion = union(enum) {
-        one_of: []const TypeUnion,
-        any: []const []const u8,
+        one_of: std.StringArrayHashMap(TypeUnion),
         object: Object,
         boolean,
         integer,
         number,
         string,
+        json_array,
+        json_null,
+        json_value,
         enumerate: []const Enum,
         enumerate_any: []const Enum,
         ref: []const u8,
@@ -153,29 +155,48 @@ fn generateTypeWithWriter(allocator: std.mem.Allocator, writer: std.ArrayList(u8
             }
             try writer.print("}}", .{});
         },
-        .any => {
+        .json_null => {
+            try writer.print("null", .{});
+        },
+        .json_array => {
+            try writer.print("Array", .{});
+        },
+        .json_value => {
             try writer.print("Value", .{});
         },
         .ref => |ref| {
-            const string = std.mem.trimLeft(u8, ref, "#/definitions/");
+            const string = ref_strip(ref);
             try writer.print("{s}", .{string});
         },
         .one_of => |types| {
             try writer.print("union(enum) {{", .{});
             try writer.print(union_parser_decl ++ "\n", .{});
-            for (types, 0..) |item, i| {
+
+            var iter = types.iterator();
+            while (iter.next()) |entry| {
+                const e_name = entry.key_ptr.*;
+                const e_type = entry.value_ptr.*;
+                const repeats = count_types(types.values(), e_type);
                 var buf: [32]u8 = undefined;
+
+                const printed_name =
+                    if (repeats == 1)
+                    try std.fmt.bufPrint(&buf, "{s}", .{e_name})
+                else
+                    try std.fmt.bufPrint(&buf, "{s}_{}", .{ e_name, repeats - 1 });
+
                 try generateTypeWithWriter(
                     allocator,
                     writer,
-                    try std.fmt.bufPrint(&buf, "literal_{}", .{i}),
-                    .{ .type = item, .description = "", .is_array = false },
+                    printed_name,
+                    .{ .type = e_type, .description = "", .is_array = false },
                     "",
                     "",
                     ",",
                     ':',
                 );
             }
+
             try writer.print("}}", .{});
         },
         .enumerate_any, .enumerate => |enums| {
@@ -259,14 +280,17 @@ fn parseType(allocator: std.mem.Allocator, value: std.json.Value, all_definition
     const type_is_array = type_value == .array;
 
     if (value.object.get("oneOf")) |one_of| {
-        var list = std.ArrayList(Type.TypeUnion).init(allocator);
+        var map = std.StringArrayHashMap(Type.TypeUnion).init(allocator);
         for (one_of.array.items) |item| {
             switch (item) {
                 .object => |object| {
                     var iter = object.iterator();
                     while (iter.next()) |kv| {
                         // for now assume all of it is just $ref
-                        try list.append(.{ .ref = kv.value_ptr.*.string });
+                        try map.put(
+                            ref_strip(kv.value_ptr.*.string),
+                            .{ .ref = kv.value_ptr.*.string },
+                        );
                     }
                 },
                 else => @panic("TODO"),
@@ -275,7 +299,7 @@ fn parseType(allocator: std.mem.Allocator, value: std.json.Value, all_definition
         return Type{
             .description = description,
             .is_array = false,
-            .type = .{ .one_of = try list.toOwnedSlice() },
+            .type = .{ .one_of = map },
         };
     } else if (value.object.get("allOf")) |allof| {
         var object: Type.Object = .{
@@ -296,7 +320,7 @@ fn parseType(allocator: std.mem.Allocator, value: std.json.Value, all_definition
             }
 
             if (is_ref) {
-                const key = std.mem.trimLeft(u8, obj.object.get("$ref").?.string, "#/definitions/");
+                const key = ref_strip(obj.object.get("$ref").?.string);
                 const map = if (all_definitions.get(key)) |map| map.object else {
                     std.debug.panic("got null {s} looked up {s}\n", .{ current_type_name, key });
                     unreachable;
@@ -399,10 +423,46 @@ fn parseType(allocator: std.mem.Allocator, value: std.json.Value, all_definition
             std.debug.assert(item == .string);
 
         const strings = try cloneStringValueArray(allocator, type_value.array.items);
+        var types = std.StringArrayHashMap(Type.TypeUnion).init(allocator);
+
+        const json_types = std.StaticStringMap(void).initComptime(.{
+            .{"array"},  .{"boolean"}, .{"integer"},
+            .{"null"},   .{"number"},  .{"object"},
+            .{"string"},
+        });
+
+        var is_json_value = false;
+        if (strings.len == json_types.keys().len) {
+            // assume types are the same. This is good enough
+            is_json_value = true;
+        }
+
+        if (is_json_value) {
+            return Type{
+                .description = description,
+                .is_array = false,
+                .type = .json_value,
+            };
+        }
+
+        for (strings) |string| {
+            if (std.mem.eql(u8, string, "string")) {
+                try types.put("string", .string);
+            } else if (std.mem.eql(u8, string, "integer")) {
+                try types.put("integer", .integer);
+            } else if (std.mem.eql(u8, string, "array")) {
+                try types.put("array", .json_array);
+            } else if (std.mem.eql(u8, string, "null")) {
+                try types.put("null", .json_null);
+            } else {
+                std.debug.panic("Unsupported type {s}", .{string});
+            }
+        }
+
         return Type{
             .description = description,
             .is_array = false,
-            .type = .{ .any = strings },
+            .type = .{ .one_of = types },
         };
     } else {
         print(value.object);
@@ -556,4 +616,40 @@ fn mergeObjectMaps(from: Type.Object, to: *Type.Object) !void {
         try to.properties.put(item.key_ptr.*, item.value_ptr.*);
     }
     to.additional_properties = from.additional_properties;
+}
+
+fn count_types(types: []const Type.TypeUnion, t: Type.TypeUnion) usize {
+    var count: usize = 0;
+    for (types) |a| {
+        if (std.meta.activeTag(a) != std.meta.activeTag(t)) {
+            continue;
+        }
+
+        switch (a) {
+            .one_of,
+            .object,
+            .boolean,
+            .integer,
+            .number,
+            .string,
+            .json_array,
+            .json_null,
+            .json_value,
+            .enumerate,
+            .enumerate_any,
+            => count += 1, // tags are equal
+            .ref => {
+                if (std.mem.eql(u8, a.ref, t.ref)) {
+                    count += 1;
+                }
+            },
+        }
+    }
+
+    std.debug.assert(count >= 1);
+    return count;
+}
+
+fn ref_strip(ref: []const u8) []const u8 {
+    return std.mem.trimLeft(u8, ref, "#/definitions/");
 }
