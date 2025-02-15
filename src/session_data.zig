@@ -4,6 +4,7 @@ const Connection = @import("connection.zig");
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
 const log = std.log.scoped(.session_data);
+const mem = std.mem;
 
 pub const SessionData = @This();
 
@@ -37,7 +38,7 @@ pub const Thread = struct {
     scopes: std.AutoArrayHashMapUnmanaged(FrameID, []protocol.Scope) = .empty,
     variables: std.AutoArrayHashMapUnmanaged(VariableReference, []protocol.Variable) = .empty,
 
-    pub fn deinit(thread: *Thread, allocator: std.mem.Allocator) void {
+    pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
@@ -51,7 +52,7 @@ pub const SourceID = union(enum) {
     pub fn eql(a: SourceID, b: SourceID) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
-            .path => std.mem.eql(u8, a.path, b.path),
+            .path => mem.eql(u8, a.path, b.path),
             .reference => a.reference == b.reference,
         };
     }
@@ -70,6 +71,30 @@ pub const SourceIDHash = union(enum) {
 
     pub fn eql(_: @This(), a: SourceID, b: SourceID, _: usize) bool {
         return a.eql(b);
+    }
+};
+
+pub const ModuleID = blk: {
+    const m: protocol.Module = undefined;
+    break :blk @TypeOf(@field(m, "id"));
+};
+pub const ModuleHash = union(enum) {
+    pub fn hash(_: @This(), key: ModuleID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .integer => |integer| std.hash.autoHashStrat(&hasher, integer, .Shallow),
+            .string => |string| std.hash.autoHashStrat(&hasher, string, .Shallow),
+        }
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: ModuleID, b: ModuleID, _: usize) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .integer => a.integer == b.integer,
+            .string => mem.eql(u8, a.string, b.string),
+        };
     }
 };
 
@@ -94,14 +119,14 @@ pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.Source
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 
-allocator: std.mem.Allocator,
+allocator: mem.Allocator,
 
 /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
 arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
-modules: std.ArrayListUnmanaged(protocol.Module) = .empty,
+modules: std.ArrayHashMapUnmanaged(ModuleID, protocol.Module, ModuleHash, false) = .empty,
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
 breakpoints: std.ArrayListUnmanaged(Breakpoint) = .empty,
 sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
@@ -120,7 +145,7 @@ status: DebuggeeStatus,
 /// The client should leave the data intact.
 terminated_restart_data: ?protocol.Value = null,
 
-pub fn init(allocator: std.mem.Allocator) SessionData {
+pub fn init(allocator: mem.Allocator) SessionData {
     return .{
         .status = .not_running,
         .allocator = allocator,
@@ -331,8 +356,9 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
 pub fn add_module(data: *SessionData, module: protocol.Module) !void {
     try data.modules.ensureUnusedCapacity(data.allocator, 1);
 
-    if (!utils.entry_exists(data.modules.items, "id", module.id)) {
-        data.modules.appendAssumeCapacity(try data.clone_anytype(module));
+    if (!utils.entry_exists(data.modules.values(), "id", module.id)) {
+        const cloned = try data.clone_anytype(module);
+        data.modules.putAssumeCapacity(cloned.id, cloned);
     }
 }
 
@@ -446,7 +472,7 @@ fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(
     const Cloner = struct {
         const Cloner = @This();
         data: *SessionData,
-        allocator: std.mem.Allocator,
+        allocator: mem.Allocator,
         pub fn clone_string(cloner: Cloner, string: []const u8) ![]const u8 {
             return try cloner.data.get_or_clone_string(string);
         }
