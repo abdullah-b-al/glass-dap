@@ -1230,8 +1230,8 @@ pub const RestartArguments = struct {
     /// The latest version of the `launch` or `attach` configuration.
     arguments: ?union(enum) {
         pub usingnamespace UnionParser(@This());
-        literal_0: LaunchRequestArguments,
-        literal_1: AttachRequestArguments,
+        LaunchRequestArguments: LaunchRequestArguments,
+        AttachRequestArguments: AttachRequestArguments,
     } = null,
 };
 
@@ -1715,7 +1715,11 @@ pub const DataBreakpointInfoResponse = struct {
     } = null,
     body: struct {
         /// An identifier for the data on which a data breakpoint can be registered with the `setDataBreakpoints` request or null if no data breakpoint is available. If a `variablesReference` or `frameId` is passed, the `dataId` is valid in the current suspended state, otherwise it's valid indefinitely. See 'Lifetime of Object References' in the Overview section for details. Breakpoints set using the `dataId` in the `setDataBreakpoints` request may outlive the lifetime of the associated `dataId`.
-        dataId: Value,
+        dataId: union(enum) {
+            pub usingnamespace UnionParser(@This());
+            string: []const u8,
+            null: null,
+        },
 
         /// UI string that describes on what data the breakpoint is set on or why a data breakpoint is not available.
         description: []const u8,
@@ -3875,7 +3879,11 @@ pub const Message = struct {
 /// To avoid an unnecessary proliferation of additional attributes with similar semantics but different names, we recommend to re-use attributes from the 'recommended' list below first, and only introduce new attributes if nothing appropriate could be found.
 pub const Module = struct {
     /// Unique identifier for the module.
-    id: Value,
+    id: union(enum) {
+        pub usingnamespace UnionParser(@This());
+        integer: i32,
+        string: []const u8,
+    },
 
     /// A name of the module.
     name: []const u8,
@@ -4010,7 +4018,11 @@ pub const StackFrame = struct {
     instructionPointerReference: ?[]const u8 = null,
 
     /// The module associated with this frame, if any.
-    moduleId: ?Value = null,
+    moduleId: ?union(enum) {
+        pub usingnamespace UnionParser(@This());
+        integer: i32,
+        string: []const u8,
+    } = null,
 
     /// A hint for how to present this frame in the UI.
     /// A value of `label` can be used to indicate that the frame is an artificial frame that is used as a visual label or separator. A value of `subtle` can be used to change the appearance of a frame in a 'subtle' way.
