@@ -181,7 +181,7 @@ pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, con
         zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
 
         const dock_main_id: ?*zgui.Ident = &dockspace_id;
-        const id_console = zgui.dockBuilderSplitNode(dock_main_id.?.*, .down, 0.30, null, &dockspace_id);
+        const id_output = zgui.dockBuilderSplitNode(dock_main_id.?.*, .down, 0.30, null, &dockspace_id);
 
         const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.30, null, &dockspace_id);
         // const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .none, 0.50, null, &id_sources);
@@ -194,7 +194,7 @@ pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, con
         zgui.dockBuilderDockWindow("Variables", id_threads);
         zgui.dockBuilderDockWindow("Breakpoints", id_threads);
 
-        zgui.dockBuilderDockWindow("Console", id_console);
+        zgui.dockBuilderDockWindow("Output", id_output);
 
         zgui.dockBuilderFinish(dockspace_id);
 
@@ -202,7 +202,7 @@ pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, con
     }
 
     source_code(arena.allocator(), "Source Code", data, connection);
-    console(arena.allocator(), "Console", data.*, connection);
+    output(arena.allocator(), "Output", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
     sources(arena.allocator(), "Sources", data, connection);
     variables(arena.allocator(), "Variables", callbacks, data, connection);
@@ -534,15 +534,39 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, 
     }
 }
 
-fn console(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn output(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = arena;
     _ = connection;
 
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    for (data.output.items) |item| {
-        zgui.text("{s}", .{item.output});
+    const Category = meta.Child(utils.get_field_type(SessionData.Output, "category"));
+    const categories = [_]Category{
+        .stdout,
+        .stderr,
+        .console,
+    };
+
+    defer zgui.endTabBar();
+    if (!zgui.beginTabBar("Output Tabs", .{})) return;
+
+    if (zgui.beginTabItem("All", .{})) {
+        defer zgui.endTabItem();
+        for (data.output.items) |item| {
+            zgui.text("{s}", .{item.output});
+        }
+    }
+
+    for (categories) |category| {
+        if (zgui.beginTabItem(@tagName(category), .{})) {
+            defer zgui.endTabItem();
+            for (data.output.items) |item| {
+                if (meta.eql(item.category, category)) {
+                    zgui.text("{s}", .{item.output});
+                }
+            }
+        }
     }
 }
 
