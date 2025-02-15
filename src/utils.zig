@@ -1,7 +1,9 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const SessionData = @import("session_data.zig");
+const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const log = std.log.scoped(.utils);
+const mem = std.mem;
 
 pub fn object_inject_merge(allocator: std.mem.Allocator, object: *protocol.Object, ancestors: []const []const u8, extra: protocol.Object) !void {
     if (object.map.count() == 0) return;
@@ -254,6 +256,45 @@ pub fn is_zig_string(comptime T: type) bool {
     }
 }
 
+pub fn MemObject(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        arena: std.heap.ArenaAllocator,
+        strings: StringStorageUnmanaged,
+        value: T,
+
+        pub fn deinit(self: *Self) void {
+            self.strings.deinit(self.arena.allocator());
+            self.arena.deinit();
+        }
+    };
+}
+
+pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@TypeOf(value)) {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    var strings: StringStorageUnmanaged = .empty;
+    errdefer strings.deinit(allocator);
+
+    const Cloner = struct {
+        const Cloner = @This();
+        strings: *StringStorageUnmanaged,
+        allocator: mem.Allocator,
+        pub fn clone_string(cloner: *Cloner, string: []const u8) ![]const u8 {
+            return try cloner.strings.get_and_put(cloner.allocator, string);
+        }
+    };
+
+    var cloner = Cloner{ .strings = &strings, .allocator = arena.allocator() };
+    const cloned = try clone_anytype(&cloner, value);
+    return .{ .arena = arena, .strings = strings, .value = cloned };
+}
+
+pub fn oom(_: error{OutOfMemory}) noreturn {
+    unreachable;
+}
+
 /// Clone is {
 ///     allocator: std.mem.Allocator
 ///
@@ -262,6 +303,7 @@ pub fn is_zig_string(comptime T: type) bool {
 /// }
 pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf(value) {
     const T = @TypeOf(value);
+    const cloner_info = @typeInfo(@TypeOf(cloner));
 
     // these require special handling
     if (T == protocol.Object) {
@@ -273,7 +315,13 @@ pub fn clone_anytype(cloner: anytype, value: anytype) error{OutOfMemory}!@TypeOf
     }
 
     if (T == []const u8 or T == []u8) {
-        if (@hasDecl(@TypeOf(cloner), "clone_string")) {
+        const Cloner = switch (cloner_info) {
+            .pointer => |info| info.child,
+            .@"struct", .@"enum", .@"union" => @TypeOf(cloner),
+            else => @compileError("Unsupprted Cloner type"),
+        };
+
+        if (@hasDecl(Cloner, "clone_string")) {
             return try cloner.clone_string(value);
         } else {
             return cloner.allocator.dupe(u8, value);
