@@ -350,7 +350,6 @@ pub fn deinit(connection: *Connection) void {
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
     const total_requests = connection.total_requests + 1;
     try connection.queued_requests.ensureUnusedCapacity(1);
-    try connection.expected_responses.ensureUnusedCapacity(connection.queued_requests.capacity);
     try connection.debug_requests.ensureTotalCapacity(total_requests);
 
     // don't use the request's arena so as not to free the expected_responses data
@@ -388,6 +387,7 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
 pub fn send_request(connection: *Connection, index: usize) !void {
     var request = &connection.queued_requests.items[index];
     if (!connection.dependency_satisfied(request.*)) return error.DependencyNotSatisfied;
+    try connection.expected_responses.ensureUnusedCapacity(1);
 
     switch (connection.state) {
         .partially_initialized => {
