@@ -65,12 +65,12 @@ pub fn main() !void {
         callbacks.deinit();
     }
 
-    loop(gpa, window, &callbacks, &connection, &data, args);
+    loop(&gpa, window, &callbacks, &connection, &data, args);
 
     log.info("Window Closed", .{});
 }
 
-fn loop(gpa: GPA, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+fn loop(gpa: *const GPA, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     while (!window.shouldClose()) {
         while (true) {
             const ok = connection.queue_messages(1) catch |err| blk: {

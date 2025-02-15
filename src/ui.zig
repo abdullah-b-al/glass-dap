@@ -118,7 +118,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(gpa: GPA, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
+pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -813,7 +813,7 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
     }
 }
 
-fn debug_ui(gpa: GPA, arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
+fn debug_ui(gpa: *const GPA, arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
     const static = struct {
