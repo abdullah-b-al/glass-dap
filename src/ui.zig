@@ -362,7 +362,7 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
         const fn_name = @src().fn_name;
         var buf: [std.fs.max_path_bytes]u8 = undefined;
 
-        for (data.sources.items) |source| {
+        for (data.sources.values()) |source| {
             const source_path = if (source.path) |path| tmp_shorten_path(path) else null;
             const label = if (source_path) |path|
                 std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
@@ -738,7 +738,7 @@ fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionDat
         }
         zgui.tableHeadersRow();
 
-        for (data.sources.items, 0..) |source, i| {
+        for (data.sources.values(), 0..) |source, i| {
             const button_name = std.fmt.allocPrintZ(arena, "Get Content##{}", .{i}) catch return;
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
@@ -1071,7 +1071,8 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
         const len = std.mem.indexOfScalar(u8, &static.source_buf, 0) orelse static.source_buf.len;
         const id = static.source_buf[0..len];
         const number = std.fmt.parseInt(i32, id, 10) catch break :blk;
-        const source = data.get_source_by_reference(number);
+        const source = data.sources.get(.{ .reference = number });
+
         if (source) |s| {
             _ = try connection.queue_request(
                 .source,

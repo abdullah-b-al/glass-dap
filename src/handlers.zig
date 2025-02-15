@@ -92,6 +92,7 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
     const err = handle_response(message, data, connection, resp);
 
     err catch |e| switch (e) {
+        error.SourceWithoutAnID,
         error.NoBreakpointIDGiven,
         error.BreakpointDoesNotExist,
         error.InvalidBreakpointResponse,

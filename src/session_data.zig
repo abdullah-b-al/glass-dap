@@ -140,7 +140,7 @@ string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
 modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false) = .empty,
 breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)) = .empty,
-sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
+sources: std.ArrayHashMapUnmanaged(SourceID, protocol.Source, SourceIDHash, false) = .empty,
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
 
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
@@ -347,32 +347,28 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
-    const exists = blk: {
-        for (data.sources.items) |s| {
-            if (source.path) |path| if (utils.source_is(s, path)) break :blk true;
-            if (source.sourceReference) |ref| if (utils.source_is(s, ref)) break :blk true;
-        }
-        break :blk false;
-    };
+    const id: SourceID = if (source.sourceReference) |ref|
+        .{ .reference = ref }
+    else if (source.path) |path|
+        .{ .path = path }
+    else
+        return error.SourceWithoutAnID;
 
-    if (!exists) {
-        try data.sources.append(data.allocator, try data.clone_anytype(source));
+    try data.sources.ensureUnusedCapacity(data.allocator, 1);
+    const cloned = try data.clone_anytype(source);
+    const gop = data.sources.getOrPutAssumeCapacity(id);
+    if (gop.found_existing) {
+        //
     }
+
+    gop.value_ptr.* = cloned;
 }
 
 pub fn get_source(data: SessionData, source_id: SourceID) ?protocol.Source {
     return switch (source_id) {
-        .path => |path| data.get_source_by_path(path),
-        .reference => |ref| data.get_source_by_reference(ref),
+        .path => |path| data.sources.get(.{ .path = path }),
+        .reference => |ref| data.sources.get(.{ .reference = ref }),
     };
-}
-
-pub fn get_source_by_reference(data: SessionData, reference: i32) ?protocol.Source {
-    return (utils.get_entry_ptr(data.sources.items, "sourceReference", reference) orelse return null).*;
-}
-
-pub fn get_source_by_path(data: SessionData, path: []const u8) ?protocol.Source {
-    return (utils.get_entry_ptr(data.sources.items, "path", path) orelse return null).*;
 }
 
 pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceContent) !void {
