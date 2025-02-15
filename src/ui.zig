@@ -653,7 +653,8 @@ fn debug_modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
         }
         zgui.tableHeadersRow();
 
-        for (data.modules.values()) |module| {
+        for (data.modules.values()) |mo| {
+            const module = mo.value;
             zgui.tableNextRow(.{});
             inline for (table) |entry| {
                 _ = zgui.tableNextColumn();

@@ -190,7 +190,10 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             const parsed = try connection.parse_event(message, protocol.ModuleEvent, .module);
             defer parsed.deinit();
 
-            try data.set_modules(parsed.value);
+            switch (parsed.value.body.reason) {
+                .new, .changed => try data.set_module(parsed.value.body.module),
+                .removed => data.remove_module(parsed.value.body.module),
+            }
 
             connection.handled_event(message, .module);
         },

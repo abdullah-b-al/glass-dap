@@ -5,6 +5,7 @@ const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanag
 const utils = @import("utils.zig");
 const log = std.log.scoped(.session_data);
 const mem = std.mem;
+const MemObject = utils.MemObject;
 
 pub const SessionData = @This();
 
@@ -126,7 +127,7 @@ arena: std.heap.ArenaAllocator,
 
 string_storage: StringStorageUnmanaged = .empty,
 threads: Threads = .empty,
-modules: std.ArrayHashMapUnmanaged(ModuleID, protocol.Module, ModuleHash, false) = .empty,
+modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false) = .empty,
 output: std.ArrayListUnmanaged(protocol.OutputEvent) = .empty,
 breakpoints: std.ArrayListUnmanaged(Breakpoint) = .empty,
 sources: std.ArrayListUnmanaged(protocol.Source) = .empty,
@@ -165,7 +166,11 @@ pub fn deinit(data: *SessionData) void {
     }
     data.threads.deinit(data.allocator);
 
+    for (data.modules.values()) |*mo| {
+        mo.deinit();
+    }
     data.modules.deinit(data.allocator);
+
     data.output.deinit(data.allocator);
 
     data.sources.deinit(data.allocator);
@@ -229,8 +234,25 @@ pub fn set_output(data: *SessionData, event: protocol.OutputEvent) !void {
     data.output.appendAssumeCapacity(output);
 }
 
-pub fn set_modules(data: *SessionData, event: protocol.ModuleEvent) !void {
-    try data.add_module(event.body.module);
+pub fn set_module(data: *SessionData, module: protocol.Module) !void {
+    try data.modules.ensureUnusedCapacity(data.allocator, 1);
+    const mo = try utils.mem_object(data.allocator, module);
+
+    const gop = data.modules.getOrPut(data.allocator, module.id) catch |err| utils.oom(err);
+
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+
+    gop.key_ptr.* = mo.value.id;
+    gop.value_ptr.* = mo;
+}
+
+pub fn remove_module(data: *SessionData, module: protocol.Module) void {
+    if (data.modules.getPtr(module.id)) |ptr| {
+        ptr.deinit();
+    }
+    _ = data.modules.orderedRemove(module.id);
 }
 
 pub fn set_terminated(data: *SessionData, event: protocol.TerminatedEvent) !void {
@@ -351,15 +373,6 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
         variables_reference,
         try data.clone_anytype(response),
     );
-}
-
-pub fn add_module(data: *SessionData, module: protocol.Module) !void {
-    try data.modules.ensureUnusedCapacity(data.allocator, 1);
-
-    if (!utils.entry_exists(data.modules.values(), "id", module.id)) {
-        const cloned = try data.clone_anytype(module);
-        data.modules.putAssumeCapacity(cloned.id, cloned);
-    }
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
