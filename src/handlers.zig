@@ -300,12 +300,12 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 for (thread.stack.items) |frame| {
                     _ = try connection.queue_request(
                         .scopes,
-                        protocol.ScopesArguments{ .frameId = frame.id },
+                        protocol.ScopesArguments{ .frameId = frame.value.id },
                         .none,
                         .{
                             .scopes = .{
                                 .thread_id = retained.thread_id,
-                                .frame_id = @enumFromInt(frame.id),
+                                .frame_id = @enumFromInt(frame.value.id),
                                 .request_variables = retained.request_variables,
                             },
                         },

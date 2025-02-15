@@ -146,7 +146,7 @@ pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, con
         state.update_active_source_to_top_of_stack = false;
         if (state.active_source.get_thread(data)) |thread| {
             if (thread.stack.items.len > 0) {
-                const source = thread.stack.items[0].source orelse break :blk;
+                const source = thread.stack.items[0].value.source orelse break :blk;
                 const id = state.active_source.get_id() orelse break :blk;
                 const eql = utils.source_is(source, id);
 
@@ -157,7 +157,7 @@ pub fn ui_tick(gpa: *const GPA, window: *glfw.Window, callbacks: *Callbacks, con
             }
         } else if (data.threads.get(state.active_source.thread_id orelse break :blk)) |thread| {
             if (thread.stack.items.len > 0) {
-                const source = thread.stack.items[0].source orelse break :blk;
+                const source = thread.stack.items[0].value.source orelse break :blk;
                 state.active_source.set_source(thread.id, source);
                 state.scroll_to_active_line = true;
             }
@@ -409,7 +409,7 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
     };
 
     var scopes_name = std.StringArrayHashMap(void).init(arena);
-    for (scopes) |scope| {
+    for (scopes.value) |scope| {
         scopes_name.put(scope.name, {}) catch return;
     }
 
@@ -419,10 +419,10 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
         if (!zgui.beginTabItem(tmp_name("{s}", .{n}), .{})) continue;
         defer zgui.endTabItem();
 
-        for (scopes) |scope| {
+        for (scopes.value) |scope| {
             if (!std.mem.eql(u8, n, scope.name)) continue;
             const vars = thread.variables.get(@enumFromInt(scope.variablesReference)) orelse continue;
-            for (vars) |v| {
+            for (vars.value) |v| {
                 zgui.text("{s} = {s}", .{ v.name, v.value });
             }
         }
@@ -520,8 +520,8 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, 
             zgui.indent(.{ .indent_w = 1 });
 
             for (thread.stack.items) |frame| {
-                if (zgui.selectable(tmp_name("{s}", .{frame.name}), .{})) {
-                    if (frame.source) |s| {
+                if (zgui.selectable(tmp_name("{s}", .{frame.value.name}), .{})) {
+                    if (frame.value.source) |s| {
                         state.active_source.set_source(thread.id, s);
                         state.scroll_to_active_line = true;
                     }
@@ -594,14 +594,14 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
                 zgui.sameLine(.{});
                 if (zgui.button(tmp_name("Scopes##{*}", .{entry.key_ptr}), .{})) {
                     for (thread.stack.items) |frame| {
-                        request.scopes(connection, thread.id, @enumFromInt(frame.id), false) catch return;
+                        request.scopes(connection, thread.id, @enumFromInt(frame.value.id), false) catch return;
                     }
                 }
 
                 zgui.sameLine(.{});
                 if (zgui.button(tmp_name("Variables##{*}", .{entry.key_ptr}), .{})) {
                     for (thread.scopes.values()) |scopes| {
-                        for (scopes) |scope| {
+                        for (scopes.value) |scope| {
                             _ = connection.queue_request(
                                 .variables,
                                 protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
@@ -680,7 +680,7 @@ fn debug_stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: Sessio
 
         var buf: [64]u8 = undefined;
         const n = std.fmt.bufPrintZ(&buf, "Thread ID {}##variables slice", .{thread.id}) catch return;
-        draw_table_from_slice_of_struct(n, protocol.StackFrame, thread.stack.items);
+        draw_table_from_slice_of_struct(n, utils.MemObject(protocol.StackFrame), thread.stack.items);
         zgui.newLine();
     }
 }
@@ -695,7 +695,7 @@ fn debug_scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
         for (thread.scopes.keys(), thread.scopes.values()) |frame, item| {
             var buf: [64]u8 = undefined;
             const n = std.fmt.bufPrintZ(&buf, "Frame ID {}##scopes slice", .{frame}) catch return;
-            draw_table_from_slice_of_struct(n, protocol.Scope, item);
+            draw_table_from_slice_of_struct(n, protocol.Scope, item.value);
             zgui.newLine();
         }
     }
@@ -711,7 +711,7 @@ fn debug_variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionDa
         for (thread.variables.keys(), thread.variables.values()) |ref, vars| {
             var buf: [64]u8 = undefined;
             const n = std.fmt.bufPrintZ(&buf, "Reference {}##variables slice", .{ref}) catch return;
-            draw_table_from_slice_of_struct(n, protocol.Variable, vars);
+            draw_table_from_slice_of_struct(n, protocol.Variable, vars.value);
             zgui.newLine();
         }
     }
@@ -980,9 +980,27 @@ fn adapter_capabilities(connection: Connection) void {
         zgui.text("No supportedChecksumAlgorithms", .{});
     }
 
-    draw_table_from_slice_of_struct(@typeName(protocol.ExceptionBreakpointsFilter), protocol.ExceptionBreakpointsFilter, c.exceptionBreakpointFilters);
-    draw_table_from_slice_of_struct(@typeName(protocol.ColumnDescriptor), protocol.ColumnDescriptor, c.additionalModuleColumns);
-    draw_table_from_slice_of_struct(@typeName(protocol.BreakpointMode), protocol.BreakpointMode, c.breakpointModes);
+    if (c.exceptionBreakpointFilters) |value| {
+        draw_table_from_slice_of_struct(
+            @typeName(protocol.ExceptionBreakpointsFilter),
+            protocol.ExceptionBreakpointsFilter,
+            value,
+        );
+    }
+    if (c.additionalModuleColumns) |value| {
+        draw_table_from_slice_of_struct(
+            @typeName(protocol.ColumnDescriptor),
+            protocol.ColumnDescriptor,
+            value,
+        );
+    }
+    if (c.breakpointModes) |value| {
+        draw_table_from_slice_of_struct(
+            @typeName(protocol.BreakpointMode),
+            protocol.BreakpointMode,
+            value,
+        );
+    }
 }
 
 fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *SessionData, args: Args) !void {
@@ -1101,12 +1119,15 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
     );
 }
 
-fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_value: ?[]const T) void {
+fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime Type: type, slice: []const Type) void {
+    const is_mem_object = @hasDecl(Type, "utils_MemObject");
+    const T = if (is_mem_object) Type.ChildType else Type;
+
     const visiable_name = blk: {
         var iter = std.mem.splitAny(u8, name, "##");
         break :blk iter.next().?;
     };
-    zgui.text("{s} len({})", .{ visiable_name, (mabye_value orelse &.{}).len });
+    zgui.text("{s} len({})", .{ visiable_name, slice.len });
     const table = std.meta.fields(T);
     const columns_count = std.meta.fields(T).len;
     if (zgui.beginTable(
@@ -1122,25 +1143,24 @@ fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime T: type, mabye_v
         }
         zgui.tableHeadersRow();
 
-        if (mabye_value) |value| {
-            for (value) |v| {
-                zgui.tableNextRow(.{});
-                inline for (std.meta.fields(@TypeOf(v))) |field| {
-                    const info = @typeInfo(field.type);
-                    const field_value = @field(v, field.name);
-                    _ = zgui.tableNextColumn();
-                    if (info == .pointer and info.pointer.child != u8) { // assume slice
-                        for (field_value, 0..) |inner_v, i| {
-                            if (i < field_value.len - 1) {
-                                zgui.text("{s},", .{anytype_to_string(inner_v, .{})});
-                                zgui.sameLine(.{});
-                            } else {
-                                zgui.text("{s}", .{anytype_to_string(inner_v, .{})});
-                            }
+        for (slice) |item| {
+            const value = if (is_mem_object) item.value else item;
+            zgui.tableNextRow(.{});
+            inline for (std.meta.fields(@TypeOf(value))) |field| {
+                const info = @typeInfo(field.type);
+                const field_value = @field(value, field.name);
+                _ = zgui.tableNextColumn();
+                if (info == .pointer and info.pointer.child != u8) { // assume slice
+                    for (field_value, 0..) |inner_v, i| {
+                        if (i < field_value.len - 1) {
+                            zgui.text("{s},", .{anytype_to_string(inner_v, .{})});
+                            zgui.sameLine(.{});
+                        } else {
+                            zgui.text("{s}", .{anytype_to_string(inner_v, .{})});
                         }
-                    } else {
-                        zgui.text("{s}", .{anytype_to_string(field_value, .{})});
                     }
+                } else {
+                    zgui.text("{s}", .{anytype_to_string(field_value, .{})});
                 }
             }
         }
@@ -1347,14 +1367,14 @@ fn get_frame_of_source_content(data: SessionData, key: SessionData.SourceID) ?pr
         const thread = entry.value_ptr;
 
         for (thread.stack.items) |frame| {
-            const source: protocol.Source = frame.source orelse continue;
+            const source: protocol.Source = frame.value.source orelse continue;
             const eql = switch (key) {
                 .path => |path| path.len > 0 and std.mem.eql(u8, source.path orelse "", path),
                 .reference => |ref| ref == source.sourceReference,
             };
 
             if (eql) {
-                return frame;
+                return frame.value;
             }
         }
     }
@@ -1401,7 +1421,7 @@ fn thread_of_source(source: protocol.Source, data: SessionData) ?SessionData.Thr
         const thread = entry.value_ptr;
 
         for (thread.stack.items) |frame| {
-            const s = frame.source orelse continue;
+            const s = frame.value.source orelse continue;
             const eql = if (s.path != null and source.path != null)
                 std.mem.eql(u8, s.path.?, source.path.?)
             else if (s.sourceReference != null and source.sourceReference != null)
@@ -1907,9 +1927,9 @@ pub const ActiveSource = struct {
         const thread = active.get_thread(data) orelse return null;
         const id = active.get_id().?;
         for (thread.stack.items) |frame| {
-            const source = frame.source orelse continue;
+            const source = frame.value.source orelse continue;
             if (utils.source_is(source, id)) {
-                return frame;
+                return frame.value;
             }
         }
 

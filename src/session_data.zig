@@ -35,11 +35,22 @@ pub const Thread = struct {
     state: State,
     unlocked: bool,
 
-    stack: std.ArrayListUnmanaged(protocol.StackFrame) = .empty,
-    scopes: std.AutoArrayHashMapUnmanaged(FrameID, []protocol.Scope) = .empty,
-    variables: std.AutoArrayHashMapUnmanaged(VariableReference, []protocol.Variable) = .empty,
+    stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)) = .empty,
+    scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)) = .empty,
+    variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)) = .empty,
 
     pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
+        const table = .{
+            thread.stack.items,
+            thread.scopes.values(),
+            thread.variables.values(),
+        };
+        inline for (table) |entry| {
+            for (entry) |*mo| {
+                mo.deinit();
+            }
+        }
+
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
@@ -308,14 +319,18 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, sta
 
 pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response: []const protocol.StackFrame) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
+
     if (clear) {
+        for (thread.stack.items) |*mo| {
+            mo.deinit();
+        }
         thread.stack.clearRetainingCapacity();
     }
 
     try thread.stack.ensureUnusedCapacity(data.allocator, response.len);
 
     for (response) |frame| {
-        thread.stack.appendAssumeCapacity(try data.clone_anytype(frame));
+        thread.stack.appendAssumeCapacity(try utils.mem_object(data.allocator, frame));
         if (frame.source) |source| {
             try data.set_source(source);
         }
@@ -362,17 +377,25 @@ pub fn set_source_content(data: *SessionData, key: SourceID, content: SourceCont
 
 pub fn set_scopes(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, response: []protocol.Scope) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
-    const gop = try thread.scopes.getOrPut(data.allocator, frame_id);
-    gop.value_ptr.* = try data.clone_anytype(response);
+    try thread.scopes.ensureUnusedCapacity(data.allocator, 1);
+    const mo = try utils.mem_object(data.allocator, response);
+    const gop = thread.scopes.getOrPutAssumeCapacity(frame_id);
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+    gop.value_ptr.* = mo;
 }
 
 pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_reference: VariableReference, response: []protocol.Variable) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
-    try thread.variables.put(
-        data.allocator,
-        variables_reference,
-        try data.clone_anytype(response),
-    );
+    try thread.variables.ensureUnusedCapacity(data.allocator, 1);
+    const cloned = try utils.mem_object(data.allocator, response);
+    const gop = thread.variables.getOrPutAssumeCapacity(variables_reference);
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+
+    gop.value_ptr.* = cloned;
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
