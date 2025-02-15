@@ -1,7 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const SessionData = @import("session_data.zig");
-const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
+const StringStorage = @import("slice_storage.zig").StringStorage;
 const log = std.log.scoped(.utils);
 const mem = std.mem;
 
@@ -258,35 +258,51 @@ pub fn is_zig_string(comptime T: type) bool {
 
 pub fn MemObject(comptime T: type) type {
     return struct {
+        pub const utils_MemObject = void;
+        pub const ChildType = T;
+
         const Self = @This();
 
-        arena: std.heap.ArenaAllocator,
-        strings: StringStorageUnmanaged,
+        arena: *std.heap.ArenaAllocator,
+        strings: *StringStorage,
         value: T,
 
         pub fn deinit(self: *Self) void {
-            self.strings.deinit(self.arena.allocator());
+            const allocator = self.arena.child_allocator;
+
+            self.strings.deinit();
             self.arena.deinit();
+
+            allocator.destroy(self.arena);
+            allocator.destroy(self.strings);
         }
     };
 }
 
 pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@TypeOf(value)) {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+    var arena = try allocator.create(std.heap.ArenaAllocator);
+    errdefer allocator.destroy(arena);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
-    var strings: StringStorageUnmanaged = .empty;
-    errdefer strings.deinit(allocator);
+
+    var strings = try allocator.create(StringStorage);
+    errdefer allocator.destroy(strings);
+    strings.* = StringStorage.init(allocator);
+    errdefer strings.deinit();
 
     const Cloner = struct {
         const Cloner = @This();
-        strings: *StringStorageUnmanaged,
+        strings: *StringStorage,
         allocator: mem.Allocator,
         pub fn clone_string(cloner: *Cloner, string: []const u8) ![]const u8 {
-            return try cloner.strings.get_and_put(cloner.allocator, string);
+            return try cloner.strings.get_and_put(string);
         }
     };
 
-    var cloner = Cloner{ .strings = &strings, .allocator = arena.allocator() };
+    var cloner = Cloner{
+        .strings = strings,
+        .allocator = arena.allocator(),
+    };
     const cloned = try clone_anytype(&cloner, value);
     return .{ .arena = arena, .strings = strings, .value = cloned };
 }

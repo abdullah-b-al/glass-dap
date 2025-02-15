@@ -24,7 +24,7 @@ pub fn SliceStorage(comptime T: type, comptime HashContext: type) type {
         const Unmanaged = SliceStorageUnmanaged(T, HashContext);
         const Slice = Unmanaged.Slice;
 
-        unmanaged: Unmanaged = .{},
+        unmanaged: Unmanaged = .empty,
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) Self {
