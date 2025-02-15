@@ -95,10 +95,7 @@ pub const SourceIDHash = union(enum) {
     }
 };
 
-pub const ModuleID = blk: {
-    const m: protocol.Module = undefined;
-    break :blk @TypeOf(@field(m, "id"));
-};
+pub const ModuleID = utils.get_field_type(protocol.Module, "id");
 pub const ModuleHash = union(enum) {
     pub fn hash(_: @This(), key: ModuleID) u32 {
         var hasher = std.hash.Wyhash.init(0);
