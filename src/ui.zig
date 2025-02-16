@@ -147,6 +147,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
 
     if (state.update_active_source_to_top_of_stack) blk: {
         state.update_active_source_to_top_of_stack = false;
+        // TODO: Check if the thread of the active_source is invalid if so update it
         if (state.active_source.get_thread(data)) |thread| {
             if (thread.stack.items.len > 0) {
                 const source = thread.stack.items[0].value.source orelse break :blk;
@@ -157,12 +158,6 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
                     state.active_source.set_source(thread.id, source);
                     state.scroll_to_active_line = true;
                 }
-            }
-        } else if (data.threads.get(state.active_source.thread_id orelse break :blk)) |thread| {
-            if (thread.stack.items.len > 0) {
-                const source = thread.stack.items[0].value.source orelse break :blk;
-                state.active_source.set_source(thread.id, source);
-                state.scroll_to_active_line = true;
             }
         }
     }
