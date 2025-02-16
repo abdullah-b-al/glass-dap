@@ -63,7 +63,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
 
-    const window = try glfw.Window.create(1000, 1000, "TestWindow:thabit", null);
+    const window = try glfw.Window.create(1000, 1000, "Thabit", null);
     window.setSizeLimits(400, 400, -1, -1);
 
     glfw.makeContextCurrent(window);
