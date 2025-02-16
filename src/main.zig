@@ -11,15 +11,69 @@ const ui = @import("ui.zig");
 const log = std.log.scoped(.main);
 const handlers = @import("handlers.zig");
 const config = @import("config.zig");
+const mem = std.mem;
 
 pub const GPA = std.heap.GeneralPurposeAllocator(.{
     .enable_memory_limit = true,
 });
 
+pub const DebugAllocators = struct {
+    const Snapshot = struct {
+        index: f64,
+        memory: f64,
+    };
+
+    pub const Allocator = struct {
+        gpa: GPA = .init,
+        snapshots: std.MultiArrayList(Snapshot) = .empty,
+
+        pub fn deinit(self: *Allocator) void {
+            self.snapshots.deinit(self.allocator());
+            _ = self.gpa.deinit();
+        }
+
+        pub fn allocator(self: *Allocator) mem.Allocator {
+            return self.gpa.allocator();
+        }
+
+        pub fn snap(self: *Allocator) !void {
+            const bytes = self.gpa.total_requested_bytes;
+            if (@TypeOf(bytes) != void) {
+                const index: f64 = @floatFromInt(self.snapshots.len);
+                const memory: f64 = @floatFromInt(bytes);
+                const snapshot = Snapshot{
+                    .index = index,
+                    .memory = memory / 1024 / 1024, // MiB
+                };
+                try self.snapshots.append(self.allocator(), snapshot);
+            }
+        }
+    };
+
+    general: Allocator,
+    connection: Allocator,
+    session_data: Allocator,
+    ui: Allocator,
+    timer: time.Timer,
+    interval_seconds: u16,
+};
+
 pub fn main() !void {
     const args = try parse_args();
-    var gpa: GPA = .init;
-    defer _ = gpa.deinit();
+    var gpas = DebugAllocators{
+        .general = .{},
+        .connection = .{},
+        .session_data = .{},
+        .ui = .{},
+        .timer = try time.Timer.start(),
+        .interval_seconds = 1,
+    };
+    defer {
+        gpas.general.deinit();
+        gpas.connection.deinit();
+        gpas.session_data.deinit();
+        gpas.ui.deinit();
+    }
 
     if (args.cwd.len > 0) {
         const dir = if (std.fs.path.isAbsolute(args.cwd))
@@ -37,27 +91,27 @@ pub fn main() !void {
 
     // launch json
     const file = try config.find_launch_json();
-    const launch = if (file) |path| try config.open_and_parse_launch_json(gpa.allocator(), path) else null;
+    const launch = if (file) |path| try config.open_and_parse_launch_json(gpas.general.allocator(), path) else null;
     defer if (launch) |l| l.deinit();
     if (launch) |l| {
         config.launch = l.value;
     }
 
     // key mappings
-    try set_mappings(gpa.allocator());
-    defer config.mappings.deinit(gpa.allocator());
+    try set_mappings(gpas.general.allocator());
+    defer config.mappings.deinit(gpas.general.allocator());
 
-    const window = try ui.init_ui(gpa.allocator(), cwd);
+    const window = try ui.init_ui(gpas.ui.allocator(), cwd);
     defer ui.deinit_ui(window);
 
-    var data = SessionData.init(gpa.allocator());
+    var data = SessionData.init(gpas.session_data.allocator());
     defer data.deinit();
 
     const adapter: []const []const u8 = &.{args.adapter};
-    var connection = Connection.init(gpa.allocator(), adapter, args.debug_connection);
+    var connection = Connection.init(gpas.connection.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    var callbacks = handlers.Callbacks.init(gpa.allocator());
+    var callbacks = handlers.Callbacks.init(gpas.connection.allocator());
     defer {
         for (callbacks.items) |cb| {
             if (cb.message) |m| m.deinit();
@@ -65,12 +119,16 @@ pub fn main() !void {
         callbacks.deinit();
     }
 
-    loop(&gpa, window, &callbacks, &connection, &data, args);
+    loop(&gpas, window, &callbacks, &connection, &data, args);
 
     log.info("Window Closed", .{});
 }
 
-fn loop(gpa: *const GPA, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+    gpas.timer.reset();
+
+    var ui_arena = std.heap.ArenaAllocator.init(gpas.ui.allocator());
+    defer ui_arena.deinit();
     while (!window.shouldClose()) {
         while (true) {
             const ok = connection.queue_messages(1) catch |err| blk: {
@@ -84,7 +142,7 @@ fn loop(gpa: *const GPA, window: *glfw.Window, callbacks: *handlers.Callbacks, c
         handlers.handle_queued_messages(callbacks, data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 
-        ui.ui_tick(gpa, window, callbacks, connection, data, args);
+        ui.ui_tick(gpas, &ui_arena, window, callbacks, connection, data, args);
     }
 }
 

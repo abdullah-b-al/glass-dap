@@ -82,6 +82,7 @@ fn build_exe(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.Reso
         .optimize = optimize,
         .backend = .glfw_opengl3,
         .with_freetype = true,
+        .with_implot = true,
         .use_wchar32 = true,
     });
     exe.root_module.addImport("zgui", zgui.module("root"));
