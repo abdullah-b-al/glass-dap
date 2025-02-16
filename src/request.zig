@@ -152,7 +152,7 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
 
         _ = connection.queue_request(.next, arg, .none, .{ .next = .{
             .thread_id = thread.id,
-            .request_stack_trace = true,
+            .request_stack_trace = false,
             .request_scopes = false,
             .request_variables = false,
         } }) catch return;

@@ -42,26 +42,44 @@ pub const Thread = struct {
     state: State,
     unlocked: bool,
 
-    stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)) = .empty,
-    scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)) = .empty,
-    variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)) = .empty,
+    stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
+    scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
+    variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
 
     pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
-        const table = .{
-            thread.stack.items,
-            thread.scopes.values(),
-            thread.variables.values(),
-        };
-        inline for (table) |entry| {
-            for (entry) |*mo| {
-                mo.deinit();
-            }
-        }
+        thread.clear_all();
 
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
         thread.state.deinit();
+    }
+
+    pub fn clear_all(thread: *Thread) void {
+        thread.clear_variables();
+        thread.clear_scopes();
+        thread.clear_stack();
+    }
+
+    pub fn clear_stack(thread: *Thread) void {
+        for (thread.stack.items) |*mo| {
+            mo.deinit();
+        }
+        thread.stack.clearRetainingCapacity();
+    }
+
+    pub fn clear_scopes(thread: *Thread) void {
+        for (thread.scopes.values()) |*mo| {
+            mo.deinit();
+        }
+        thread.scopes.clearRetainingCapacity();
+    }
+
+    pub fn clear_variables(thread: *Thread) void {
+        for (thread.variables.values()) |*mo| {
+            mo.deinit();
+        }
+        thread.variables.clearRetainingCapacity();
     }
 };
 
@@ -265,8 +283,12 @@ pub fn set_continued_all(data: *SessionData) void {
             .stopped => {
                 thread.state.deinit();
                 thread.state = .continued;
+                thread.clear_all();
             },
-            .unknown => thread.state = .continued,
+            .unknown => {
+                thread.state = .continued;
+                thread.clear_all();
+            },
         }
     }
 }
@@ -319,6 +341,7 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
         const old = entry.key_ptr.*;
         if (!utils.entry_exists(threads, "id", @as(ID, @intFromEnum(old)))) {
             _ = data.threads.orderedRemove(old);
+            entry.value_ptr.deinit(data.allocator);
             // iterator invalidated reset
             iter = data.threads.iterator();
         }
@@ -331,8 +354,8 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
 
 fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, cloned_state: ?Thread.State) !void {
     const gop = try data.threads.getOrPut(data.allocator, id);
+    var thread = gop.value_ptr;
     if (gop.found_existing) {
-        const thread = gop.value_ptr;
         if (cloned_state) |new_state| {
             thread.state.deinit();
             thread.state = new_state;
@@ -343,6 +366,8 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .name = if (name) |n| try data.intern_string(n) else thread.name,
             .state = thread.state,
             .stack = thread.stack,
+            .scopes = thread.scopes,
+            .variables = thread.variables,
 
             // user controlled
             .unlocked = thread.unlocked,
@@ -354,7 +379,13 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .state = cloned_state orelse .unknown,
             .unlocked = !(cloned_state == null or cloned_state.? == .unknown),
             .stack = .empty,
+            .scopes = .empty,
+            .variables = .empty,
         };
+    }
+
+    if (thread.state == .continued) {
+        thread.clear_all();
     }
 }
 
@@ -362,10 +393,7 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
     const thread = data.threads.getPtr(thread_id) orelse return;
 
     if (clear) {
-        for (thread.stack.items) |*mo| {
-            mo.deinit();
-        }
-        thread.stack.clearRetainingCapacity();
+        thread.clear_all();
     }
 
     try thread.stack.ensureUnusedCapacity(data.allocator, response.len);
@@ -426,6 +454,9 @@ pub fn set_scopes(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, re
     const mo = try utils.mem_object(data.allocator, response);
     const gop = thread.scopes.getOrPutAssumeCapacity(frame_id);
     if (gop.found_existing) {
+        for (gop.value_ptr.value) |scope| {
+            data.remove_variable(thread_id, @enumFromInt(scope.variablesReference));
+        }
         gop.value_ptr.deinit();
     }
     gop.value_ptr.* = mo;
@@ -441,6 +472,12 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
     }
 
     gop.value_ptr.* = cloned;
+}
+
+pub fn remove_variable(data: *SessionData, thread_id: ThreadID, reference: VariableReference) void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    var entry = thread.variables.fetchOrderedRemove(reference) orelse return;
+    entry.value.deinit();
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
