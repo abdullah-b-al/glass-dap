@@ -139,9 +139,12 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callb
         }
 
         handlers.send_queued_requests(connection);
-        handlers.handle_queued_messages(callbacks, data, connection);
+        const handled_message = handlers.handle_queued_messages(callbacks, data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 
+        if (handled_message) {
+            ui.continue_rendering();
+        }
         ui.ui_tick(gpas, &ui_arena, window, callbacks, connection, data, args);
     }
 }

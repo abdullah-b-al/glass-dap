@@ -24,6 +24,7 @@ const time = std.time;
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
 const State = struct {
+    render_frames: u8 = 4,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
 
@@ -44,6 +45,38 @@ const State = struct {
 };
 
 pub var state = State{};
+
+pub fn continue_rendering() void {
+    state.render_frames = @max(state.render_frames, 2);
+}
+
+var zgui_mouse_cursor_pos_callback: ?glfw.CursorPosFn = null;
+var zgui_mouse_button_callback: ?glfw.MouseButtonFn = null;
+var zgui_key_callback: ?glfw.KeyFn = null;
+var zgui_scroll_callback: ?glfw.ScrollFn = null;
+
+pub fn key_callback(window: *glfw.Window, key: glfw.Key, scancode: c_int, action: glfw.Action, mods: glfw.Mods) callconv(.C) void {
+    continue_rendering();
+    zgui_key_callback.?(window, key, scancode, action, mods);
+}
+pub fn mouse_cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callconv(.C) void {
+    continue_rendering();
+    zgui_mouse_cursor_pos_callback.?(window, xpos, ypos);
+}
+
+pub fn scroll_callback(window: *glfw.Window, xoffset: f64, yoffset: f64) callconv(.C) void {
+    continue_rendering();
+    zgui_scroll_callback.?(window, xoffset, yoffset);
+}
+
+pub fn mouse_button_callback(window: *glfw.Window, button: glfw.MouseButton, action: glfw.Action, mods: glfw.Mods) callconv(.C) void {
+    continue_rendering();
+    zgui_mouse_button_callback.?(window, button, action, mods);
+}
+
+pub fn window_size_callback(_: *glfw.Window, _: c_int, _: c_int) callconv(.C) void {
+    continue_rendering();
+}
 
 pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     var env_map = try std.process.getEnvMap(allocator);
@@ -108,6 +141,19 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     zgui.getStyle().scaleAllSizes(scale_factor);
 
     zgui.backend.init(window);
+    zgui_mouse_cursor_pos_callback = glfw.setCursorPosCallback(window, mouse_cursor_pos_callback);
+    std.debug.assert(zgui_mouse_cursor_pos_callback != null);
+
+    zgui_mouse_button_callback = glfw.setMouseButtonCallback(window, mouse_button_callback);
+    std.debug.assert(zgui_mouse_button_callback != null);
+
+    zgui_scroll_callback = glfw.setScrollCallback(window, scroll_callback);
+    std.debug.assert(zgui_scroll_callback != null);
+
+    zgui_key_callback = glfw.setKeyCallback(window, key_callback);
+    std.debug.assert(zgui_key_callback != null);
+
+    _ = glfw.setWindowSizeCallback(window, window_size_callback);
 
     return window;
 }
@@ -123,11 +169,23 @@ pub fn deinit_ui(window: *glfw.Window) void {
 }
 
 pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
+    if (gpas.timer.read() / time.ns_per_s >= gpas.interval_seconds) {
+        inline for (meta.fields(DebugAllocators)) |field| {
+            if (field.type == DebugAllocators.Allocator) {
+                const alloc = &@field(gpas, field.name);
+                alloc.snap() catch return;
+            }
+        }
+        gpas.timer.reset();
+    }
+
+    glfw.pollEvents();
+    if (state.render_frames == 0) return;
+    defer state.render_frames -= 1;
+
     defer _ = arena.reset(.retain_capacity);
 
     const gl = zopengl.bindings;
-    glfw.pollEvents();
-
     gl.clearBufferfv(gl.COLOR, 0, &[_]f32{ 0, 0, 0, 1.0 });
 
     const fb_size = window.getFramebufferSize();
@@ -211,16 +269,6 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     zgui.backend.draw();
 
     window.swapBuffers();
-
-    if (gpas.timer.read() / time.ns_per_s >= gpas.interval_seconds) {
-        inline for (meta.fields(DebugAllocators)) |field| {
-            if (field.type == DebugAllocators.Allocator) {
-                const alloc = &@field(gpas, field.name);
-                alloc.snap() catch return;
-            }
-        }
-        gpas.timer.reset();
-    }
 }
 
 fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
@@ -901,6 +949,7 @@ fn debug_ui(gpas: *const DebugAllocators, arena: std.mem.Allocator, callbacks: *
 
     if (zgui.beginTabItem("Memory Usage", .{})) blk: {
         defer zgui.endTabItem();
+        continue_rendering();
 
         if (zgui.beginTable("Memory Usage Table", .{ .column = 4, .flags = .{
             .sizing = .fixed_fit,

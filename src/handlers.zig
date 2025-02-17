@@ -68,7 +68,8 @@ pub fn send_queued_requests(connection: *Connection) void {
     }
 }
 
-pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connection: *Connection) bool {
+    var handled_message = false;
     while (connection.messages.removeOrNull()) |message| {
         var ok = false;
         const message_type = utils.get_value(message.value, "type", .string).?;
@@ -84,7 +85,10 @@ pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connect
         if (!ok) {
             connection.failed_message(message);
         }
+        handled_message = true;
     }
+
+    return handled_message;
 }
 
 pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32, data: *SessionData, connection: *Connection) bool {
