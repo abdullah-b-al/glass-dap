@@ -426,14 +426,23 @@ pub fn send_request(connection: *Connection, index: usize) !void {
         .request_data = request.request_data,
     });
 
+    _ = connection.remove_request(index, protocol_request.seq);
+}
+
+pub fn remove_request(connection: *Connection, index: usize, debug_request_seq: ?i32) Command {
+    var request = &connection.queued_requests.items[index];
+    const command = request.command;
+
     if (connection.debug) {
-        request.debug_request_seq = protocol_request.seq;
+        request.debug_request_seq = debug_request_seq;
         connection.debug_requests.appendAssumeCapacity(request.*);
     } else {
         request.arena.deinit();
     }
 
     _ = connection.queued_requests.orderedRemove(index);
+
+    return command;
 }
 
 fn dependency_satisfied(connection: Connection, to_send: Connection.Request) bool {
@@ -585,7 +594,7 @@ pub fn handle_event_initialized(connection: *Connection, message: RawMessage) vo
     connection.handled_event(message, .initialized);
 }
 
-fn check_request_capability(connection: *Connection, command: Command) !void {
+pub fn check_request_capability(connection: *Connection, command: Command) !void {
     const s = connection.adapter_capabilities.support;
     const c = connection.adapter_capabilities;
     const result = switch (command) {

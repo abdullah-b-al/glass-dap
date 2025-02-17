@@ -37,6 +37,11 @@ pub fn send_queued_requests(connection: *Connection) void {
                 i += 1;
             },
 
+            error.AdapterDoesNotSupportRequest => {
+                const cmd = connection.remove_request(i, null);
+                log.err("{} {s}", .{ err, @tagName(cmd) });
+            },
+
             error.OutOfMemory,
             error.NoSpaceLeft,
 
@@ -59,10 +64,9 @@ pub fn send_queued_requests(connection: *Connection) void {
 
             error.AdapterNotDoneInitializing,
             error.AdapterNotSpawned,
-            error.AdapterDoesNotSupportRequest,
             => {
                 i += 1;
-                log.err("{}\n", .{err});
+                log.err("{}", .{err});
             },
         };
     }
