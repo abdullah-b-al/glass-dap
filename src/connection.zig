@@ -296,7 +296,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .state = .not_spawned,
         .adapter = adapter,
         .allocator = allocator,
-        .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+        .arena = std.heap.ArenaAllocator.init(allocator),
         .queued_requests = std.ArrayList(Request).init(allocator),
         .debug_requests = std.ArrayList(Request).init(allocator),
         .messages = Messages.init(allocator, {}),
@@ -360,7 +360,7 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     };
 
     // FIXME: This leaks for some reason.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(connection.allocator);
     errdefer arena.deinit();
 
     const cloner = .{ .allocator = arena.allocator() };
@@ -755,36 +755,6 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoesN
     return error.EventDoesNotExist;
 }
 
-fn value_to_object_then_write(connection: *Connection, value: anytype) !void {
-    try connection.value_to_object_then_inject_then_write(value, &.{}, .{});
-}
-
-fn value_to_object_then_inject_then_write(connection: *Connection, value: anytype, ancestors: []const []const u8, extra: protocol.Object) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    // value to object
-    var object = try utils.value_to_object(arena.allocator(), value);
-    // inject
-    if (extra.map.count() > 0) {
-        var ancestor = try utils.object_ancestor_get(&object, ancestors);
-        var iter = extra.map.iterator();
-        while (iter.next()) |entry| {
-            try ancestor.map.put(arena.allocator(), entry.key_ptr.*, entry.value_ptr.*);
-        }
-    }
-
-    // write
-    const message = try io.create_message(connection.allocator, object);
-    defer connection.allocator.free(message);
-    try connection.adapter_write_all(message);
-}
-
-// pub fn get_and_parse_response(connection: *Connection, comptime T: type, seq: i32) !std.json.Parsed(T) {
-//     const raw_resp, _ = try connection.get_response_by_request_seq(seq);
-//     return try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
-// }
-
 pub fn parse_validate_response(connection: *Connection, message: RawMessage, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
     const resp = try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
     errdefer resp.deinit();
@@ -792,15 +762,6 @@ pub fn parse_validate_response(connection: *Connection, message: RawMessage, com
 
     return resp;
 }
-
-// pub fn get_parse_validate_response_message(connection: *Connection, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
-//     const raw_resp, _ = try connection.get_response_by_request_seq(request_seq);
-//     const resp = try std.json.parseFromValue(T, connection.allocator, raw_resp.value, .{ .ignore_unknown_fields = true });
-//     errdefer resp.deinit();
-//     try validate_response(resp.value, request_seq, command);
-
-//     return resp;
-// }
 
 pub fn parse_event(connection: *Connection, message: RawMessage, comptime T: type, event: Event) !std.json.Parsed(T) {
     const e = utils.get_value(message.value, "event", .string) orelse @panic("Passed non-event message");

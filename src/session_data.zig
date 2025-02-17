@@ -197,7 +197,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
     return .{
         .status = .not_running,
         .allocator = allocator,
-        .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+        .arena = std.heap.ArenaAllocator.init(allocator),
     };
 }
 
