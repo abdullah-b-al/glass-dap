@@ -13,7 +13,7 @@ const DebuggeeStatus = union(enum) {
     not_running,
     running,
     stopped,
-    exited: i32,
+    terminated,
 };
 
 pub const ID = i32;
@@ -178,6 +178,7 @@ sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash
 
 // Output needs to be available for the whole session so MemObject isn't needed.
 output: std.ArrayListUnmanaged(Output) = .empty,
+output_arena: std.heap.ArenaAllocator,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
@@ -186,6 +187,7 @@ function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .emp
 source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false) = .empty,
 
 status: DebuggeeStatus,
+exit_code: ?i32,
 
 /// From the protocol:
 /// Arbitrary data from the previous, restarted connection.
@@ -195,14 +197,17 @@ terminated_restart_data: ?protocol.Value = null,
 
 pub fn init(allocator: mem.Allocator) SessionData {
     return .{
-        .status = .not_running,
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
+        .output_arena = std.heap.ArenaAllocator.init(allocator),
+        .status = .not_running,
+        .exit_code = null,
     };
 }
 
-pub fn deinit(data: *SessionData) void {
+pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
     data.string_storage.deinit(data.allocator);
+    data.string_storage = .empty;
 
     {
         var iter = data.threads.iterator();
@@ -211,23 +216,15 @@ pub fn deinit(data: *SessionData) void {
             thread.deinit(data.allocator);
         }
     }
-    data.threads.deinit(data.allocator);
-
-    data.output.deinit(data.allocator);
 
     for (data.sources_content.values()) |content| {
         // content.mime_type is interned
         data.allocator.free(content.content);
     }
 
-    data.sources_content.deinit(data.allocator);
-
-    data.function_breakpoints.deinit(data.allocator);
-
     for (data.source_breakpoints.values()) |*list| {
         list.deinit(data.allocator);
     }
-    data.source_breakpoints.deinit(data.allocator);
 
     const mem_objects = .{
         data.modules.values(),
@@ -240,11 +237,49 @@ pub fn deinit(data: *SessionData) void {
         }
     }
 
-    data.modules.deinit(data.allocator);
-    data.breakpoints.deinit(data.allocator);
-    data.sources.deinit(data.allocator);
+    const to_free = .{
+        &data.threads,
+        &data.output,
+        &data.sources_content,
+        &data.function_breakpoints,
+        &data.source_breakpoints,
+        &data.modules,
+        &data.breakpoints,
+        &data.sources,
+    };
 
-    data.arena.deinit();
+    inline for (to_free) |ptr| {
+        switch (reason) {
+            .deinit => ptr.deinit(data.allocator),
+            .end_session => {
+                if (@intFromPtr(ptr) != @intFromPtr(&data.output)) {
+                    ptr.clearAndFree(data.allocator);
+                }
+            },
+        }
+    }
+
+    switch (reason) {
+        .deinit => {
+            data.arena.deinit();
+            data.output_arena.deinit();
+        },
+        .end_session => {
+            _ = data.arena.reset(.retain_capacity);
+            // don't free the output arena
+        },
+    }
+}
+
+pub fn deinit(data: *SessionData) void {
+    data.free(.deinit);
+}
+
+pub fn end_session(data: *SessionData, restart_data: ?protocol.Value) !void {
+    data.free(.end_session);
+    if (restart_data) |d| {
+        data.terminated_restart_data = try data.clone_anytype(d);
+    }
 }
 
 pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
@@ -294,12 +329,12 @@ pub fn set_continued_all(data: *SessionData) void {
 }
 
 pub fn set_existed(data: *SessionData, event: protocol.ExitedEvent) !void {
-    data.status = .{ .exited = event.body.exitCode };
+    data.exit_code = event.body.exitCode;
 }
 
 pub fn set_output(data: *SessionData, event: protocol.OutputEvent) !void {
     try data.output.ensureUnusedCapacity(data.allocator, 1);
-    const output = try data.clone_anytype(event.body);
+    const output = try data.clone_output(event.body);
     data.output.appendAssumeCapacity(output);
 }
 
@@ -325,13 +360,13 @@ pub fn remove_module(data: *SessionData, module: protocol.Module) void {
 }
 
 pub fn set_terminated(data: *SessionData, event: protocol.TerminatedEvent) !void {
-    if (event.body) |body| {
-        data.terminated_restart_data = try data.clone_anytype(body.restart);
-    }
+    const restart_data = if (event.body) |body|
+        body.restart
+    else
+        null;
 
-    if (data.status != .exited) {
-        data.status = .not_running;
-    }
+    try data.end_session(restart_data);
+    data.status = .terminated;
 }
 
 pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
@@ -592,6 +627,20 @@ fn breakpoint_index(data: SessionData, maybe_id: ?i32) ?usize {
     }
 
     return null;
+}
+
+fn clone_output(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {
+    const Cloner = struct {
+        const Cloner = @This();
+        data: *SessionData,
+        allocator: mem.Allocator,
+    };
+
+    const cloner = Cloner{
+        .data = data,
+        .allocator = data.output_arena.allocator(),
+    };
+    return try utils.clone_anytype(cloner, value);
 }
 
 fn clone_anytype(data: *SessionData, value: anytype) error{OutOfMemory}!@TypeOf(value) {

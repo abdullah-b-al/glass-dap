@@ -594,6 +594,11 @@ pub fn handle_event_initialized(connection: *Connection, message: RawMessage) vo
     connection.handled_event(message, .initialized);
 }
 
+pub fn handle_event_terminated(connection: *Connection, message: RawMessage) void {
+    connection.state = .initialized;
+    connection.handled_event(message, .terminated);
+}
+
 pub fn check_request_capability(connection: *Connection, command: Command) !void {
     const s = connection.adapter_capabilities.support;
     const c = connection.adapter_capabilities;

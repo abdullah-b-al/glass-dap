@@ -184,8 +184,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             defer parsed.deinit();
 
             try data.set_terminated(parsed.value);
-
-            connection.handled_event(message, .terminated);
+            connection.handle_event_terminated(message);
         },
         .output => {
             const parsed = try connection.parse_event(message, protocol.OutputEvent, .output);
@@ -244,6 +243,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
     switch (response.command) {
         .launch => {
             try acknowledge_only(message, connection, response.request_seq, response.command);
+            data.status = .running;
             connection.handle_response_launch(message, response);
         },
 

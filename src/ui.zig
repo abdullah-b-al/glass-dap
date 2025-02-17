@@ -1130,6 +1130,11 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
 
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
+    zgui.text("Exit Code:", .{});
+    if (data.exit_code) |code| {
+        zgui.sameLine(.{});
+        zgui.text("{}", .{code});
+    }
 
     if (zgui.button("Begin Debug Sequence", .{})) {
         state.begin_session = true;
