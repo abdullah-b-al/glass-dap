@@ -18,6 +18,7 @@ pub const Action = enum {
     next_statement,
     next_instruction,
     begin_session,
+    toggle_debug_ui,
 };
 
 pub const Key = struct {

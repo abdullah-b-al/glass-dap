@@ -219,4 +219,9 @@ fn set_mappings(allocator: std.mem.Allocator) !void {
         .{ .mods = mods(.{ .control = true }), .key = .b },
         .begin_session,
     );
+
+    m.putAssumeCapacity(
+        .{ .mods = mods(.{}), .key = .f12 },
+        .toggle_debug_ui,
+    );
 }

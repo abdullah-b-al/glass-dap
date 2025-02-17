@@ -27,6 +27,9 @@ const State = struct {
     render_frames: u8 = 4,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
+    debug_ui: bool = @import("builtin").mode == .Debug,
+    plot_demo: bool = false,
+    imgui_demo: bool = false,
 
     files: Files = undefined,
     home_path: Path = Path.init(0) catch unreachable,
@@ -224,35 +227,48 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
         handle_action(act, callbacks, data, connection) catch return;
     }
 
+    // resizes the dockspace to the whole window
+    const id_dockspace = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
+
     const static = struct {
         var built_layout = false;
     };
+
     if (!static.built_layout) {
         static.built_layout = true;
-        var dockspace_id = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{});
 
-        zgui.dockBuilderRemoveNode(dockspace_id);
         const viewport = zgui.getMainViewport();
-        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
-        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
 
-        const dock_main_id: ?*zgui.Ident = &dockspace_id;
-        const id_output = zgui.dockBuilderSplitNode(dock_main_id.?.*, .down, 0.30, null, &dockspace_id);
+        const top_left = zgui.dockBuilderAddNode(id_dockspace, .{});
+        zgui.dockBuilderSetNodeSize(top_left, viewport.getSize());
 
-        const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.30, null, &dockspace_id);
-        // const id_threads = zgui.dockBuilderSplitNode(dock_main_id.?.*, .none, 0.50, null, &id_sources);
+        var id_source = top_left;
+        const id_output = zgui.dockBuilderSplitNode(id_source, .down, 0.30, null, &id_source);
+        const id_threads = zgui.dockBuilderSplitNode(id_source, .right, 0.30, null, &id_source);
 
-        zgui.dockBuilderDockWindow("Source Code", dockspace_id);
-
-        // tabbed
+        // tabbed, right of Source Code (top right)
         zgui.dockBuilderDockWindow("Threads", id_threads);
         zgui.dockBuilderDockWindow("Sources", id_threads);
         zgui.dockBuilderDockWindow("Variables", id_threads);
         zgui.dockBuilderDockWindow("Breakpoints", id_threads);
 
+        // left of Threads (top left)
+        zgui.dockBuilderDockWindow("Source Code", id_source);
+
+        // below source code
         zgui.dockBuilderDockWindow("Output", id_output);
 
-        zgui.dockBuilderFinish(dockspace_id);
+        zgui.dockBuilderDockWindow("Debug General", id_source);
+        zgui.dockBuilderDockWindow("Debug Modules", id_source);
+        zgui.dockBuilderDockWindow("Debug Threads", id_source);
+        zgui.dockBuilderDockWindow("Debug Stack Frames", id_source);
+        zgui.dockBuilderDockWindow("Debug Scopes", id_source);
+        zgui.dockBuilderDockWindow("Debug Variables", id_source);
+        zgui.dockBuilderDockWindow("Debug Breakpoints", id_source);
+        zgui.dockBuilderDockWindow("Debug Sources", id_source);
+        zgui.dockBuilderDockWindow("Debug Sources Content", id_source);
+
+        zgui.dockBuilderFinish(id_dockspace);
 
         _ = zgui.DockSpace("Main DockSpace", viewport.getSize(), .{});
     }
@@ -708,6 +724,133 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
     }
 }
 
+fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection, args: Args) !void {
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    defer zgui.endTabBar();
+    if (!zgui.beginTabBar("Debug Tabs", .{})) return;
+
+    if (zgui.beginTabItem("Memory Usage", .{})) blk: {
+        defer zgui.endTabItem();
+        continue_rendering();
+
+        if (zgui.beginTable("Memory Usage Table", .{ .column = 4, .flags = .{
+            .sizing = .fixed_fit,
+        } })) {
+            defer zgui.endTable();
+
+            inline for (meta.fields(DebugAllocators)) |field| {
+                if (field.type == DebugAllocators.Allocator) {
+                    zgui.tableNextRow(.{});
+                    const alloc = @field(gpas, field.name);
+                    const bytes = alloc.gpa.total_requested_bytes;
+                    if (@TypeOf(bytes) != void) {
+                        const color = [4]f32{ 0.5, 0.5, 1, 1 };
+                        _ = zgui.tableNextColumn();
+                        zgui.text("{s}", .{field.name});
+
+                        _ = zgui.tableNextColumn();
+                        zgui.text("{}", .{bytes});
+                        zgui.sameLine(.{ .spacing = 0 });
+                        zgui.textColored(color, "B", .{});
+
+                        _ = zgui.tableNextColumn();
+                        zgui.text("{}", .{bytes / 1024});
+                        zgui.sameLine(.{ .spacing = 0 });
+                        zgui.textColored(color, "KiB", .{});
+
+                        _ = zgui.tableNextColumn();
+                        zgui.text("{}", .{bytes / 1024 / 1024});
+                        zgui.sameLine(.{ .spacing = 0 });
+                        zgui.textColored(color, "MiB", .{});
+                    }
+                }
+            }
+        }
+
+        if (!plot.beginPlot("Memory Usage", .{ .w = -1, .h = -1 })) break :blk;
+        defer plot.endPlot();
+
+        plot.setupAxis(.x1, .{ .label = "Seconds" });
+        const max: f64 = @floatFromInt(@max(60, gpas.general.snapshots.len));
+        const min = max - 60;
+        plot.setupAxisLimits(.x1, .{ .min = min, .max = max, .cond = .always });
+        plot.setupAxis(.y1, .{ .label = "MiB" });
+        plot.setupAxisLimits(.y1, .{ .min = 0, .max = 10, .cond = .once });
+
+        inline for (meta.fields(DebugAllocators)) |field| {
+            if (field.type == DebugAllocators.Allocator) {
+                const alloc = @field(gpas, field.name);
+                plot.pushStyleVar1f(.{ .idx = .fill_alpha, .v = 0.25 });
+                plot.plotShaded(tmp_name("{s}", .{field.name}), f64, .{
+                    .xv = alloc.snapshots.items(.index),
+                    .yv = alloc.snapshots.items(.memory),
+                });
+                plot.plotLine(tmp_name("{s}", .{field.name}), f64, .{
+                    .xv = alloc.snapshots.items(.index),
+                    .yv = alloc.snapshots.items(.memory),
+                });
+                plot.popStyleVar(.{ .count = 1 });
+            }
+        }
+    }
+
+    if (zgui.beginTabItem("Manully Send Requests", .{})) {
+        defer zgui.endTabItem();
+        try manual_requests(arena, connection, data, args);
+    }
+
+    if (zgui.beginTabItem("Adapter Capabilities", .{})) {
+        defer zgui.endTabItem();
+        adapter_capabilities(connection.*);
+    }
+
+    if (zgui.beginTabItem("Sent Requests", .{})) {
+        defer zgui.endTabItem();
+        for (connection.debug_requests.items) |item| {
+            var buf: [512]u8 = undefined;
+            const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.debug_request_seq, @tagName(item.command) }) catch unreachable;
+            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.args });
+        }
+    }
+
+    const table = .{
+        .{ .name = "Queued Messages", .items = connection.messages.items },
+        .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
+        .{ .name = "Debug Failed Messages", .items = connection.debug_failed_messages.items },
+        .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
+    };
+    inline for (table) |element| {
+        if (zgui.beginTabItem(element.name, .{})) {
+            defer zgui.endTabItem();
+            for (element.items) |resp| {
+                const seq = resp.value.object.get("seq").?.integer;
+                var buf: [512]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
+                recursively_draw_object(arena, slice, slice, resp.value);
+            }
+        }
+    }
+
+    if (zgui.beginTabItem("Handled Responses", .{})) {
+        defer zgui.endTabItem();
+        draw_table_from_slice_of_struct(@typeName(Connection.HandledResponse), Connection.HandledResponse, connection.handled_responses.items);
+    }
+
+    if (zgui.beginTabItem("Handled Events", .{})) {
+        defer zgui.endTabItem();
+        for (connection.handled_events.items) |item| {
+            zgui.text("{s}", .{@tagName(item.event)});
+        }
+    }
+
+    if (zgui.beginTabItem("Queued Requests", .{})) {
+        defer zgui.endTabItem();
+        draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.queued_requests.items);
+    }
+}
+
 fn debug_modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
     _ = arena;
     defer zgui.end();
@@ -896,38 +1039,9 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
 fn debug_ui(gpas: *const DebugAllocators, arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
-    const static = struct {
-        var built_layout = false;
-    };
-    if (!static.built_layout) {
-        static.built_layout = true;
-        const dockspace_id = zgui.DockSpaceOverViewport(1000, zgui.getMainViewport(), .{});
+    if (!state.debug_ui) return;
 
-        zgui.dockBuilderRemoveNode(dockspace_id);
-        const viewport = zgui.getMainViewport();
-        const empty = zgui.dockBuilderAddNode(dockspace_id, .{});
-        zgui.dockBuilderSetNodeSize(empty, viewport.getSize());
-
-        // const dock_main_id: ?*zgui.Ident = &dockspace_id; // This variable will track the document node, however we are not using it here as we aren't docking anything into it.
-        // const left = zgui.dockBuilderSplitNode(dock_main_id.?.*, .left, 0.50, null, dock_main_id);
-        // const right = zgui.dockBuilderSplitNode(dock_main_id.?.*, .right, 0.50, null, dock_main_id);
-
-        // dock them tabbed
-        zgui.dockBuilderDockWindow("Debug General", empty);
-        zgui.dockBuilderDockWindow("Debug Modules", empty);
-        zgui.dockBuilderDockWindow("Debug Threads", empty);
-        zgui.dockBuilderDockWindow("Debug Stack Frames", empty);
-        zgui.dockBuilderDockWindow("Debug Scopes", empty);
-        zgui.dockBuilderDockWindow("Debug Variables", empty);
-        zgui.dockBuilderDockWindow("Debug Breakpoints", empty);
-        zgui.dockBuilderDockWindow("Debug Sources", empty);
-        zgui.dockBuilderDockWindow("Debug Sources Content", empty);
-
-        zgui.dockBuilderFinish(dockspace_id);
-
-        _ = zgui.DockSpace("Debug DockSpace", viewport.getSize(), .{});
-    }
-
+    try debug_general(gpas, arena, "Debug General", data, connection, args);
     debug_modules(arena, "Debug Modules", data.*);
     debug_threads(arena, "Debug Threads", data.*, connection);
     debug_stack_frames(arena, "Debug Stack Frames", data.*, connection);
@@ -937,139 +1051,8 @@ fn debug_ui(gpas: *const DebugAllocators, arena: std.mem.Allocator, callbacks: *
     debug_sources(arena, "Debug Sources", data, connection);
     debug_sources_content(arena, "Debug Sources Content", data.*, connection);
 
-    var open: bool = true;
-    zgui.showDemoWindow(&open);
-    plot.showDemoWindow(null);
-
-    defer zgui.end();
-    if (!zgui.begin("Debug General", .{})) return;
-
-    defer zgui.endTabBar();
-    if (!zgui.beginTabBar("Debug Tabs", .{})) return;
-
-    if (zgui.beginTabItem("Memory Usage", .{})) blk: {
-        defer zgui.endTabItem();
-        continue_rendering();
-
-        if (zgui.beginTable("Memory Usage Table", .{ .column = 4, .flags = .{
-            .sizing = .fixed_fit,
-        } })) {
-            defer zgui.endTable();
-
-            inline for (meta.fields(DebugAllocators)) |field| {
-                if (field.type == DebugAllocators.Allocator) {
-                    zgui.tableNextRow(.{});
-                    const alloc = @field(gpas, field.name);
-                    const bytes = alloc.gpa.total_requested_bytes;
-                    if (@TypeOf(bytes) != void) {
-                        const color = [4]f32{ 0.5, 0.5, 1, 1 };
-                        _ = zgui.tableNextColumn();
-                        zgui.text("{s}", .{field.name});
-
-                        _ = zgui.tableNextColumn();
-                        zgui.text("{}", .{bytes});
-                        zgui.sameLine(.{ .spacing = 0 });
-                        zgui.textColored(color, "B", .{});
-
-                        _ = zgui.tableNextColumn();
-                        zgui.text("{}", .{bytes / 1024});
-                        zgui.sameLine(.{ .spacing = 0 });
-                        zgui.textColored(color, "KiB", .{});
-
-                        _ = zgui.tableNextColumn();
-                        zgui.text("{}", .{bytes / 1024 / 1024});
-                        zgui.sameLine(.{ .spacing = 0 });
-                        zgui.textColored(color, "MiB", .{});
-                    }
-                }
-            }
-        }
-
-        if (!plot.beginPlot("Memory Usage", .{ .w = -1, .h = -1 })) break :blk;
-        defer plot.endPlot();
-
-        plot.setupAxis(.x1, .{ .label = "Seconds" });
-        const max: f64 = @floatFromInt(@max(60, gpas.general.snapshots.len));
-        const min = max - 60;
-        plot.setupAxisLimits(.x1, .{ .min = min, .max = max, .cond = .always });
-        plot.setupAxis(.y1, .{ .label = "MiB" });
-        plot.setupAxisLimits(.y1, .{ .min = 0, .max = 10, .cond = .once });
-
-        inline for (meta.fields(DebugAllocators)) |field| {
-            if (field.type == DebugAllocators.Allocator) {
-                const alloc = @field(gpas, field.name);
-                plot.pushStyleVar1f(.{ .idx = .fill_alpha, .v = 0.25 });
-                plot.plotShaded(tmp_name("{s}", .{field.name}), f64, .{
-                    .xv = alloc.snapshots.items(.index),
-                    .yv = alloc.snapshots.items(.memory),
-                });
-                plot.plotLine(tmp_name("{s}", .{field.name}), f64, .{
-                    .xv = alloc.snapshots.items(.index),
-                    .yv = alloc.snapshots.items(.memory),
-                });
-                plot.popStyleVar(.{ .count = 1 });
-            }
-        }
-    }
-
-    if (zgui.beginTabItem("Manully Send Requests", .{})) {
-        defer zgui.endTabItem();
-        try manual_requests(arena, connection, data, args);
-    }
-
-    if (zgui.beginTabItem("Adapter Capabilities", .{})) {
-        defer zgui.endTabItem();
-        adapter_capabilities(connection.*);
-    }
-
-    if (zgui.beginTabItem("Sent Requests", .{})) {
-        defer zgui.endTabItem();
-        for (connection.debug_requests.items) |item| {
-            var buf: [512]u8 = undefined;
-            const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.debug_request_seq, @tagName(item.command) }) catch unreachable;
-            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.args });
-        }
-    }
-
-    const table = .{
-        .{ .name = "Queued Messages", .items = connection.messages.items },
-        .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
-        .{ .name = "Debug Failed Messages", .items = connection.debug_failed_messages.items },
-        .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
-    };
-    inline for (table) |element| {
-        if (zgui.beginTabItem(element.name, .{})) {
-            defer zgui.endTabItem();
-            for (element.items) |resp| {
-                const seq = resp.value.object.get("seq").?.integer;
-                var buf: [512]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
-                recursively_draw_object(arena, slice, slice, resp.value);
-            }
-        }
-    }
-
-    if (zgui.beginTabItem("Handled Responses", .{})) {
-        defer zgui.endTabItem();
-        draw_table_from_slice_of_struct(@typeName(Connection.HandledResponse), Connection.HandledResponse, connection.handled_responses.items);
-    }
-
-    if (zgui.beginTabItem("Handled Events", .{})) {
-        defer zgui.endTabItem();
-        for (connection.handled_events.items) |item| {
-            zgui.text("{s}", .{@tagName(item.event)});
-        }
-    }
-
-    if (zgui.beginTabItem("Queued Requests", .{})) {
-        defer zgui.endTabItem();
-        draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.queued_requests.items);
-        // for (connection.queued_requests.items) |item| {
-        //     zgui.text("{s}", .{
-        //         @tagName(item.command),
-        //     });
-        // }
-    }
+    if (state.imgui_demo) zgui.showDemoWindow(&state.imgui_demo);
+    if (state.plot_demo) plot.showDemoWindow(&state.plot_demo);
 }
 
 fn adapter_capabilities(connection: Connection) void {
@@ -1132,6 +1115,16 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
     };
 
     draw_launch_configurations(config.launch);
+
+    if (zgui.button("Hide Debug UI", .{})) {
+        state.debug_ui = false;
+    }
+    if (zgui.button("Show Dear ImGui Demo", .{})) {
+        state.imgui_demo = true;
+    }
+    if (zgui.button("Show Plot Demo", .{})) {
+        state.plot_demo = true;
+    }
 
     zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
@@ -1890,6 +1883,7 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
         .next_statement => request.next(callbacks, data.*, connection, .statement),
         .next_instruction => request.next(callbacks, data.*, connection, .instruction),
         .begin_session => state.begin_session = true,
+        .toggle_debug_ui => state.debug_ui = !state.debug_ui,
     }
 }
 
