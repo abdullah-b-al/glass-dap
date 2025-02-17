@@ -735,6 +735,8 @@ fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [
         defer zgui.endTabItem();
         continue_rendering();
 
+        zgui.text("Debug Connection: {}", .{connection.debug});
+
         if (zgui.beginTable("Memory Usage Table", .{ .column = 4, .flags = .{
             .sizing = .fixed_fit,
         } })) {
