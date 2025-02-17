@@ -154,7 +154,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
                 const id = state.active_source.get_id() orelse break :blk;
                 const eql = utils.source_is(source, id);
 
-                if (eql) {
+                if (!eql) {
                     state.active_source.set_source(thread.id, source);
                     state.scroll_to_active_line = true;
                 }
