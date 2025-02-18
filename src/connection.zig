@@ -89,12 +89,14 @@ const State = enum {
     spawned,
     /// Adapter is not running
     not_spawned,
+    /// RIP
+    died,
 
     pub fn fully_initialized(state: State) bool {
         return switch (state) {
             .initialized, .launched, .attached => true,
 
-            .partially_initialized, .initializing, .spawned, .not_spawned => false,
+            .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
         };
     }
 };
@@ -164,6 +166,10 @@ pub const Request = struct {
     /// Send request when dependency is satisfied
     depends_on: Dependency,
     queued_timestamp: i128,
+
+    pub fn deinit(request: *Request) void {
+        request.arena.deinit();
+    }
 };
 
 pub const MessagesContext = struct {
@@ -256,8 +262,8 @@ allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 adapter: std.process.Child,
 
-client_capabilities: ClientCapabilitiesSet = .{},
-adapter_capabilities: AdapterCapabilities = .{},
+client_capabilities: ClientCapabilitiesSet,
+adapter_capabilities: AdapterCapabilities,
 
 queued_requests: std.ArrayList(Request),
 expected_responses: std.ArrayList(Response),
@@ -265,13 +271,13 @@ handled_responses: std.ArrayList(HandledResponse),
 handled_events: std.ArrayList(HandledEvent),
 
 total_requests: u32 = 0,
-debug_requests: std.ArrayList(Request),
 
 total_responses_received: u32 = 0,
 total_events_received: u32 = 0,
 total_messages_received: u32 = 0,
 messages: Messages,
 
+debug_requests: std.ArrayList(Request),
 debug_failed_messages: std.ArrayList(RawMessage),
 debug_handled_responses: std.ArrayList(RawMessage),
 debug_handled_events: std.ArrayList(RawMessage),
@@ -283,18 +289,9 @@ debug: bool,
 seq: u32 = 1,
 
 pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debug: bool) Connection {
-    var adapter = std.process.Child.init(
-        adapter_argv,
-        allocator,
-    );
-
-    adapter.stdin_behavior = .Pipe;
-    adapter.stdout_behavior = .Pipe;
-    adapter.stderr_behavior = .Pipe;
-
     return .{
         .state = .not_spawned,
-        .adapter = adapter,
+        .adapter = adapter_init(allocator, adapter_argv),
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
         .queued_requests = std.ArrayList(Request).init(allocator),
@@ -308,43 +305,116 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
         .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_events = std.ArrayList(RawMessage).init(allocator),
         .debug = debug,
+        .client_capabilities = .{},
+        .adapter_capabilities = .{},
+        .total_requests = 0,
+        .total_events_received = 0,
+        .total_messages_received = 0,
+        .total_responses_received = 0,
     };
 }
 
-pub fn deinit(connection: *Connection) void {
-    const table = .{
-        connection.messages.items,
-        connection.debug_failed_messages.items,
-        connection.debug_handled_responses.items,
-        connection.debug_handled_events.items,
+fn free(connection: *Connection, reason: enum { deinit, adapter_died }) void {
+    const to_free_with_items = .{
+        &connection.queued_requests,
+        &connection.messages,
     };
 
-    inline for (table) |entry| {
-        for (entry) |*item| {
-            item.deinit();
+    const to_free = .{
+        &connection.expected_responses,
+        &connection.handled_responses,
+        &connection.handled_events,
+    };
+
+    inline for (to_free_with_items) |ptr| {
+        for (ptr.items) |*item| item.deinit();
+
+        switch (reason) {
+            .deinit => ptr.deinit(),
+            .adapter_died => ptr.clearAndFree(),
         }
     }
 
-    for (connection.debug_requests.items) |*request| {
-        request.arena.deinit();
+    inline for (to_free) |ptr| {
+        switch (reason) {
+            .deinit => ptr.deinit(),
+            .adapter_died => ptr.clearAndFree(),
+        }
     }
-    connection.debug_requests.deinit();
 
-    for (connection.queued_requests.items) |*request| {
-        request.arena.deinit();
+    switch (reason) {
+        .deinit => connection.free_debug(.deinit),
+        .adapter_died => connection.free_debug(.adapter_died),
     }
-    connection.queued_requests.deinit();
 
-    connection.expected_responses.deinit();
-    connection.handled_responses.deinit();
-    connection.handled_events.deinit();
+    switch (reason) {
+        .deinit => connection.arena.deinit(),
+        // keep arena alive for debug data
+        .adapter_died => {},
+    }
 
-    connection.messages.deinit();
-    connection.debug_failed_messages.deinit();
-    connection.debug_handled_responses.deinit();
-    connection.debug_handled_events.deinit();
+    if (reason == .adapter_died) {
+        connection.adapter = adapter_init(connection.allocator, connection.adapter.argv);
+    }
 
-    connection.arena.deinit();
+    connection.* = Connection{
+        .allocator = connection.allocator,
+        .arena = connection.arena,
+        .adapter = connection.adapter,
+        .client_capabilities = connection.client_capabilities,
+        .adapter_capabilities = switch (reason) {
+            .deinit => .{},
+            // since the arena is still alive this is safe
+            .adapter_died => connection.adapter_capabilities,
+        },
+
+        .state = .died,
+        .queued_requests = connection.queued_requests,
+        .debug_requests = connection.debug_requests,
+        .messages = connection.messages,
+        .expected_responses = connection.expected_responses,
+        .handled_responses = connection.handled_responses,
+        .handled_events = connection.handled_events,
+
+        .debug_failed_messages = connection.debug_failed_messages,
+        .debug_handled_responses = connection.debug_handled_responses,
+        .debug_handled_events = connection.debug_handled_events,
+        .debug = connection.debug,
+        .total_requests = 0,
+        .total_events_received = 0,
+        .total_messages_received = 0,
+        .total_responses_received = 0,
+    };
+}
+
+fn free_debug(connection: *Connection, reason: enum { deinit, restarting_adapter, adapter_died }) void {
+    const debug_to_free = .{
+        &connection.debug_requests,
+        &connection.debug_failed_messages,
+        &connection.debug_handled_responses,
+        &connection.debug_handled_events,
+    };
+
+    switch (reason) {
+        // Keep debug data to be viewed
+        .adapter_died => {},
+        .restarting_adapter => {
+            inline for (debug_to_free) |ptr| {
+                for (ptr.items) |*item| item.deinit();
+                ptr.clearAndFree();
+            }
+        },
+        .deinit => {
+            inline for (debug_to_free) |ptr| {
+                for (ptr.items) |*item| item.deinit();
+                ptr.deinit();
+            }
+        },
+    }
+}
+
+pub fn deinit(connection: *Connection) void {
+    connection.free(.deinit);
 }
 
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
@@ -402,7 +472,7 @@ pub fn send_request(connection: *Connection, index: usize) !void {
                 else => return error.AdapterNotDoneInitializing,
             }
         },
-        .not_spawned => return error.AdapterNotSpawned,
+        .died, .not_spawned => return error.AdapterNotSpawned,
         .initialized, .spawned, .attached, .launched => {},
     }
 
@@ -657,9 +727,29 @@ pub fn check_request_capability(connection: *Connection, command: Command) !void
     }
 }
 
+pub fn adapter_init(allocator: std.mem.Allocator, argv: []const []const u8) std.process.Child {
+    var adapter = std.process.Child.init(argv, allocator);
+    adapter.stdin_behavior = .Pipe;
+    adapter.stdout_behavior = .Pipe;
+    adapter.stderr_behavior = .Pipe;
+    return adapter;
+}
+
 pub fn adapter_spawn(connection: *Connection) !void {
-    if (connection.state != .not_spawned) {
-        return error.AdapterAlreadySpawned;
+    switch (connection.state) {
+        .not_spawned => {},
+
+        .died => {
+            connection.free_debug(.restarting_adapter);
+            connection.state = .not_spawned;
+        },
+        .launched,
+        .attached,
+        .initialized,
+        .partially_initialized,
+        .initializing,
+        .spawned,
+        => return error.AdapterAlreadySpawned,
     }
     try connection.adapter.spawn();
     connection.state = .spawned;
@@ -670,6 +760,10 @@ pub fn adapter_wait(connection: *Connection) !std.process.Child.Term {
     const code = try connection.adapter.wait();
     connection.state = .not_spawned;
     return code;
+}
+
+pub fn adapter_died(connection: *Connection) void {
+    connection.free(.adapter_died);
 }
 
 pub fn adapter_kill(connection: *Connection) !std.process.Child.Term {

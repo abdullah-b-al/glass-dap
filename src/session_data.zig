@@ -14,6 +14,7 @@ const DebuggeeStatus = union(enum) {
     running,
     stopped,
     terminated,
+    adapter_died,
 };
 
 pub const ID = i32;
@@ -169,22 +170,22 @@ allocator: mem.Allocator,
 /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
 arena: std.heap.ArenaAllocator,
 
-string_storage: StringStorageUnmanaged = .empty,
-threads: Threads = .empty,
-modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false) = .empty,
-breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)) = .empty,
-sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false) = .empty,
-sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false) = .empty,
+string_storage: StringStorageUnmanaged,
+threads: Threads,
+modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleHash, false),
+breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)),
+sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false),
+sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false),
 
 // Output needs to be available for the whole session so MemObject isn't needed.
-output: std.ArrayListUnmanaged(Output) = .empty,
+output: std.ArrayListUnmanaged(Output),
 output_arena: std.heap.ArenaAllocator,
 
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
 // These are cheap to store so for now don't use a MemObject
-function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint) = .empty,
-source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false) = .empty,
+function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint),
+source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false),
 
 status: DebuggeeStatus,
 exit_code: ?i32,
@@ -202,6 +203,16 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .output_arena = std.heap.ArenaAllocator.init(allocator),
         .status = .not_running,
         .exit_code = null,
+
+        .string_storage = .empty,
+        .threads = .empty,
+        .modules = .empty,
+        .breakpoints = .empty,
+        .sources = .empty,
+        .sources_content = .empty,
+        .output = .empty,
+        .function_breakpoints = .empty,
+        .source_breakpoints = .empty,
     };
 }
 
@@ -265,14 +276,38 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
             data.output_arena.deinit();
         },
         .end_session => {
-            _ = data.arena.reset(.retain_capacity);
-            // don't free the output arena
+            _ = data.arena.reset(.free_all);
+            // keep the output arena so the output can be viewed
         },
     }
+
+    data.* = .{
+        .status = .not_running,
+
+        // keep
+        .exit_code = data.exit_code,
+        .allocator = data.allocator,
+        .arena = data.arena,
+        .output_arena = data.output_arena,
+        .string_storage = data.string_storage,
+        .threads = data.threads,
+        .modules = data.modules,
+        .breakpoints = data.breakpoints,
+        .sources = data.sources,
+        .sources_content = data.sources_content,
+        .output = data.output,
+        .function_breakpoints = data.function_breakpoints,
+        .source_breakpoints = data.source_breakpoints,
+    };
 }
 
 pub fn deinit(data: *SessionData) void {
     data.free(.deinit);
+}
+
+pub fn begin_session(data: *SessionData) void {
+    _ = data.output_arena.reset(.free_all);
+    data.output.clearAndFree(data.allocator);
 }
 
 pub fn end_session(data: *SessionData, restart_data: ?protocol.Value) !void {

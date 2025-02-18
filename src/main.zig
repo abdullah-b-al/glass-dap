@@ -131,14 +131,20 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callb
     defer ui_arena.deinit();
     while (!window.shouldClose()) {
         while (true) {
-            const ok = connection.queue_messages(1) catch |err| blk: {
-                log.err("queue_messages: {}", .{err});
-                break :blk false;
+            const ok = connection.queue_messages(1) catch |err| switch (err) {
+                error.EndOfStream => blk: { // assume adapter died
+                    break :blk false;
+                },
+                else => blk: {
+                    log.err("queue_messages: {}", .{err});
+                    break :blk false;
+                },
             };
+
             if (!ok) break;
         }
 
-        handlers.send_queued_requests(connection);
+        handlers.send_queued_requests(connection, data);
         const handled_message = handlers.handle_queued_messages(callbacks, data, connection);
         handlers.handle_callbacks(callbacks, data, connection);
 

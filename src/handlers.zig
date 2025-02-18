@@ -29,7 +29,7 @@ pub const Callback = struct {
     timestamp: i128,
 };
 
-pub fn send_queued_requests(connection: *Connection) void {
+pub fn send_queued_requests(connection: *Connection, data: *SessionData) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
@@ -42,6 +42,14 @@ pub fn send_queued_requests(connection: *Connection) void {
                 log.err("{} {s}", .{ err, @tagName(cmd) });
             },
 
+            error.AdapterNotSpawned,
+            error.BrokenPipe,
+            => {
+                connection.adapter_died();
+                data.end_session(null) catch |e| utils.oom(e);
+                return;
+            },
+
             error.OutOfMemory,
             error.NoSpaceLeft,
 
@@ -52,7 +60,6 @@ pub fn send_queued_requests(connection: *Connection) void {
             error.ProcessNotFound,
             error.InputOutput,
             error.OperationAborted,
-            error.BrokenPipe,
             error.ConnectionResetByPeer,
             error.WouldBlock,
             error.LockViolation,
@@ -63,7 +70,6 @@ pub fn send_queued_requests(connection: *Connection) void {
             error.NotOpenForWriting,
 
             error.AdapterNotDoneInitializing,
-            error.AdapterNotSpawned,
             => {
                 i += 1;
                 log.err("{}", .{err});

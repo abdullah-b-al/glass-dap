@@ -200,7 +200,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     }
 
     if (state.begin_session) {
-        state.begin_session = !(request.begin_session(arena.allocator(), connection) catch |err| blk: {
+        state.begin_session = !(request.begin_session(arena.allocator(), connection, data) catch |err| blk: {
             log_err(err, @src());
             break :blk true;
         });

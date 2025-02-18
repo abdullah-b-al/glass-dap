@@ -9,7 +9,7 @@ const config = @import("config.zig");
 const Callbacks = handlers.Callbacks;
 const Dependency = Connection.Dependency;
 
-pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !bool {
+pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *SessionData) !bool {
     // send and respond to initialize
     // send launch or attach
     // when the adapter is ready it'll send a initialized event
@@ -51,6 +51,8 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection) !bool {
         static.launch_done = true;
     }
 
+    data.begin_session();
+
     // TODO: Send configurations here
 
     _ = try connection.queue_request_configuration_done(
@@ -70,7 +72,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
         .spawned,
         => return error.SessionNotStarted,
 
-        .not_spawned => return error.AdapterNotSpawned,
+        .died, .not_spawned => return error.AdapterNotSpawned,
 
         .attached => @panic("TODO"),
         .launched => {
