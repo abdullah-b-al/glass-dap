@@ -775,7 +775,8 @@ pub fn adapter_kill(connection: *Connection) !std.process.Child.Term {
 
 pub fn adapter_write_all(connection: *Connection, message: []const u8) !void {
     std.debug.assert(connection.state != .not_spawned);
-    try connection.adapter.stdin.?.writer().writeAll(message);
+    const stdin = connection.adapter.stdin orelse return;
+    try stdin.writer().writeAll(message);
 }
 
 pub fn new_seq(s: *Connection) i32 {

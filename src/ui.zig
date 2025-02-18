@@ -1963,7 +1963,9 @@ pub const Files = struct {
         path.appendSlice(entry.name) catch unreachable;
 
         try data.set_source(.{ .path = path.slice() });
-        state.active_source.set_source(null, data.get_source(.{ .path = path.slice() }).?);
+        // if there's no source we'll get it next frame.
+        const source = data.get_source(.{ .path = path.slice() }) orelse return;
+        state.active_source.set_source(null, source);
         state.scroll_to_active_line = false;
     }
 };
