@@ -1060,15 +1060,23 @@ fn debug_ui(gpas: *const DebugAllocators, arena: std.mem.Allocator, callbacks: *
 fn adapter_capabilities(connection: Connection) void {
     if (connection.state == .not_spawned) return;
 
-    var iter = connection.adapter_capabilities.support.iterator();
-    while (iter.next()) |e| {
-        const name = @tagName(e);
-        var color = [4]f32{ 1, 1, 1, 1 };
-        if (std.mem.endsWith(u8, name, "Request")) {
-            color = .{ 0, 0, 1, 1 };
+    inline for (std.meta.fields(Connection.AdapterCapabilitiesKind)) |field| {
+        const contains = connection.adapter_capabilities.support.contains(@enumFromInt(field.value));
+        if (contains) {
+            zgui.textColored(.{ 0, 1, 0, 1 }, "{s}", .{field.name});
         }
-        zgui.textColored(color, "{s}", .{name});
     }
+
+    zgui.separator();
+
+    inline for (std.meta.fields(Connection.AdapterCapabilitiesKind)) |field| {
+        const contains = connection.adapter_capabilities.support.contains(@enumFromInt(field.value));
+        if (!contains) {
+            zgui.textColored(.{ 1, 0, 0, 1 }, "{s}", .{field.name});
+        }
+    }
+
+    zgui.separator();
 
     const c = connection.adapter_capabilities;
     if (c.completionTriggerCharacters) |chars| {

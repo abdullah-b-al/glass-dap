@@ -23,7 +23,7 @@ const ClientCapabilitiesKind = enum {
 
 const ClientCapabilitiesSet = std.EnumSet(ClientCapabilitiesKind);
 
-const AdapterCapabilitiesKind = enum {
+pub const AdapterCapabilitiesKind = enum {
     supportsConfigurationDoneRequest,
     supportsFunctionBreakpoints,
     supportsConditionalBreakpoints,
