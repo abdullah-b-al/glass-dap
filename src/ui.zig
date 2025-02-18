@@ -491,11 +491,24 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
         if (!zgui.beginTabItem(tmp_name("{s}", .{n}), .{})) continue;
         defer zgui.endTabItem();
 
+        if (!zgui.beginTable(tmp_name("Variables: {s}", .{n}), .{
+            .column = 2,
+            .flags = .{
+                .resizable = true,
+                .borders = .{ .inner_h = true, .outer_h = true, .inner_v = true, .outer_v = true },
+            },
+        })) continue;
+        defer zgui.endTable();
+
         for (scopes.value) |scope| {
             if (!std.mem.eql(u8, n, scope.name)) continue;
             const vars = thread.variables.get(@enumFromInt(scope.variablesReference)) orelse continue;
             for (vars.value) |v| {
-                zgui.text("{s} = {s}", .{ v.name, v.value });
+                zgui.tableNextRow(.{});
+                _ = zgui.tableSetColumnIndex(0);
+                zgui.text("{s}", .{v.name});
+                _ = zgui.tableSetColumnIndex(1);
+                zgui.text("{s}", .{v.value});
             }
         }
     }
