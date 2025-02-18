@@ -418,6 +418,23 @@ pub fn deinit(connection: *Connection) void {
 }
 
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
+    switch (connection.state) {
+        .partially_initialized => {
+            switch (command) {
+                .launch, .attach => {},
+                else => return error.AdapterNotDoneInitializing,
+            }
+        },
+        .initializing => {
+            switch (command) {
+                .initialize, .launch, .attach, .configurationDone => {},
+                else => return error.AdapterNotDoneInitializing,
+            }
+        },
+        .died, .not_spawned => return error.AdapterNotSpawned,
+        .initialized, .spawned, .attached, .launched => {},
+    }
+
     const total_requests = connection.total_requests + 1;
     try connection.queued_requests.ensureUnusedCapacity(1);
     try connection.debug_requests.ensureTotalCapacity(total_requests);

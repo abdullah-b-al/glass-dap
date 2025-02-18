@@ -106,6 +106,9 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
     const err = handle_response(message, data, connection, resp);
 
     err catch |e| switch (e) {
+        error.AdapterNotSpawned,
+        error.AdapterNotDoneInitializing,
+
         error.SourceWithoutID,
         error.NoBreakpointIDGiven,
         error.BreakpointDoesNotExist,
@@ -120,10 +123,6 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.DuplicateField,
         error.LengthMismatch,
         error.WrongCommandForResponse,
-        => {
-            log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
-            return false;
-        },
 
         error.UnknownField,
         error.MissingField,

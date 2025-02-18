@@ -35,9 +35,10 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
         .linesStartAt1 = false,
     };
 
-    if (connection.state == .not_spawned) {
-        try connection.adapter_spawn();
-    }
+    connection.adapter_spawn() catch |err| switch (err) {
+        error.AdapterAlreadySpawned => {},
+        else => return err,
+    };
 
     if (!static.init_done) {
         try connection.queue_request_init(init_args, .none);
