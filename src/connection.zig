@@ -140,6 +140,11 @@ pub const RetainedRequestData = union(enum) {
     set_breakpoints: struct {
         source_id: SessionData.SourceID,
     },
+    set_variable: struct {
+        thread_id: SessionData.ThreadID,
+        variable_reference: SessionData.VariableReference,
+        variable_name: []const u8,
+    },
     no_data,
 };
 

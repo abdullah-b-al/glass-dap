@@ -544,6 +544,19 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
     gop.value_ptr.* = cloned;
 }
 
+pub fn set_variable_value(data: *SessionData, thread_id: ThreadID, reference: VariableReference, name: []const u8, response: protocol.SetVariableResponse) !void {
+    const body = response.body;
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    const mo: MemObject([]protocol.Variable) = thread.variables.get(reference) orelse return;
+    const value = try mo.strings.get_and_put(body.value);
+    for (mo.value) |*variable| {
+        if (std.mem.eql(u8, variable.name, name)) {
+            variable.value = value;
+            break;
+        }
+    }
+}
+
 pub fn remove_variable(data: *SessionData, thread_id: ThreadID, reference: VariableReference) void {
     const thread = data.threads.getPtr(thread_id) orelse return;
     var entry = thread.variables.fetchOrderedRemove(reference) orelse return;

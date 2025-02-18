@@ -441,6 +441,26 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handled_response(message, response, .success);
         },
 
+        .setVariable => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.SetVariableResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.set_variable;
+
+            try data.set_variable_value(
+                retained.thread_id,
+                retained.variable_reference,
+                retained.variable_name,
+                parsed.value,
+            );
+
+            connection.handled_response(message, response, .success);
+        },
+
         .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -458,7 +478,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
         .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
         .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setVariable => log.err("TODO: {s}", .{@tagName(response.command)}),
         .terminateThreads => log.err("TODO: {s}", .{@tagName(response.command)}),
         .modules => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
