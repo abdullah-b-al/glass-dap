@@ -161,7 +161,13 @@ pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, refer
     );
 }
 
-pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+const Step = enum {
+    next,
+    in,
+    out,
+};
+
+pub fn step(callbacks: *Callbacks, data: SessionData, connection: *Connection, step_kind: Step, granularity: protocol.SteppingGranularity) void {
     const static = struct {
         var wait = false;
         fn stack_trace(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
@@ -169,13 +175,57 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
             ui.state.update_active_source_to_top_of_stack = true;
         }
 
-        fn next(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+        fn step(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
             wait = false;
         }
     };
 
-    if (static.wait) return;
+    if (static.wait) {
+        return;
+    }
 
+    switch (step_kind) {
+        .next => next(data, connection, granularity),
+        .in => step_in(data, connection, granularity),
+        .out => step_out(data, connection, granularity),
+    }
+
+    static.wait = true;
+    handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.stack_trace) catch return;
+    const command: Connection.Command = switch (step_kind) {
+        .next => .next,
+        .in => .stepIn,
+        .out => .stepOut,
+    };
+    handlers.callback(callbacks, .always, .{ .response = command }, null, static.step) catch return;
+}
+fn step_in(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+    var iter = SelectedThreadsIterator.init(data);
+    while (iter.next()) |thread| {
+        const arg = protocol.StepInArguments{
+            .threadId = @intFromEnum(thread.id),
+            .singleThread = true,
+            .targetId = null,
+            .granularity = granularity,
+        };
+
+        _ = connection.queue_request(.stepIn, arg, .none, .no_data) catch return;
+    }
+}
+fn step_out(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+    var iter = SelectedThreadsIterator.init(data);
+    while (iter.next()) |thread| {
+        const arg = protocol.StepOutArguments{
+            .threadId = @intFromEnum(thread.id),
+            .singleThread = true,
+            .granularity = granularity,
+        };
+
+        _ = connection.queue_request(.stepOut, arg, .none, .no_data) catch return;
+    }
+}
+
+pub fn next(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
     var iter = SelectedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
@@ -189,15 +239,8 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
             .request_stack_trace = false,
             .request_scopes = false,
             .request_variables = false,
-        } }) catch {
-            static.wait = false;
-            return;
-        };
+        } }) catch return;
     }
-
-    static.wait = true;
-    handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.stack_trace) catch return;
-    handlers.callback(callbacks, .always, .{ .response = .next }, null, static.next) catch return;
 }
 
 pub fn continue_threads(data: SessionData, connection: *Connection) void {

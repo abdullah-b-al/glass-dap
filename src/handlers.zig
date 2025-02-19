@@ -271,6 +271,9 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .pause,
         => try acknowledge_and_handled(message, connection, response),
 
+        .stepOut, .stepIn => {
+            try acknowledge_and_handled(message, connection, response);
+        },
         .next => {
             try acknowledge_and_handled(message, connection, response);
             const retained = response.request_data.next;
@@ -487,8 +490,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .stepIn => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .stepOut => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepBack => log.err("TODO: {s}", .{@tagName(response.command)}),
         .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
         .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),

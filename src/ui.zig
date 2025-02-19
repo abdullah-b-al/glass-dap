@@ -741,15 +741,41 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
         // line 3
         if (zgui.button("Next Line", .{})) {
-            request.next(callbacks, data.*, connection, .line);
+            request.step(callbacks, data.*, connection, .next, .line);
         }
         zgui.sameLine(.{});
         if (zgui.button("Next Statement", .{})) {
-            request.next(callbacks, data.*, connection, .statement);
+            request.step(callbacks, data.*, connection, .next, .statement);
         }
         zgui.sameLine(.{});
         if (zgui.button("Next Instruction", .{})) {
-            request.next(callbacks, data.*, connection, .instruction);
+            request.step(callbacks, data.*, connection, .next, .instruction);
+        }
+
+        // line 4
+        if (zgui.button("In Line", .{})) {
+            request.step(callbacks, data.*, connection, .in, .line);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("In Statement", .{})) {
+            request.step(callbacks, data.*, connection, .in, .statement);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("In Instruction", .{})) {
+            request.step(callbacks, data.*, connection, .in, .instruction);
+        }
+
+        // line 5
+        if (zgui.button("Out Line", .{})) {
+            request.step(callbacks, data.*, connection, .out, .line);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Out Statement", .{})) {
+            request.step(callbacks, data.*, connection, .out, .statement);
+        }
+        zgui.sameLine(.{});
+        if (zgui.button("Out Instruction", .{})) {
+            request.step(callbacks, data.*, connection, .out, .instruction);
         }
     } // buttons
 
@@ -2062,9 +2088,9 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
     switch (action) {
         .continue_threads => request.continue_threads(data.*, connection),
         .pause => request.pause(data.*, connection),
-        .next_line => request.next(callbacks, data.*, connection, .line),
-        .next_statement => request.next(callbacks, data.*, connection, .statement),
-        .next_instruction => request.next(callbacks, data.*, connection, .instruction),
+        .next_line => request.step(callbacks, data.*, connection, .next, .line),
+        .next_statement => request.step(callbacks, data.*, connection, .next, .statement),
+        .next_instruction => request.step(callbacks, data.*, connection, .next, .instruction),
         .begin_session => state.begin_session = true,
         .toggle_debug_ui => state.debug_ui = !state.debug_ui,
     }
