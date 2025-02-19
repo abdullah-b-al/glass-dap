@@ -162,6 +162,20 @@ pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, refer
 }
 
 pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
+    const static = struct {
+        var wait = false;
+        fn stack_trace(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            ui.state.scroll_to_active_line = true;
+            ui.state.update_active_source_to_top_of_stack = true;
+        }
+
+        fn next(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            wait = false;
+        }
+    };
+
+    if (static.wait) return;
+
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
@@ -175,17 +189,15 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
             .request_stack_trace = false,
             .request_scopes = false,
             .request_variables = false,
-        } }) catch return;
+        } }) catch {
+            static.wait = false;
+            return;
+        };
     }
 
-    const static = struct {
-        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
-            ui.state.scroll_to_active_line = true;
-            ui.state.update_active_source_to_top_of_stack = true;
-        }
-    };
-
-    handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.func) catch return;
+    static.wait = true;
+    handlers.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.stack_trace) catch return;
+    handlers.callback(callbacks, .always, .{ .response = .next }, null, static.next) catch return;
 }
 
 pub fn continue_threads(data: SessionData, connection: *Connection) void {
