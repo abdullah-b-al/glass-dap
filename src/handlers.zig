@@ -485,6 +485,22 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handled_response(message, response, .success);
         },
 
+        .modules => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.ModulesResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            for (parsed.value.body.modules) |module| {
+                try data.set_module(module);
+            }
+
+            connection.handled_response(message, response, .success);
+        },
+
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
         .attach => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -494,7 +510,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .modules => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
         .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setExpression => log.err("TODO: {s}", .{@tagName(response.command)}),

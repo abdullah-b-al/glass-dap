@@ -1389,6 +1389,14 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         try request.end_session(connection, .terminate);
     }
 
+    if (zgui.button("Modules", .{})) {
+        _ = try connection.queue_request(.modules, protocol.ModulesArguments{
+            // all modules
+            .startModule = null,
+            .moduleCount = null,
+        }, .none, .no_data);
+    }
+
     if (zgui.button("Threads", .{})) {
         _ = try connection.queue_request(.threads, null, .none, .no_data);
     }
