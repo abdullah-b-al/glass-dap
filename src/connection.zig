@@ -142,8 +142,8 @@ pub const RetainedRequestData = union(enum) {
     },
     set_variable: struct {
         thread_id: SessionData.ThreadID,
-        variable_reference: SessionData.VariableReference,
-        variable_name: []const u8,
+        reference: SessionData.VariableReference,
+        name: []const u8,
     },
     no_data,
 };

@@ -39,6 +39,12 @@ const State = struct {
 
     launch_config_index: ?usize = null,
 
+    variable_edit: ?struct {
+        reference: SessionData.VariableReference,
+        index: usize,
+        buffer: [1024:0]u8 = .{0} ** 1024,
+    } = null,
+
     // handled in ui_tick
     ask_for_launch_config: bool = false,
     begin_session: bool = false,
@@ -564,13 +570,63 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
 
         for (scopes.value) |scope| {
             if (!std.mem.eql(u8, n, scope.name)) continue;
-            const vars = thread.variables.get(@enumFromInt(scope.variablesReference)) orelse continue;
-            for (vars.value) |v| {
+            const reference: SessionData.VariableReference = @enumFromInt(scope.variablesReference);
+            const vars = thread.variables.get(reference) orelse continue;
+            for (vars.value, 0..) |v, i| {
+                const has_evaluate_name = v.evaluateName != null;
                 zgui.tableNextRow(.{});
                 _ = zgui.tableSetColumnIndex(0);
                 zgui.text("{s}", .{v.name});
                 _ = zgui.tableSetColumnIndex(1);
-                zgui.text("{s}", .{v.value});
+
+                const widget: enum { input_text, text } = if (state.variable_edit != null) .input_text else .text;
+
+                widget: switch (widget) {
+                    .input_text => {
+                        var edit = &state.variable_edit.?;
+                        if (edit.index != i or edit.reference != reference) {
+                            continue :widget .text;
+                        } else {
+                            zgui.setNextItemWidth(zgui.getContentRegionMax()[0]);
+                            _ = zgui.inputText(
+                                tmp_name("##InputText {s} {s} {}", .{ scope.name, v.name, i }),
+                                .{ .buf = &edit.buffer, .flags = .{} },
+                            );
+
+                            if (zgui.isKeyPressed(.enter, false)) {
+                                const new_value_len = std.mem.indexOfScalar(u8, &edit.buffer, 0) orelse edit.buffer.len;
+                                const new_value = edit.buffer[0..new_value_len];
+                                request.set_variable(
+                                    connection,
+                                    thread.id,
+                                    reference,
+                                    v.name,
+                                    new_value,
+                                    has_evaluate_name,
+                                ) catch continue;
+
+                                state.variable_edit = null;
+                            }
+                        }
+                    },
+                    .text => {
+                        const label = tmp_name("##Selecable {s} {s} {}", .{ scope.name, v.name, i });
+                        if (zgui.selectable(label, .{})) {
+                            state.variable_edit = .{
+                                .index = i,
+                                .reference = reference,
+                            };
+                            const value_len = @min(state.variable_edit.?.buffer.len, v.value.len);
+                            mem.copyForwards(
+                                u8,
+                                &state.variable_edit.?.buffer,
+                                v.value[0..value_len],
+                            );
+                        }
+                        zgui.sameLine(.{});
+                        zgui.text("{s}", .{v.value});
+                    },
+                }
             }
         }
     }

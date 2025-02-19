@@ -215,6 +215,34 @@ pub fn set_breakpoints(data: SessionData, connection: *Connection, source_id: Se
     }, .none, .{ .set_breakpoints = .{ .source_id = source_id } });
 }
 
+pub fn set_variable(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference, name: []const u8, value: []const u8, has_evaluate_name: bool) !void {
+    const use_expression =
+        connection.adapter_capabilities.support.contains(.supportsSetExpression) and
+        connection.adapter_capabilities.support.contains(.supportsSetVariable) and
+        has_evaluate_name;
+
+    if (use_expression) {
+        // TODO: use set expression when implemented
+    } else {
+        try protocol_set_variable(connection, thread_id, reference, name, value);
+    }
+}
+
+fn protocol_set_variable(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference, name: []const u8, value: []const u8) !void {
+    _ = try connection.queue_request(.setVariable, protocol.SetVariableArguments{
+        .variablesReference = @intFromEnum(reference),
+        .name = name,
+        .value = value,
+        .format = null,
+    }, .none, .{
+        .set_variable = .{
+            .thread_id = thread_id,
+            .reference = reference,
+            .name = name,
+        },
+    });
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
 

@@ -468,8 +468,8 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
             try data.set_variable_value(
                 retained.thread_id,
-                retained.variable_reference,
-                retained.variable_name,
+                retained.reference,
+                retained.name,
                 parsed.value,
             );
 
