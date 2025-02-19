@@ -6,6 +6,7 @@ const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanag
 const utils = @import("utils.zig");
 const log = std.log.scoped(.handlers);
 const request = @import("request.zig");
+const ui = @import("ui.zig");
 
 pub const Callbacks = std.ArrayList(Callback);
 pub const Callback = struct {
@@ -245,6 +246,20 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
 }
 
 pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {
+    if (utils.get_value(message.value, "command", .string)) |command_string| {
+        if (command_string.len == 0) {
+            const msg = utils.get_value(message.value, "message", .string) orelse "";
+            const show_user = utils.get_value(message.value, "show_user", .bool) orelse false;
+            if (show_user) {
+                ui.notify("command.{s}\n{s}", .{ @tagName(response.command), msg }, 5000);
+            }
+
+            log.err("command.{s}, {s}", .{ @tagName(response.command), msg });
+            connection.handled_response(message, response, .failure);
+            return;
+        }
+    }
+
     switch (response.command) {
         .launch => {
             try acknowledge_only(message, connection, response.request_seq, response.command);
