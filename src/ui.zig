@@ -714,18 +714,18 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
     { // buttons
         // line 1
-        if (zgui.button("Lock All", .{})) {
+        if (zgui.button("Select All", .{})) {
             var iter = data.threads.iterator();
             while (iter.next()) |entry| {
-                entry.value_ptr.unlocked = false;
+                entry.value_ptr.selected = false;
             }
         }
 
         zgui.sameLine(.{});
-        if (zgui.button("Unlock All", .{})) {
+        if (zgui.button("Deselect All", .{})) {
             var iter = data.threads.iterator();
             while (iter.next()) |entry| {
-                entry.value_ptr.unlocked = true;
+                entry.value_ptr.selected = true;
             }
         }
 
@@ -760,17 +760,11 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
-        const style_idx: zgui.StyleCol = if (thread.unlocked) .text else .text_disabled;
+        const style_idx: zgui.StyleCol = if (thread.selected) .text else .text_disabled;
         zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(style_idx) });
         defer zgui.popStyleColor(.{ .count = 1 });
 
-        {
-            const label = if (thread.unlocked) "Lock  " else "Unlock";
-            if (zgui.button(tmp_name("{s}##{}", .{ label, thread.id }), .{})) {
-                thread.unlocked = !thread.unlocked;
-            }
-        }
-
+        _ = zgui.checkbox(tmp_name("##Selection {s} {}", .{ thread.name, thread.id }), .{ .v = &thread.selected });
         zgui.sameLine(.{});
 
         const stack_name = tmp_name("{s} #{}", .{ thread.name, thread.id });

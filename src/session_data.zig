@@ -41,7 +41,7 @@ pub const Thread = struct {
     id: ThreadID,
     name: []const u8,
     state: State,
-    unlocked: bool,
+    selected: bool,
 
     stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
     scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
@@ -440,14 +440,14 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .variables = thread.variables,
 
             // user controlled
-            .unlocked = thread.unlocked,
+            .selected = thread.selected,
         };
     } else {
         gop.value_ptr.* = .{
             .id = id,
             .name = try data.intern_string(name orelse ""),
             .state = cloned_state orelse .unknown,
-            .unlocked = !(cloned_state == null or cloned_state.? == .unknown),
+            .selected = !(cloned_state == null or cloned_state.? == .unknown),
             .stack = .empty,
             .scopes = .empty,
             .variables = .empty,

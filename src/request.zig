@@ -176,7 +176,7 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
 
     if (static.wait) return;
 
-    var iter = UnlockedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
             .threadId = @intFromEnum(thread.id),
@@ -201,7 +201,7 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
 }
 
 pub fn continue_threads(data: SessionData, connection: *Connection) void {
-    var iter = UnlockedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         switch (thread.state) {
             .continued => continue,
@@ -218,7 +218,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
 }
 
 pub fn pause(data: SessionData, connection: *Connection) void {
-    var iter = UnlockedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data);
     while (iter.next()) |thread| {
         switch (thread.state) {
             .stopped => continue,
@@ -285,16 +285,16 @@ fn protocol_set_variable(connection: *Connection, thread_id: SessionData.ThreadI
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
 
-pub const UnlockedThreadsIterator = struct {
+pub const SelectedThreadsIterator = struct {
     iter: SessionData.Threads.Iterator,
 
-    pub fn init(data: SessionData) UnlockedThreadsIterator {
+    pub fn init(data: SessionData) SelectedThreadsIterator {
         return .{ .iter = data.threads.iterator() };
     }
 
-    pub fn next(self: *UnlockedThreadsIterator) ?SessionData.Thread {
+    pub fn next(self: *SelectedThreadsIterator) ?SessionData.Thread {
         while (self.iter.next()) |entry| {
-            if (entry.value_ptr.unlocked) {
+            if (entry.value_ptr.selected) {
                 return entry.value_ptr.*;
             }
         }
