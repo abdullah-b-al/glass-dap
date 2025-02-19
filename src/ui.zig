@@ -54,7 +54,7 @@ pub var state = State{
 };
 
 pub fn continue_rendering() void {
-    state.render_frames = @max(state.render_frames, 2);
+    state.render_frames = @max(state.render_frames, 30);
 }
 
 var zgui_mouse_cursor_pos_callback: ?glfw.CursorPosFn = null;
