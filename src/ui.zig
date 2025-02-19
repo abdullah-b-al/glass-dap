@@ -572,7 +572,7 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
             if (!std.mem.eql(u8, n, scope.name)) continue;
             const reference: SessionData.VariableReference = @enumFromInt(scope.variablesReference);
             const vars = thread.variables.get(reference) orelse {
-                get_or_wait_for_variables(connection, thread, callbacks, @enumFromInt(scope.variablesReference));
+                request_or_wait_for_variables(connection, thread, callbacks, @enumFromInt(scope.variablesReference));
                 continue;
             };
 
@@ -675,7 +675,7 @@ fn variables_node(connection: *Connection, data: *SessionData, callbacks: *Callb
             std.debug.assert(variable.variablesReference > 0);
             const nested_reference: SessionData.VariableReference = @enumFromInt(variable.variablesReference);
             const nested_variables = thread.variables.get(nested_reference) orelse {
-                get_or_wait_for_variables(connection, thread, callbacks, nested_reference);
+                request_or_wait_for_variables(connection, thread, callbacks, nested_reference);
                 return;
             };
             for (nested_variables.value, 0..) |nested, i| {
@@ -2307,7 +2307,7 @@ fn breakpoint_toggle(source_id: SessionData.SourceID, line: i32, data: *SessionD
     request.set_breakpoints(data.*, connection, source_id) catch return;
 }
 
-fn get_or_wait_for_variables(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks, reference: SessionData.VariableReference) void {
+fn request_or_wait_for_variables(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks, reference: SessionData.VariableReference) void {
     if (state.waiting_for_variables) return;
 
     request.variables(connection, thread.id, reference) catch return;
