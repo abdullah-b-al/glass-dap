@@ -20,10 +20,12 @@ const assets = @import("assets");
 const plot = zgui.plot;
 const DebugAllocators = @import("main.zig").DebugAllocators;
 const time = std.time;
+const mem = std.mem;
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
 const State = struct {
+    notifications: Notifications,
     render_frames: u8 = 4,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
@@ -47,7 +49,9 @@ const State = struct {
     waiting_for_scopes_and_variables: bool = false,
 };
 
-pub var state = State{};
+pub var state = State{
+    .notifications = undefined,
+};
 
 pub fn continue_rendering() void {
     state.render_frames = @max(state.render_frames, 2);
@@ -84,9 +88,11 @@ pub fn window_size_callback(_: *glfw.Window, _: c_int, _: c_int) callconv(.C) vo
 pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
-
-    state.files = Files.init(allocator, cwd);
-    state.home_path = try Path.fromSlice(env_map.get("HOME") orelse "");
+    state = State{
+        .notifications = Notifications.init(allocator),
+        .files = Files.init(allocator, cwd),
+        .home_path = try Path.fromSlice(env_map.get("HOME") orelse ""),
+    };
 
     try glfw.init();
 
@@ -163,6 +169,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
 
 pub fn deinit_ui(window: *glfw.Window) void {
     state.files.deinit();
+    state.notifications.deinit();
 
     zgui.backend.deinit();
     plot.deinit();
@@ -273,6 +280,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
         _ = zgui.DockSpace("Main DockSpace", viewport.getSize(), .{});
     }
 
+    notifications();
     source_code(arena.allocator(), "Source Code", data, connection);
     output(arena.allocator(), "Output", data.*, connection);
     threads(arena.allocator(), "Threads", callbacks, data, connection);
@@ -285,6 +293,60 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     zgui.backend.draw();
 
     window.swapBuffers();
+}
+
+fn notifications() void {
+    {
+        var i: usize = 0;
+        while (i < state.notifications.messages.items.len) {
+            const entry = &state.notifications.messages.items[i];
+            const read: isize = @intCast(entry.timer.read() / time.ns_per_ms);
+            if (read >= entry.time_ms) {
+                const item = state.notifications.messages.orderedRemove(i);
+                state.notifications.allocator.free(item.message);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    if (state.notifications.messages.items.len == 0) {
+        return;
+    }
+
+    const static = struct {
+        var x: ?f32 = null;
+        var y: ?f32 = null;
+    };
+
+    const size = zgui.io.getDisplaySize();
+    zgui.setNextWindowPos(.{
+        .x = static.x orelse size[0],
+        .y = static.y orelse size[1],
+        .cond = .always,
+    });
+
+    defer zgui.end();
+    if (!zgui.begin("##Notifications", .{
+        .flags = .{
+            .always_auto_resize = true,
+            .no_title_bar = true,
+            .no_resize = true,
+            .no_scrollbar = true,
+            .no_collapse = true,
+        },
+    })) return;
+
+    for (state.notifications.messages.items, 0..) |entry, i| {
+        zgui.text("{s}", .{entry.message});
+        if (i + 1 != state.notifications.messages.items.len) {
+            zgui.separator();
+        }
+        continue_rendering();
+    }
+    const win_size = zgui.getWindowSize();
+    static.x = size[0] - win_size[0];
+    static.y = size[1] - win_size[1];
 }
 
 fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
@@ -2080,6 +2142,41 @@ pub const ActiveSource = struct {
         }
 
         return null;
+    }
+};
+
+pub fn notify(comptime fmt: []const u8, args: anytype, time_ms: isize) void {
+    state.notifications.notify(fmt, args, time_ms);
+}
+
+pub const Notifications = struct {
+    const Message = struct {
+        timer: time.Timer,
+        time_ms: isize,
+        message: []const u8,
+    };
+    allocator: mem.Allocator,
+    messages: std.ArrayListUnmanaged(Message) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) Notifications {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Notifications) void {
+        for (self.messages.items) |item| {
+            self.allocator.free(item.message);
+        }
+        self.messages.deinit(self.allocator);
+    }
+
+    pub fn notify(self: *Notifications, comptime fmt: []const u8, args: anytype, time_ms: isize) void {
+        const clone = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        errdefer self.allocator.free(clone);
+        self.messages.append(self.allocator, .{
+            .timer = time.Timer.start() catch unreachable,
+            .time_ms = time_ms,
+            .message = clone,
+        }) catch return;
     }
 };
 
