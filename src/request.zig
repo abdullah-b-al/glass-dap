@@ -17,6 +17,11 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
     // send configuration done
     // respond to launch or attach
 
+    switch (connection.state) {
+        .launched, .attached => return true,
+        else => {},
+    }
+
     if (get_launch_config() == null) {
         ui.state.ask_for_launch_config = true;
         return false;
@@ -186,6 +191,11 @@ pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, g
 pub fn continue_threads(data: SessionData, connection: *Connection) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
+        switch (thread.state) {
+            .continued => continue,
+            .stopped, .unknown => {},
+        }
+
         const args = protocol.ContinueArguments{
             .threadId = @intFromEnum(thread.id),
             .singleThread = true,
@@ -198,6 +208,11 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
 pub fn pause(data: SessionData, connection: *Connection) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {
+        switch (thread.state) {
+            .stopped => continue,
+            .continued, .unknown => {},
+        }
+
         _ = connection.queue_request(.pause, protocol.PauseArguments{
             .threadId = @intFromEnum(thread.id),
         }, Dependency.none, .no_data) catch return;
