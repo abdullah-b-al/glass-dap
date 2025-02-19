@@ -25,7 +25,9 @@ const mem = std.mem;
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
 
 const State = struct {
+    arena_state: std.heap.ArenaAllocator,
     notifications: Notifications,
+
     render_frames: u8 = 4,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
@@ -53,9 +55,13 @@ const State = struct {
     // handled in a widget
     scroll_to_active_line: bool = false,
     waiting_for_scopes_and_variables: bool = false,
+    pub fn arena(s: *State) std.mem.Allocator {
+        return s.arena_state.allocator();
+    }
 };
 
 pub var state = State{
+    .arena_state = undefined,
     .notifications = undefined,
 };
 
@@ -95,6 +101,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
     state = State{
+        .arena_state = std.heap.ArenaAllocator.init(allocator),
         .notifications = Notifications.init(allocator),
         .files = Files.init(allocator, cwd),
         .home_path = try Path.fromSlice(env_map.get("HOME") orelse ""),
@@ -176,6 +183,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
 pub fn deinit_ui(window: *glfw.Window) void {
     state.files.deinit();
     state.notifications.deinit();
+    state.arena_state.deinit();
 
     zgui.backend.deinit();
     plot.deinit();
@@ -184,7 +192,7 @@ pub fn deinit_ui(window: *glfw.Window) void {
     glfw.terminate();
 }
 
-pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
+pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbacks, connection: *Connection, data: *SessionData, argv: Args) void {
     if (gpas.timer.read() / time.ns_per_s >= gpas.interval_seconds) {
         inline for (meta.fields(DebugAllocators)) |field| {
             if (field.type == DebugAllocators.Allocator) {
@@ -199,7 +207,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     if (state.render_frames == 0) return;
     defer state.render_frames -= 1;
 
-    defer _ = arena.reset(.retain_capacity);
+    defer _ = state.arena_state.reset(.retain_capacity);
 
     const gl = zopengl.bindings;
     gl.clearBufferfv(gl.COLOR, 0, &[_]f32{ 0, 0, 0, 1.0 });
@@ -213,7 +221,7 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     }
 
     if (state.begin_session) {
-        state.begin_session = !(request.begin_session(arena.allocator(), connection, data) catch |err| blk: {
+        state.begin_session = !(request.begin_session(state.arena(), connection, data) catch |err| blk: {
             log_err(err, @src());
             break :blk true;
         });
@@ -287,14 +295,14 @@ pub fn ui_tick(gpas: *DebugAllocators, arena: *std.heap.ArenaAllocator, window: 
     }
 
     notifications();
-    source_code(arena.allocator(), "Source Code", data, connection);
-    output(arena.allocator(), "Output", data.*, connection);
-    threads(arena.allocator(), "Threads", callbacks, data, connection);
-    sources(arena.allocator(), "Sources", data, connection);
-    variables(arena.allocator(), "Variables", callbacks, data, connection);
-    breakpoints(arena.allocator(), "Breakpoints", data.*, connection);
+    source_code("Source Code", data, connection);
+    output("Output", data.*, connection);
+    threads("Threads", callbacks, data, connection);
+    sources("Sources", data, connection);
+    variables("Variables", callbacks, data, connection);
+    breakpoints("Breakpoints", data.*, connection);
 
-    debug_ui(gpas, arena.allocator(), callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
+    debug_ui(gpas, callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
 
     zgui.backend.draw();
 
@@ -355,13 +363,13 @@ fn notifications() void {
     static.y = size[1] - win_size[1];
 }
 
-fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
+fn source_code(name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
     const source_id, const content = state.active_source.get_source_content(data) orelse {
         // Let's try again next frame
-        state.active_source.set_source_content(arena, data, connection) catch |err| {
+        state.active_source.set_source_content(state.arena(), data, connection) catch |err| {
             log.err("{}", .{err});
         };
         return;
@@ -462,8 +470,7 @@ fn source_code(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData,
     }
 }
 
-fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
-    _ = arena;
+fn sources(name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -524,7 +531,7 @@ fn sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, con
     }
 }
 
-fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -548,7 +555,7 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
         return;
     };
 
-    var scopes_name = std.StringArrayHashMap(void).init(arena);
+    var scopes_name = std.StringArrayHashMap(void).init(state.arena());
     for (scopes.value) |scope| {
         scopes_name.put(scope.name, {}) catch return;
     }
@@ -632,9 +639,9 @@ fn variables(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks
     }
 }
 
-fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn breakpoints(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
-    _ = arena;
+
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -651,9 +658,7 @@ fn breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, 
     }
 }
 
-fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
-    _ = arena;
-
+fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -737,8 +742,7 @@ fn threads(arena: std.mem.Allocator, name: [:0]const u8, callbacks: *Callbacks, 
     }
 }
 
-fn output(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn output(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
 
     defer zgui.end();
@@ -773,8 +777,7 @@ fn output(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, conne
     }
 }
 
-fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -855,7 +858,7 @@ fn debug_threads(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
     }
 }
 
-fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection, args: Args) !void {
+fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *SessionData, connection: *Connection, args: Args) !void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -931,7 +934,7 @@ fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [
 
     if (zgui.beginTabItem("Manully Send Requests", .{})) {
         defer zgui.endTabItem();
-        try manual_requests(arena, connection, data, args);
+        try manual_requests(connection, data, args);
     }
 
     if (zgui.beginTabItem("Adapter Capabilities", .{})) {
@@ -944,7 +947,7 @@ fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [
         for (connection.debug_requests.items) |item| {
             var buf: [512]u8 = undefined;
             const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.debug_request_seq, @tagName(item.command) }) catch unreachable;
-            recursively_draw_protocol_object(arena, slice, slice, .{ .object = item.args });
+            recursively_draw_protocol_object(state.arena(), slice, slice, .{ .object = item.args });
         }
     }
 
@@ -961,7 +964,7 @@ fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [
                 const seq = resp.value.object.get("seq").?.integer;
                 var buf: [512]u8 = undefined;
                 const slice = std.fmt.bufPrint(&buf, "seq[{}]", .{seq}) catch unreachable;
-                recursively_draw_object(arena, slice, slice, resp.value);
+                recursively_draw_object(state.arena(), slice, slice, resp.value);
             }
         }
     }
@@ -984,8 +987,7 @@ fn debug_general(gpas: *const DebugAllocators, arena: std.mem.Allocator, name: [
     }
 }
 
-fn debug_modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData) void {
-    _ = arena;
+fn debug_modules(name: [:0]const u8, data: SessionData) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -1024,8 +1026,7 @@ fn debug_modules(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData
     }
 }
 
-fn debug_stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_stack_frames(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -1041,8 +1042,7 @@ fn debug_stack_frames(arena: std.mem.Allocator, name: [:0]const u8, data: Sessio
     }
 }
 
-fn debug_scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_scopes(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -1057,8 +1057,7 @@ fn debug_scopes(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData,
     }
 }
 
-fn debug_variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_variables(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -1073,8 +1072,7 @@ fn debug_variables(arena: std.mem.Allocator, name: [:0]const u8, data: SessionDa
     }
 }
 
-fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_breakpoints(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -1082,7 +1080,7 @@ fn debug_breakpoints(arena: std.mem.Allocator, name: [:0]const u8, data: Session
     draw_table_from_slice_of_struct("breakpoints", utils.MemObject(SessionData.Breakpoint), data.breakpoints.items);
 }
 
-fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionData, connection: *Connection) void {
+fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -1095,12 +1093,12 @@ fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionDat
         zgui.tableHeadersRow();
 
         for (data.sources.values(), 0..) |source, i| {
-            const button_name = std.fmt.allocPrintZ(arena, "Get Content##{}", .{i}) catch return;
+            const button_name = std.fmt.allocPrintZ(state.arena(), "Get Content##{}", .{i}) catch return;
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
             if (zgui.button(button_name, .{})) blk: {
                 if (source.value.path) |path| {
-                    const key, const new_source = io.open_file_as_source_content(arena, path) catch break :blk;
+                    const key, const new_source = io.open_file_as_source_content(state.arena(), path) catch break :blk;
                     data.set_source_content(key, new_source) catch break :blk;
                 } else {
                     _ = connection.queue_request(
@@ -1125,8 +1123,7 @@ fn debug_sources(arena: std.mem.Allocator, name: [:0]const u8, data: *SessionDat
     }
 }
 
-fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = arena;
+fn debug_sources_content(name: [:0]const u8, data: SessionData, connection: *Connection) void {
     _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
@@ -1169,20 +1166,20 @@ fn debug_sources_content(arena: std.mem.Allocator, name: [:0]const u8, data: Ses
     }
 }
 
-fn debug_ui(gpas: *const DebugAllocators, arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
+fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
     if (!state.debug_ui) return;
 
-    try debug_general(gpas, arena, "Debug General", data, connection, args);
-    debug_modules(arena, "Debug Modules", data.*);
-    debug_threads(arena, "Debug Threads", data.*, connection);
-    debug_stack_frames(arena, "Debug Stack Frames", data.*, connection);
-    debug_scopes(arena, "Debug Scopes", data.*, connection);
-    debug_variables(arena, "Debug Variables", data.*, connection);
-    debug_breakpoints(arena, "Debug Breakpoints", data.*, connection);
-    debug_sources(arena, "Debug Sources", data, connection);
-    debug_sources_content(arena, "Debug Sources Content", data.*, connection);
+    try debug_general(gpas, "Debug General", data, connection, args);
+    debug_modules("Debug Modules", data.*);
+    debug_threads("Debug Threads", data.*, connection);
+    debug_stack_frames("Debug Stack Frames", data.*, connection);
+    debug_scopes("Debug Scopes", data.*, connection);
+    debug_variables("Debug Variables", data.*, connection);
+    debug_breakpoints("Debug Breakpoints", data.*, connection);
+    debug_sources("Debug Sources", data, connection);
+    debug_sources_content("Debug Sources Content", data.*, connection);
 
     if (state.imgui_demo) zgui.showDemoWindow(&state.imgui_demo);
     if (state.plot_demo) plot.showDemoWindow(&state.plot_demo);
@@ -1248,7 +1245,7 @@ fn adapter_capabilities(connection: Connection) void {
     }
 }
 
-fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *SessionData, args: Args) !void {
+fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
     _ = args;
     const static = struct {
         var name_buf: [512:0]u8 = .{0} ** 512;
@@ -1301,7 +1298,7 @@ fn manual_requests(arena: std.mem.Allocator, connection: *Connection, data: *Ses
 
     zgui.sameLine(.{});
     if (zgui.button("Send Launch Request", .{})) {
-        request.launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .before_queueing }) catch |err| switch (err) {
+        request.launch(state.arena(), connection, .{ .dep = .{ .response = .initialize }, .handled_when = .before_queueing }) catch |err| switch (err) {
             error.NoLaunchConfig => state.ask_for_launch_config = true,
             else => log_err(err, @src()),
         };
@@ -1544,13 +1541,13 @@ const ToStringOptions = struct {
     show_union_name: bool = false,
     value_for_null: []const u8 = "null",
 };
+
+fn format(comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(state.arena(), fmt, args) catch return "OOM";
+}
+
 fn anytype_to_string(value: anytype, opts: ToStringOptions) []const u8 {
-    const static = struct {
-        var buffer: [10_000]u8 = undefined;
-        var fixed = std.heap.FixedBufferAllocator.init(&buffer);
-    };
-    static.fixed.reset();
-    return anytype_to_string_recurse(static.fixed.allocator(), value, opts);
+    return anytype_to_string_recurse(state.arena(), value, opts);
 }
 
 fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts: ToStringOptions) []const u8 {
@@ -1659,11 +1656,7 @@ fn color_u32(tag: zgui.StyleCol) u32 {
 }
 
 fn tmp_name(comptime fmt: []const u8, args: anytype) [:0]const u8 {
-    const static = struct {
-        var buf: [1024]u8 = undefined;
-    };
-
-    return std.fmt.bufPrintZ(&static.buf, fmt, args) catch @panic("oh no!");
+    return std.fmt.allocPrintZ(state.arena(), fmt, args) catch "";
 }
 
 fn tmp_shorten_path(path: []const u8) []const u8 {

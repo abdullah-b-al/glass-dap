@@ -127,8 +127,6 @@ pub fn main() !void {
 fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     gpas.timer.reset();
 
-    var ui_arena = std.heap.ArenaAllocator.init(gpas.ui.allocator());
-    defer ui_arena.deinit();
     while (!window.shouldClose()) {
         while (true) {
             const ok = connection.queue_messages(1) catch |err| switch (err) {
@@ -151,7 +149,7 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callb
         if (handled_message) {
             ui.continue_rendering();
         }
-        ui.ui_tick(gpas, &ui_arena, window, callbacks, connection, data, args);
+        ui.ui_tick(gpas, window, callbacks, connection, data, args);
     }
 }
 
