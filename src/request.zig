@@ -144,6 +144,18 @@ pub fn scopes(connection: *Connection, thread_id: SessionData.ThreadID, frame_id
     );
 }
 
+pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference) !void {
+    _ = try connection.queue_request(
+        .variables,
+        protocol.VariablesArguments{ .variablesReference = @intFromEnum(reference) },
+        .none,
+        .{ .variables = .{
+            .thread_id = thread_id,
+            .variables_reference = reference,
+        } },
+    );
+}
+
 pub fn next(callbacks: *Callbacks, data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
     var iter = UnlockedThreadsIterator.init(data);
     while (iter.next()) |thread| {

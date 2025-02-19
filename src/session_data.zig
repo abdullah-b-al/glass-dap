@@ -546,7 +546,7 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
             return lhs.variablesReference < rhs.variablesReference;
         }
     };
-    // this will sort the variables from simple to complex (structs, unions, etc)
+    // This will sort the variables from non-structured to structured.
     mem.sort(protocol.Variable, cloned.value, {}, ctx.less_than);
     gop.value_ptr.* = cloned;
 }

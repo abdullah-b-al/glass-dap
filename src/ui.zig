@@ -54,7 +54,9 @@ const State = struct {
 
     // handled in a widget
     scroll_to_active_line: bool = false,
-    waiting_for_scopes_and_variables: bool = false,
+    waiting_for_scopes: bool = false,
+    waiting_for_variables: bool = false,
+
     pub fn arena(s: *State) std.mem.Allocator {
         return s.arena_state.allocator();
     }
@@ -540,18 +542,18 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
 
     const frame = state.active_source.get_frame(data) orelse return;
     const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse {
-        if (state.waiting_for_scopes_and_variables) return;
+        if (state.waiting_for_scopes) return;
 
-        request.scopes(connection, thread.id, @enumFromInt(frame.id), true) catch return;
+        request.scopes(connection, thread.id, @enumFromInt(frame.id), false) catch return;
 
         const static = struct {
             fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
-                state.waiting_for_scopes_and_variables = false;
+                state.waiting_for_scopes = false;
             }
         };
 
-        handlers.callback(callbacks, .success, .{ .response = .variables }, null, static.func) catch return;
-        state.waiting_for_scopes_and_variables = true;
+        handlers.callback(callbacks, .success, .{ .response = .scopes }, null, static.func) catch return;
+        state.waiting_for_scopes = true;
         return;
     };
 
@@ -566,76 +568,124 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
         if (!zgui.beginTabItem(tmp_name("{s}", .{n}), .{})) continue;
         defer zgui.endTabItem();
 
-        if (!zgui.beginTable(tmp_name("Variables: {s}", .{n}), .{
-            .column = 2,
-            .flags = .{
-                .resizable = true,
-                .borders = .{ .inner_h = true, .outer_h = true, .inner_v = true, .outer_v = true },
-            },
-        })) continue;
-        defer zgui.endTable();
-
         for (scopes.value) |scope| {
             if (!std.mem.eql(u8, n, scope.name)) continue;
             const reference: SessionData.VariableReference = @enumFromInt(scope.variablesReference);
-            const vars = thread.variables.get(reference) orelse continue;
+            const vars = thread.variables.get(reference) orelse {
+                get_or_wait_for_variables(connection, thread, callbacks, @enumFromInt(scope.variablesReference));
+                continue;
+            };
+
             for (vars.value, 0..) |v, i| {
-                const has_evaluate_name = v.evaluateName != null;
-                zgui.tableNextRow(.{});
-                _ = zgui.tableSetColumnIndex(0);
-                zgui.text("{s}", .{v.name});
-                _ = zgui.tableSetColumnIndex(1);
-
-                const widget: enum { input_text, text } = if (state.variable_edit != null) .input_text else .text;
-
-                widget: switch (widget) {
-                    .input_text => {
-                        var edit = &state.variable_edit.?;
-                        if (edit.index != i or edit.reference != reference) {
-                            continue :widget .text;
-                        } else {
-                            zgui.setNextItemWidth(zgui.getContentRegionMax()[0]);
-                            _ = zgui.inputText(
-                                tmp_name("##InputText {s} {s} {}", .{ scope.name, v.name, i }),
-                                .{ .buf = &edit.buffer, .flags = .{} },
-                            );
-
-                            if (zgui.isKeyPressed(.enter, false)) {
-                                const new_value_len = std.mem.indexOfScalar(u8, &edit.buffer, 0) orelse edit.buffer.len;
-                                const new_value = edit.buffer[0..new_value_len];
-                                request.set_variable(
-                                    connection,
-                                    thread.id,
-                                    reference,
-                                    v.name,
-                                    new_value,
-                                    has_evaluate_name,
-                                ) catch continue;
-
-                                state.variable_edit = null;
-                            }
-                        }
-                    },
-                    .text => {
-                        const label = tmp_name("##Selecable {s} {s} {}", .{ scope.name, v.name, i });
-                        if (zgui.selectable(label, .{})) {
-                            state.variable_edit = .{
-                                .index = i,
-                                .reference = reference,
-                            };
-                            const value_len = @min(state.variable_edit.?.buffer.len, v.value.len);
-                            mem.copyForwards(
-                                u8,
-                                &state.variable_edit.?.buffer,
-                                v.value[0..value_len],
-                            );
-                        }
-                        zgui.sameLine(.{});
-                        zgui.text("{s}", .{v.value});
-                    },
-                }
+                variables_node(connection, data, callbacks, thread, v, reference, i);
             }
         }
+    }
+}
+
+fn variables_node(connection: *Connection, data: *SessionData, callbacks: *Callbacks, thread: *const SessionData.Thread, variable: protocol.Variable, reference: SessionData.VariableReference, index: usize) void {
+    const has_evaluate_name = variable.evaluateName != null;
+
+    const static = struct {
+        pub fn variable_type(v: protocol.Variable) void {
+            const style = zgui.getStyle();
+            if (v.type) |t| {
+                zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(.text_disabled) });
+                defer zgui.popStyleColor(.{ .count = 1 });
+                zgui.text(": {s}", .{t});
+            }
+        }
+    };
+
+    const widget: enum { input_text, value, node } =
+        if (state.variable_edit != null)
+        .input_text
+    else if (variable.variablesReference > 0)
+        .node
+    else
+        .value;
+
+    widget: switch (widget) {
+        .input_text => {
+            var edit = &state.variable_edit.?;
+            if (edit.index != index or edit.reference != reference) {
+                continue :widget .value;
+            } else {
+                zgui.text("{s}", .{variable.name});
+                zgui.sameLine(.{ .spacing = 0 });
+                static.variable_type(variable);
+
+                zgui.sameLine(.{});
+                zgui.setNextItemWidth(zgui.getContentRegionMax()[0]);
+                _ = zgui.inputText(
+                    tmp_name("##InputText {} {s} {}", .{ reference, variable.name, index }),
+                    .{ .buf = &edit.buffer, .flags = .{} },
+                );
+
+                if (zgui.isKeyPressed(.enter, false)) {
+                    const new_value_len = std.mem.indexOfScalar(u8, &edit.buffer, 0) orelse edit.buffer.len;
+                    const new_value = edit.buffer[0..new_value_len];
+                    request.set_variable(
+                        connection,
+                        thread.id,
+                        reference,
+                        variable.name,
+                        new_value,
+                        has_evaluate_name,
+                    ) catch return;
+
+                    state.variable_edit = null;
+                }
+            }
+        },
+        .value => {
+            if (variable.variablesReference > 0) {
+                continue :widget .node;
+            }
+
+            const label = tmp_name("##Selecable {} {s} {}", .{ reference, variable.name, index });
+            if (zgui.selectable(label, .{})) {
+                state.variable_edit = .{
+                    .index = index,
+                    .reference = reference,
+                };
+                const value_len = @min(state.variable_edit.?.buffer.len, variable.value.len);
+                mem.copyForwards(
+                    u8,
+                    &state.variable_edit.?.buffer,
+                    variable.value[0..value_len],
+                );
+            }
+
+            zgui.sameLine(.{});
+            zgui.text("{s}", .{variable.name});
+            zgui.sameLine(.{ .spacing = 0 });
+            static.variable_type(variable);
+            zgui.sameLine(.{});
+            zgui.text("{s}", .{variable.value});
+        },
+        .node => {
+            const node_opened = zgui.treeNode(tmp_name("{s}##Node {} {}", .{ variable.name, reference, index }));
+            zgui.sameLine(.{ .spacing = 0 });
+            static.variable_type(variable);
+
+            if (!node_opened) return;
+            defer zgui.treePop();
+
+            std.debug.assert(variable.variablesReference > 0);
+            const nested_reference: SessionData.VariableReference = @enumFromInt(variable.variablesReference);
+            const nested_variables = thread.variables.get(nested_reference) orelse {
+                get_or_wait_for_variables(connection, thread, callbacks, nested_reference);
+                return;
+            };
+            for (nested_variables.value, 0..) |nested, i| {
+                if (nested.variablesReference > 0) {
+                    zgui.indent(.{ .indent_w = 1 });
+                    defer zgui.unindent(.{ .indent_w = 1 });
+                }
+                variables_node(connection, data, callbacks, thread, nested, nested_reference, i);
+            }
+        },
     }
 }
 
@@ -2255,4 +2305,19 @@ fn breakpoint_toggle(source_id: SessionData.SourceID, line: i32, data: *SessionD
     }
 
     request.set_breakpoints(data.*, connection, source_id) catch return;
+}
+
+fn get_or_wait_for_variables(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks, reference: SessionData.VariableReference) void {
+    if (state.waiting_for_variables) return;
+
+    request.variables(connection, thread.id, reference) catch return;
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            state.waiting_for_variables = false;
+        }
+    };
+
+    handlers.callback(callbacks, .success, .{ .response = .variables }, null, static.func) catch return;
+    state.waiting_for_variables = true;
 }
