@@ -267,13 +267,19 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handle_response_launch(message, response);
         },
 
+        .terminateThreads,
+        .goto,
+        .restartFrame,
+        .reverseContinue,
+        .stepBack,
+        .stepOut,
+        .stepIn,
+        .restart,
+        .cancel,
         .configurationDone,
         .pause,
         => try acknowledge_and_handled(message, connection, response),
 
-        .stepOut, .stepIn => {
-            try acknowledge_and_handled(message, connection, response);
-        },
         .next => {
             try acknowledge_and_handled(message, connection, response);
             const retained = response.request_data.next;
@@ -479,22 +485,15 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handled_response(message, response, .success);
         },
 
-        .cancel => log.err("TODO: {s}", .{@tagName(response.command)}),
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
         .attach => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .restart => log.err("TODO: {s}", .{@tagName(response.command)}),
         .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
         .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .stepBack => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .reverseContinue => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .restartFrame => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .goto => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .terminateThreads => log.err("TODO: {s}", .{@tagName(response.command)}),
         .modules => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
         .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
