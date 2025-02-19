@@ -120,7 +120,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     glfw.windowHint(.client_api, .opengl_api);
     glfw.windowHint(.doublebuffer, true);
 
-    const window = try glfw.Window.create(1000, 1000, "Thabit", null);
+    const window = try glfw.Window.create(1000, 1000, "glass-dap", null);
     window.setSizeLimits(400, 400, -1, -1);
 
     glfw.makeContextCurrent(window);
@@ -1331,7 +1331,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     zgui.sameLine(.{});
     if (zgui.button("Initialize Adapter", .{})) {
         const init_args = protocol.InitializeRequestArguments{
-            .clientName = "thabit",
+            .clientName = "glass-dap",
             .adapterID = "???",
             .columnsStartAt1 = false,
             .linesStartAt1 = false,

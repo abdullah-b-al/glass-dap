@@ -34,7 +34,7 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
     };
 
     const init_args = protocol.InitializeRequestArguments{
-        .clientName = "thabit",
+        .clientName = "glass-dap",
         .adapterID = "???",
         .columnsStartAt1 = false,
         .linesStartAt1 = false,
