@@ -136,6 +136,19 @@ pub fn get_thread_state(connection: *Connection, thread_id: SessionData.ThreadID
     );
 }
 
+pub fn stack_trace(connection: *Connection, thread_id: SessionData.ThreadID) !void {
+    _ = try connection.queue_request(
+        .stackTrace,
+        protocol.StackTraceArguments{ .threadId = @intFromEnum(thread_id) },
+        .none,
+        .{ .stack_trace = .{
+            .thread_id = thread_id,
+            .request_scopes = false,
+            .request_variables = false,
+        } },
+    );
+}
+
 pub fn scopes(connection: *Connection, thread_id: SessionData.ThreadID, frame_id: SessionData.FrameID, request_variables: bool) !void {
     _ = try connection.queue_request(
         .scopes,
@@ -234,12 +247,7 @@ pub fn next(data: SessionData, connection: *Connection, granularity: protocol.St
             .granularity = granularity,
         };
 
-        _ = connection.queue_request(.next, arg, .none, .{ .next = .{
-            .thread_id = thread.id,
-            .request_stack_trace = false,
-            .request_scopes = false,
-            .request_variables = false,
-        } }) catch return;
+        _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
     }
 }
 

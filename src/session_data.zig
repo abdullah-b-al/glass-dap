@@ -43,6 +43,7 @@ pub const Thread = struct {
     state: State,
     selected: bool,
 
+    requested_stack: bool,
     stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
     scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
     variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
@@ -67,6 +68,18 @@ pub const Thread = struct {
             mo.deinit();
         }
         thread.stack.clearRetainingCapacity();
+        thread.* = .{
+            .requested_stack = false,
+
+            // keep
+            .id = thread.id,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .scopes = thread.scopes,
+            .variables = thread.variables,
+            .selected = thread.selected,
+        };
     }
 
     pub fn clear_scopes(thread: *Thread) void {
@@ -74,6 +87,17 @@ pub const Thread = struct {
             mo.deinit();
         }
         thread.scopes.clearRetainingCapacity();
+        // make sure we aren't forgetting to set a new field
+        thread.* = .{
+            .scopes = thread.scopes,
+            .id = thread.id,
+            .requested_stack = thread.requested_stack,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .variables = thread.variables,
+            .selected = thread.selected,
+        };
     }
 
     pub fn clear_variables(thread: *Thread) void {
@@ -81,6 +105,17 @@ pub const Thread = struct {
             mo.deinit();
         }
         thread.variables.clearRetainingCapacity();
+        // make sure we aren't forgetting to set a new field
+        thread.* = .{
+            .variables = thread.variables,
+            .scopes = thread.scopes,
+            .id = thread.id,
+            .requested_stack = thread.requested_stack,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .selected = thread.selected,
+        };
     }
 };
 
@@ -435,6 +470,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .id = id,
             .name = if (name) |n| try data.intern_string(n) else thread.name,
             .state = thread.state,
+            .requested_stack = thread.requested_stack,
             .stack = thread.stack,
             .scopes = thread.scopes,
             .variables = thread.variables,
@@ -448,6 +484,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .name = try data.intern_string(name orelse ""),
             .state = cloned_state orelse .unknown,
             .selected = !(cloned_state == null or cloned_state.? == .unknown),
+            .requested_stack = false,
             .stack = .empty,
             .scopes = .empty,
             .variables = .empty,
@@ -474,6 +511,8 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
             try data.set_source(source);
         }
     }
+
+    thread.requested_stack = true;
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {

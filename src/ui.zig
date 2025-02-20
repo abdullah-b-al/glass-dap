@@ -56,6 +56,7 @@ const State = struct {
     scroll_to_active_line: bool = false,
     waiting_for_scopes: bool = false,
     waiting_for_variables: bool = false,
+    waiting_for_stack_trace: bool = false,
 
     pub fn arena(s: *State) std.mem.Allocator {
         return s.arena_state.allocator();
@@ -795,6 +796,13 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
         const stack_name = tmp_name("{s} #{}", .{ thread.name, thread.id });
         if (zgui.treeNode(stack_name)) {
+            defer zgui.treePop();
+
+            if (!thread.requested_stack) {
+                request_or_wait_for_stack_trace(connection, thread, callbacks);
+                continue;
+            }
+
             zgui.indent(.{ .indent_w = 1 });
 
             for (thread.stack.items) |frame| {
@@ -807,7 +815,6 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
             }
 
             zgui.unindent(.{ .indent_w = 1 });
-            zgui.treePop();
         }
     }
 }
@@ -2335,6 +2342,11 @@ fn breakpoint_toggle(source_id: SessionData.SourceID, line: i32, data: *SessionD
     request.set_breakpoints(data.*, connection, source_id) catch return;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// These functions prevent duplicate requests.
+// TODO: Detect if a request is not a duplicate and send it.
+// As right now they block all requests of the same type
+
 fn request_or_wait_for_variables(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks, reference: SessionData.VariableReference) void {
     if (state.waiting_for_variables) return;
 
@@ -2346,6 +2358,21 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
         }
     };
 
-    handlers.callback(callbacks, .success, .{ .response = .variables }, null, static.func) catch return;
+    handlers.callback(callbacks, .always, .{ .response = .variables }, null, static.func) catch return;
     state.waiting_for_variables = true;
+}
+
+fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks) void {
+    if (state.waiting_for_stack_trace) return;
+
+    request.stack_trace(connection, thread.id) catch return;
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            state.waiting_for_stack_trace = false;
+        }
+    };
+
+    handlers.callback(callbacks, .always, .{ .response = .stackTrace }, null, static.func) catch return;
+    state.waiting_for_stack_trace = true;
 }

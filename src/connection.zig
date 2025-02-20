@@ -131,12 +131,6 @@ pub const RetainedRequestData = union(enum) {
         path: ?[]const u8,
         source_reference: i32,
     },
-    next: struct {
-        thread_id: SessionData.ThreadID,
-        request_stack_trace: bool,
-        request_scopes: bool,
-        request_variables: bool,
-    },
     set_breakpoints: struct {
         source_id: SessionData.SourceID,
     },

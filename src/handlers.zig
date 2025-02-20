@@ -278,24 +278,8 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .cancel,
         .configurationDone,
         .pause,
+        .next,
         => try acknowledge_and_handled(message, connection, response),
-
-        .next => {
-            try acknowledge_and_handled(message, connection, response);
-            const retained = response.request_data.next;
-            if (retained.request_stack_trace) {
-                _ = try connection.queue_request(
-                    .stackTrace,
-                    protocol.StackTraceArguments{ .threadId = @intFromEnum(retained.thread_id) },
-                    .none,
-                    .{ .stack_trace = .{
-                        .thread_id = retained.thread_id,
-                        .request_scopes = retained.request_scopes,
-                        .request_variables = retained.request_variables,
-                    } },
-                );
-            }
-        },
 
         .initialize => try connection.handle_response_init(message, response),
         .disconnect => try connection.handle_response_disconnect(message, response),
@@ -305,18 +289,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
 
             try data.set_threads(parsed.value.body.threads);
-            for (parsed.value.body.threads) |thread| {
-                _ = try connection.queue_request(
-                    .stackTrace,
-                    protocol.StackTraceArguments{ .threadId = thread.id },
-                    .none,
-                    .{ .stack_trace = .{
-                        .thread_id = @enumFromInt(thread.id),
-                        .request_scopes = false,
-                        .request_variables = false,
-                    } },
-                );
-            }
 
             connection.handled_response(message, response, .success);
         },
