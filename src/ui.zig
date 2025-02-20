@@ -2369,6 +2369,7 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
 
 fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks) void {
     if (state.waiting_for_stack_trace) return;
+    if (thread.state != .stopped) return;
 
     request.stack_trace(connection, thread.id) catch return;
 
