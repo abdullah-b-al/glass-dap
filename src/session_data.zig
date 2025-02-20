@@ -9,197 +9,6 @@ const MemObject = utils.MemObject;
 
 pub const SessionData = @This();
 
-const DebuggeeStatus = union(enum) {
-    not_running,
-    running,
-    stopped,
-    terminated,
-    adapter_died,
-};
-
-pub const ID = i32;
-pub const ThreadID = enum(ID) { _ };
-pub const FrameID = enum(ID) { _ };
-pub const ScopeID = enum(ID) { _ };
-pub const VariableReference = enum(ID) { _ };
-
-pub const Threads = std.AutoArrayHashMapUnmanaged(ThreadID, Thread);
-pub const Thread = struct {
-    const State = union(enum) {
-        stopped: ?MemObject(Stopped),
-        continued,
-        unknown,
-
-        pub fn deinit(self: *@This()) void {
-            switch (self.*) {
-                .stopped => |stopped| if (stopped) |_| self.stopped.?.deinit(),
-                else => {},
-            }
-        }
-    };
-
-    id: ThreadID,
-    name: []const u8,
-    state: State,
-    selected: bool,
-
-    requested_stack: bool,
-    stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
-    scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
-    variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
-
-    pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
-        thread.clear_all();
-
-        thread.stack.deinit(allocator);
-        thread.scopes.deinit(allocator);
-        thread.variables.deinit(allocator);
-        thread.state.deinit();
-    }
-
-    pub fn clear_all(thread: *Thread) void {
-        thread.clear_variables();
-        thread.clear_scopes();
-        thread.clear_stack();
-    }
-
-    pub fn clear_stack(thread: *Thread) void {
-        for (thread.stack.items) |*mo| {
-            mo.deinit();
-        }
-        thread.stack.clearRetainingCapacity();
-        thread.* = .{
-            .requested_stack = false,
-
-            // keep
-            .id = thread.id,
-            .name = thread.name,
-            .state = thread.state,
-            .stack = thread.stack,
-            .scopes = thread.scopes,
-            .variables = thread.variables,
-            .selected = thread.selected,
-        };
-    }
-
-    pub fn clear_scopes(thread: *Thread) void {
-        for (thread.scopes.values()) |*mo| {
-            mo.deinit();
-        }
-        thread.scopes.clearRetainingCapacity();
-        // make sure we aren't forgetting to set a new field
-        thread.* = .{
-            .scopes = thread.scopes,
-            .id = thread.id,
-            .requested_stack = thread.requested_stack,
-            .name = thread.name,
-            .state = thread.state,
-            .stack = thread.stack,
-            .variables = thread.variables,
-            .selected = thread.selected,
-        };
-    }
-
-    pub fn clear_variables(thread: *Thread) void {
-        for (thread.variables.values()) |*mo| {
-            mo.deinit();
-        }
-        thread.variables.clearRetainingCapacity();
-        // make sure we aren't forgetting to set a new field
-        thread.* = .{
-            .variables = thread.variables,
-            .scopes = thread.scopes,
-            .id = thread.id,
-            .requested_stack = thread.requested_stack,
-            .name = thread.name,
-            .state = thread.state,
-            .stack = thread.stack,
-            .selected = thread.selected,
-        };
-    }
-};
-
-pub const SourceID = union(enum) {
-    path: []const u8,
-    reference: i32,
-
-    pub fn eql(a: SourceID, b: SourceID) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-        return switch (a) {
-            .path => mem.eql(u8, a.path, b.path),
-            .reference => a.reference == b.reference,
-        };
-    }
-
-    pub fn from_source(source: protocol.Source) ?SourceID {
-        return if (source.sourceReference) |ref|
-            .{ .reference = ref }
-        else if (source.path) |path|
-            .{ .path = path }
-        else
-            null;
-    }
-};
-
-pub const SourceIDHash = union(enum) {
-    pub fn hash(_: @This(), key: SourceID) u32 {
-        var hasher = std.hash.Wyhash.init(0);
-        switch (key) {
-            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
-            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
-        }
-
-        return @as(u32, @truncate(hasher.final()));
-    }
-
-    pub fn eql(_: @This(), a: SourceID, b: SourceID, _: usize) bool {
-        return a.eql(b);
-    }
-};
-
-pub const ModuleID = utils.get_field_type(protocol.Module, "id");
-pub const ModuleHash = union(enum) {
-    pub fn hash(_: @This(), key: ModuleID) u32 {
-        var hasher = std.hash.Wyhash.init(0);
-        switch (key) {
-            .integer => |integer| std.hash.autoHashStrat(&hasher, integer, .Shallow),
-            .string => |string| std.hash.autoHashStrat(&hasher, string, .Shallow),
-        }
-
-        return @as(u32, @truncate(hasher.final()));
-    }
-
-    pub fn eql(_: @This(), a: ModuleID, b: ModuleID, _: usize) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-        return switch (a) {
-            .integer => a.integer == b.integer,
-            .string => mem.eql(u8, a.string, b.string),
-        };
-    }
-};
-
-pub const SourceContent = struct {
-    content: []const u8,
-    mime_type: ?[]const u8,
-};
-
-pub const BreakpointOrigin = union(enum) {
-    event,
-    source: SourceID,
-    function,
-};
-
-pub const Breakpoint = struct {
-    origin: BreakpointOrigin,
-    breakpoint: protocol.Breakpoint,
-};
-
-pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.SourceBreakpoint);
-
-pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
-pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
-pub const Output = utils.get_field_type(protocol.OutputEvent, "body");
-
 allocator: mem.Allocator,
 
 /// This arena is used to store protocol.Object, protocol.Array and slices that are not a string.
@@ -764,3 +573,194 @@ fn intern_source_id(data: *SessionData, source_id: SourceID) !SourceID {
         .reference => |ref| .{ .reference = ref },
     };
 }
+
+const DebuggeeStatus = union(enum) {
+    not_running,
+    running,
+    stopped,
+    terminated,
+    adapter_died,
+};
+
+pub const ID = i32;
+pub const ThreadID = enum(ID) { _ };
+pub const FrameID = enum(ID) { _ };
+pub const ScopeID = enum(ID) { _ };
+pub const VariableReference = enum(ID) { _ };
+
+pub const Threads = std.AutoArrayHashMapUnmanaged(ThreadID, Thread);
+pub const Thread = struct {
+    const State = union(enum) {
+        stopped: ?MemObject(Stopped),
+        continued,
+        unknown,
+
+        pub fn deinit(self: *@This()) void {
+            switch (self.*) {
+                .stopped => |stopped| if (stopped) |_| self.stopped.?.deinit(),
+                else => {},
+            }
+        }
+    };
+
+    id: ThreadID,
+    name: []const u8,
+    state: State,
+    selected: bool,
+
+    requested_stack: bool,
+    stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
+    scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
+    variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
+
+    pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
+        thread.clear_all();
+
+        thread.stack.deinit(allocator);
+        thread.scopes.deinit(allocator);
+        thread.variables.deinit(allocator);
+        thread.state.deinit();
+    }
+
+    pub fn clear_all(thread: *Thread) void {
+        thread.clear_variables();
+        thread.clear_scopes();
+        thread.clear_stack();
+    }
+
+    pub fn clear_stack(thread: *Thread) void {
+        for (thread.stack.items) |*mo| {
+            mo.deinit();
+        }
+        thread.stack.clearRetainingCapacity();
+        thread.* = .{
+            .requested_stack = false,
+
+            // keep
+            .id = thread.id,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .scopes = thread.scopes,
+            .variables = thread.variables,
+            .selected = thread.selected,
+        };
+    }
+
+    pub fn clear_scopes(thread: *Thread) void {
+        for (thread.scopes.values()) |*mo| {
+            mo.deinit();
+        }
+        thread.scopes.clearRetainingCapacity();
+        // make sure we aren't forgetting to set a new field
+        thread.* = .{
+            .scopes = thread.scopes,
+            .id = thread.id,
+            .requested_stack = thread.requested_stack,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .variables = thread.variables,
+            .selected = thread.selected,
+        };
+    }
+
+    pub fn clear_variables(thread: *Thread) void {
+        for (thread.variables.values()) |*mo| {
+            mo.deinit();
+        }
+        thread.variables.clearRetainingCapacity();
+        // make sure we aren't forgetting to set a new field
+        thread.* = .{
+            .variables = thread.variables,
+            .scopes = thread.scopes,
+            .id = thread.id,
+            .requested_stack = thread.requested_stack,
+            .name = thread.name,
+            .state = thread.state,
+            .stack = thread.stack,
+            .selected = thread.selected,
+        };
+    }
+};
+
+pub const SourceID = union(enum) {
+    path: []const u8,
+    reference: i32,
+
+    pub fn eql(a: SourceID, b: SourceID) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .path => mem.eql(u8, a.path, b.path),
+            .reference => a.reference == b.reference,
+        };
+    }
+
+    pub fn from_source(source: protocol.Source) ?SourceID {
+        return if (source.sourceReference) |ref|
+            .{ .reference = ref }
+        else if (source.path) |path|
+            .{ .path = path }
+        else
+            null;
+    }
+};
+
+pub const SourceIDHash = union(enum) {
+    pub fn hash(_: @This(), key: SourceID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
+            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
+        }
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: SourceID, b: SourceID, _: usize) bool {
+        return a.eql(b);
+    }
+};
+
+pub const ModuleID = utils.get_field_type(protocol.Module, "id");
+pub const ModuleHash = union(enum) {
+    pub fn hash(_: @This(), key: ModuleID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .integer => |integer| std.hash.autoHashStrat(&hasher, integer, .Shallow),
+            .string => |string| std.hash.autoHashStrat(&hasher, string, .Shallow),
+        }
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: ModuleID, b: ModuleID, _: usize) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .integer => a.integer == b.integer,
+            .string => mem.eql(u8, a.string, b.string),
+        };
+    }
+};
+
+pub const SourceContent = struct {
+    content: []const u8,
+    mime_type: ?[]const u8,
+};
+
+pub const BreakpointOrigin = union(enum) {
+    event,
+    source: SourceID,
+    function,
+};
+
+pub const Breakpoint = struct {
+    origin: BreakpointOrigin,
+    breakpoint: protocol.Breakpoint,
+};
+
+pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.SourceBreakpoint);
+
+pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
+pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
+pub const Output = utils.get_field_type(protocol.OutputEvent, "body");

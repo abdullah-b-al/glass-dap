@@ -8,254 +8,6 @@ const log = std.log.scoped(.connection);
 
 const Connection = @This();
 
-const ClientCapabilitiesKind = enum {
-    supportsVariableType,
-    supportsVariablePaging,
-    supportsRunInTerminalRequest,
-    supportsMemoryReferences,
-    supportsProgressReporting,
-    supportsInvalidatedEvent,
-    supportsMemoryEvent,
-    supportsArgsCanBeInterpretedByShell,
-    supportsStartDebuggingRequest,
-    supportsANSIStyling,
-};
-
-const ClientCapabilitiesSet = std.EnumSet(ClientCapabilitiesKind);
-
-pub const AdapterCapabilitiesKind = enum {
-    supportsConfigurationDoneRequest,
-    supportsFunctionBreakpoints,
-    supportsConditionalBreakpoints,
-    supportsHitConditionalBreakpoints,
-    supportsEvaluateForHovers,
-    supportsStepBack,
-    supportsSetVariable,
-    supportsRestartFrame,
-    supportsGotoTargetsRequest,
-    supportsStepInTargetsRequest,
-    supportsCompletionsRequest,
-    supportsModulesRequest,
-    supportsRestartRequest,
-    supportsExceptionOptions,
-    supportsValueFormattingOptions,
-    supportsExceptionInfoRequest,
-    supportTerminateDebuggee,
-    supportSuspendDebuggee,
-    supportsDelayedStackTraceLoading,
-    supportsLoadedSourcesRequest,
-    supportsLogPoints,
-    supportsTerminateThreadsRequest,
-    supportsSetExpression,
-    supportsTerminateRequest,
-    supportsDataBreakpoints,
-    supportsReadMemoryRequest,
-    supportsWriteMemoryRequest,
-    supportsDisassembleRequest,
-    supportsCancelRequest,
-    supportsBreakpointLocationsRequest,
-    supportsClipboardContext,
-    supportsSteppingGranularity,
-    supportsInstructionBreakpoints,
-    supportsExceptionFilterOptions,
-    supportsSingleThreadExecutionRequests,
-    supportsANSIStyling,
-};
-const AdapterCapabilitiesSet = std.EnumSet(AdapterCapabilitiesKind);
-
-const AdapterCapabilities = struct {
-    support: AdapterCapabilitiesSet = .{},
-    completionTriggerCharacters: ?[][]const u8 = null,
-    exceptionBreakpointFilters: ?[]protocol.ExceptionBreakpointsFilter = null,
-    additionalModuleColumns: ?[]protocol.ColumnDescriptor = null,
-    supportedChecksumAlgorithms: ?[]protocol.ChecksumAlgorithm = null,
-    breakpointModes: ?[]protocol.BreakpointMode = null,
-};
-
-pub const RawMessage = std.json.Parsed(std.json.Value);
-
-const State = enum {
-    /// Adapter and debuggee are running
-    launched,
-    /// Adapter and debuggee are running
-    attached,
-    /// Adapter is running and the initialized event has been handled
-    initialized,
-    /// Adapter is running and the initialize request has been responded to
-    partially_initialized,
-    /// Adapter is running and the initialize request has been sent
-    initializing,
-    /// Adapter is running
-    spawned,
-    /// Adapter is not running
-    not_spawned,
-    /// RIP
-    died,
-
-    pub fn fully_initialized(state: State) bool {
-        return switch (state) {
-            .initialized, .launched, .attached => true,
-
-            .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
-        };
-    }
-};
-
-pub const Dependency = struct {
-    pub const When = enum { any, after_queueing, before_queueing };
-    pub const none = Dependency{ .dep = .none, .handled_when = .any };
-    handled_when: When,
-    dep: union(enum) {
-        response: Command,
-        event: Event,
-        none,
-    },
-};
-
-pub const RetainedRequestData = union(enum) {
-    stack_trace: struct {
-        thread_id: SessionData.ThreadID,
-        request_scopes: bool,
-        request_variables: bool,
-    },
-    scopes: struct {
-        thread_id: SessionData.ThreadID,
-        frame_id: SessionData.FrameID,
-        request_variables: bool,
-    },
-    variables: struct {
-        thread_id: SessionData.ThreadID,
-        variables_reference: SessionData.VariableReference,
-    },
-    source: struct {
-        path: ?[]const u8,
-        source_reference: i32,
-    },
-    set_breakpoints: struct {
-        source_id: SessionData.SourceID,
-    },
-    set_variable: struct {
-        thread_id: SessionData.ThreadID,
-        reference: SessionData.VariableReference,
-        name: []const u8,
-    },
-    no_data,
-};
-
-pub const Response = struct {
-    command: Command,
-    request_seq: i32,
-    request_data: RetainedRequestData,
-};
-
-pub const ResponseStatus = enum { success, failure };
-pub const HandledResponse = struct {
-    response: Response,
-    status: ResponseStatus,
-    timestamp: i128,
-};
-
-pub const Request = struct {
-    debug_request_seq: ?i32 = null,
-    arena: std.heap.ArenaAllocator,
-    args: protocol.Object,
-    command: Command,
-    /// Kept for expected_responses. Do not free when freeing the request
-    request_data: RetainedRequestData,
-    /// Send request when dependency is satisfied
-    depends_on: Dependency,
-    queued_timestamp: i128,
-
-    pub fn deinit(request: *Request) void {
-        request.arena.deinit();
-    }
-};
-
-pub const MessagesContext = struct {
-    pub fn less_than(_: void, a: RawMessage, b: RawMessage) std.math.Order {
-        const a_seq = utils.get_value(a.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
-        const b_seq = utils.get_value(b.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
-
-        return std.math.order(a_seq, b_seq);
-    }
-};
-pub const Messages = std.PriorityQueue(RawMessage, void, MessagesContext.less_than);
-
-pub const Command = blk: {
-    @setEvalBranchQuota(10_000);
-
-    const EnumField = std.builtin.Type.EnumField;
-    var enum_fields: []const EnumField = &[_]EnumField{};
-    var enum_value: usize = 0;
-
-    for (std.meta.declarations(protocol)) |decl| {
-        const T = @field(protocol, decl.name);
-        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
-        if (!std.mem.endsWith(u8, @typeName(T), "Request")) continue;
-        if (!@hasField(T, "command")) @compileError("Request with no command!");
-
-        for (std.meta.fields(T)) |field| {
-            if (!std.mem.eql(u8, field.name, "command")) continue;
-            if (@typeInfo(field.type) != .@"enum") continue;
-
-            // fields of the type of "command"
-            for (std.meta.fields(field.type)) |f| {
-                enum_fields = enum_fields ++ &[_]EnumField{.{
-                    .name = f.name,
-                    .value = enum_value,
-                }};
-                enum_value += 1;
-            }
-        }
-    }
-    break :blk @Type(.{ .@"enum" = .{
-        .tag_type = u8,
-        .fields = enum_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
-};
-
-pub const HandledEvent = struct {
-    event: Event,
-    timestamp: i128,
-};
-
-pub const Event = blk: {
-    @setEvalBranchQuota(10_000);
-
-    const EnumField = std.builtin.Type.EnumField;
-    var enum_fields: []const EnumField = &[_]EnumField{};
-    var enum_value: usize = 0;
-
-    for (std.meta.declarations(protocol)) |decl| {
-        const T = @field(protocol, decl.name);
-        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
-        if (!std.mem.endsWith(u8, @typeName(T), "Event")) continue;
-        if (!@hasField(T, "event")) @compileError("Event with no event!");
-
-        for (std.meta.fields(T)) |field| {
-            if (!std.mem.eql(u8, field.name, "event")) continue;
-            if (@typeInfo(field.type) != .@"enum") continue;
-
-            // fields of the type of "event"
-            for (std.meta.fields(field.type)) |f| {
-                enum_fields = enum_fields ++ &[_]EnumField{.{
-                    .name = f.name,
-                    .value = enum_value,
-                }};
-                enum_value += 1;
-            }
-        }
-    }
-    break :blk @Type(.{ .@"enum" = .{
-        .tag_type = u8,
-        .fields = enum_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
-};
-
 allocator: std.mem.Allocator,
 /// Used for deeply cloned values
 arena: std.heap.ArenaAllocator,
@@ -916,3 +668,251 @@ fn create_cloner(connection: *Connection) Cloner {
         .allocator = connection.arena.allocator(),
     };
 }
+
+const ClientCapabilitiesKind = enum {
+    supportsVariableType,
+    supportsVariablePaging,
+    supportsRunInTerminalRequest,
+    supportsMemoryReferences,
+    supportsProgressReporting,
+    supportsInvalidatedEvent,
+    supportsMemoryEvent,
+    supportsArgsCanBeInterpretedByShell,
+    supportsStartDebuggingRequest,
+    supportsANSIStyling,
+};
+
+const ClientCapabilitiesSet = std.EnumSet(ClientCapabilitiesKind);
+
+pub const AdapterCapabilitiesKind = enum {
+    supportsConfigurationDoneRequest,
+    supportsFunctionBreakpoints,
+    supportsConditionalBreakpoints,
+    supportsHitConditionalBreakpoints,
+    supportsEvaluateForHovers,
+    supportsStepBack,
+    supportsSetVariable,
+    supportsRestartFrame,
+    supportsGotoTargetsRequest,
+    supportsStepInTargetsRequest,
+    supportsCompletionsRequest,
+    supportsModulesRequest,
+    supportsRestartRequest,
+    supportsExceptionOptions,
+    supportsValueFormattingOptions,
+    supportsExceptionInfoRequest,
+    supportTerminateDebuggee,
+    supportSuspendDebuggee,
+    supportsDelayedStackTraceLoading,
+    supportsLoadedSourcesRequest,
+    supportsLogPoints,
+    supportsTerminateThreadsRequest,
+    supportsSetExpression,
+    supportsTerminateRequest,
+    supportsDataBreakpoints,
+    supportsReadMemoryRequest,
+    supportsWriteMemoryRequest,
+    supportsDisassembleRequest,
+    supportsCancelRequest,
+    supportsBreakpointLocationsRequest,
+    supportsClipboardContext,
+    supportsSteppingGranularity,
+    supportsInstructionBreakpoints,
+    supportsExceptionFilterOptions,
+    supportsSingleThreadExecutionRequests,
+    supportsANSIStyling,
+};
+const AdapterCapabilitiesSet = std.EnumSet(AdapterCapabilitiesKind);
+
+const AdapterCapabilities = struct {
+    support: AdapterCapabilitiesSet = .{},
+    completionTriggerCharacters: ?[][]const u8 = null,
+    exceptionBreakpointFilters: ?[]protocol.ExceptionBreakpointsFilter = null,
+    additionalModuleColumns: ?[]protocol.ColumnDescriptor = null,
+    supportedChecksumAlgorithms: ?[]protocol.ChecksumAlgorithm = null,
+    breakpointModes: ?[]protocol.BreakpointMode = null,
+};
+
+pub const RawMessage = std.json.Parsed(std.json.Value);
+
+const State = enum {
+    /// Adapter and debuggee are running
+    launched,
+    /// Adapter and debuggee are running
+    attached,
+    /// Adapter is running and the initialized event has been handled
+    initialized,
+    /// Adapter is running and the initialize request has been responded to
+    partially_initialized,
+    /// Adapter is running and the initialize request has been sent
+    initializing,
+    /// Adapter is running
+    spawned,
+    /// Adapter is not running
+    not_spawned,
+    /// RIP
+    died,
+
+    pub fn fully_initialized(state: State) bool {
+        return switch (state) {
+            .initialized, .launched, .attached => true,
+
+            .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
+        };
+    }
+};
+
+pub const Dependency = struct {
+    pub const When = enum { any, after_queueing, before_queueing };
+    pub const none = Dependency{ .dep = .none, .handled_when = .any };
+    handled_when: When,
+    dep: union(enum) {
+        response: Command,
+        event: Event,
+        none,
+    },
+};
+
+pub const RetainedRequestData = union(enum) {
+    stack_trace: struct {
+        thread_id: SessionData.ThreadID,
+        request_scopes: bool,
+        request_variables: bool,
+    },
+    scopes: struct {
+        thread_id: SessionData.ThreadID,
+        frame_id: SessionData.FrameID,
+        request_variables: bool,
+    },
+    variables: struct {
+        thread_id: SessionData.ThreadID,
+        variables_reference: SessionData.VariableReference,
+    },
+    source: struct {
+        path: ?[]const u8,
+        source_reference: i32,
+    },
+    set_breakpoints: struct {
+        source_id: SessionData.SourceID,
+    },
+    set_variable: struct {
+        thread_id: SessionData.ThreadID,
+        reference: SessionData.VariableReference,
+        name: []const u8,
+    },
+    no_data,
+};
+
+pub const Response = struct {
+    command: Command,
+    request_seq: i32,
+    request_data: RetainedRequestData,
+};
+
+pub const ResponseStatus = enum { success, failure };
+pub const HandledResponse = struct {
+    response: Response,
+    status: ResponseStatus,
+    timestamp: i128,
+};
+
+pub const Request = struct {
+    debug_request_seq: ?i32 = null,
+    arena: std.heap.ArenaAllocator,
+    args: protocol.Object,
+    command: Command,
+    /// Kept for expected_responses. Do not free when freeing the request
+    request_data: RetainedRequestData,
+    /// Send request when dependency is satisfied
+    depends_on: Dependency,
+    queued_timestamp: i128,
+
+    pub fn deinit(request: *Request) void {
+        request.arena.deinit();
+    }
+};
+
+pub const MessagesContext = struct {
+    pub fn less_than(_: void, a: RawMessage, b: RawMessage) std.math.Order {
+        const a_seq = utils.get_value(a.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
+        const b_seq = utils.get_value(b.value, "seq", .integer) orelse @panic("Do only message with `seq` field should be queued");
+
+        return std.math.order(a_seq, b_seq);
+    }
+};
+pub const Messages = std.PriorityQueue(RawMessage, void, MessagesContext.less_than);
+
+pub const Command = blk: {
+    @setEvalBranchQuota(10_000);
+
+    const EnumField = std.builtin.Type.EnumField;
+    var enum_fields: []const EnumField = &[_]EnumField{};
+    var enum_value: usize = 0;
+
+    for (std.meta.declarations(protocol)) |decl| {
+        const T = @field(protocol, decl.name);
+        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
+        if (!std.mem.endsWith(u8, @typeName(T), "Request")) continue;
+        if (!@hasField(T, "command")) @compileError("Request with no command!");
+
+        for (std.meta.fields(T)) |field| {
+            if (!std.mem.eql(u8, field.name, "command")) continue;
+            if (@typeInfo(field.type) != .@"enum") continue;
+
+            // fields of the type of "command"
+            for (std.meta.fields(field.type)) |f| {
+                enum_fields = enum_fields ++ &[_]EnumField{.{
+                    .name = f.name,
+                    .value = enum_value,
+                }};
+                enum_value += 1;
+            }
+        }
+    }
+    break :blk @Type(.{ .@"enum" = .{
+        .tag_type = u8,
+        .fields = enum_fields,
+        .decls = &.{},
+        .is_exhaustive = true,
+    } });
+};
+
+pub const HandledEvent = struct {
+    event: Event,
+    timestamp: i128,
+};
+
+pub const Event = blk: {
+    @setEvalBranchQuota(10_000);
+
+    const EnumField = std.builtin.Type.EnumField;
+    var enum_fields: []const EnumField = &[_]EnumField{};
+    var enum_value: usize = 0;
+
+    for (std.meta.declarations(protocol)) |decl| {
+        const T = @field(protocol, decl.name);
+        if (@typeInfo(@TypeOf(T)) == .@"fn") continue;
+        if (!std.mem.endsWith(u8, @typeName(T), "Event")) continue;
+        if (!@hasField(T, "event")) @compileError("Event with no event!");
+
+        for (std.meta.fields(T)) |field| {
+            if (!std.mem.eql(u8, field.name, "event")) continue;
+            if (@typeInfo(field.type) != .@"enum") continue;
+
+            // fields of the type of "event"
+            for (std.meta.fields(field.type)) |f| {
+                enum_fields = enum_fields ++ &[_]EnumField{.{
+                    .name = f.name,
+                    .value = enum_value,
+                }};
+                enum_value += 1;
+            }
+        }
+    }
+    break :blk @Type(.{ .@"enum" = .{
+        .tag_type = u8,
+        .fields = enum_fields,
+        .decls = &.{},
+        .is_exhaustive = true,
+    } });
+};
