@@ -788,16 +788,19 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
     _ = zgui.beginChild("Code View", .{});
     defer zgui.endChild();
 
+    const single_thread_exec = connection.adapter_capabilities.support.contains(.supportsSingleThreadExecutionRequests);
     var style = zgui.getStyle();
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
-        const style_idx: zgui.StyleCol = if (thread.selected) .text else .text_disabled;
+        const style_idx: zgui.StyleCol = if (!single_thread_exec or thread.selected) .text else .text_disabled;
         zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(style_idx) });
         defer zgui.popStyleColor(.{ .count = 1 });
 
-        _ = zgui.checkbox(tmp_name("##Selection {s} {}", .{ thread.name, thread.id }), .{ .v = &thread.selected });
-        zgui.sameLine(.{});
+        if (single_thread_exec) {
+            _ = zgui.checkbox(tmp_name("##Selection {s} {}", .{ thread.name, thread.id }), .{ .v = &thread.selected });
+            zgui.sameLine(.{});
+        }
 
         const stack_name = tmp_name("{s} #{}", .{ thread.name, thread.id });
         if (zgui.treeNode(stack_name)) {

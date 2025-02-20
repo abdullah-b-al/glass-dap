@@ -213,7 +213,7 @@ pub fn step(callbacks: *Callbacks, data: SessionData, connection: *Connection, s
     handlers.callback(callbacks, .always, .{ .response = command }, null, static.step) catch return;
 }
 fn step_in(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
-    var iter = SelectedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
         const arg = protocol.StepInArguments{
             .threadId = @intFromEnum(thread.id),
@@ -226,7 +226,7 @@ fn step_in(data: SessionData, connection: *Connection, granularity: protocol.Ste
     }
 }
 fn step_out(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
-    var iter = SelectedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
         const arg = protocol.StepOutArguments{
             .threadId = @intFromEnum(thread.id),
@@ -239,7 +239,7 @@ fn step_out(data: SessionData, connection: *Connection, granularity: protocol.St
 }
 
 pub fn next(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
-    var iter = SelectedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
         const arg = protocol.NextArguments{
             .threadId = @intFromEnum(thread.id),
@@ -252,7 +252,7 @@ pub fn next(data: SessionData, connection: *Connection, granularity: protocol.St
 }
 
 pub fn continue_threads(data: SessionData, connection: *Connection) void {
-    var iter = SelectedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
         switch (thread.state) {
             .continued => continue,
@@ -269,7 +269,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
 }
 
 pub fn pause(data: SessionData, connection: *Connection) void {
-    var iter = SelectedThreadsIterator.init(data);
+    var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
         switch (thread.state) {
             .stopped => continue,
@@ -338,14 +338,16 @@ fn protocol_set_variable(connection: *Connection, thread_id: SessionData.ThreadI
 
 pub const SelectedThreadsIterator = struct {
     iter: SessionData.Threads.Iterator,
+    connection: *const Connection,
 
-    pub fn init(data: SessionData) SelectedThreadsIterator {
-        return .{ .iter = data.threads.iterator() };
+    pub fn init(data: SessionData, connection: *const Connection) SelectedThreadsIterator {
+        return .{ .iter = data.threads.iterator(), .connection = connection };
     }
 
     pub fn next(self: *SelectedThreadsIterator) ?SessionData.Thread {
+        const single_thread_exec = self.connection.adapter_capabilities.support.contains(.supportsSingleThreadExecutionRequests);
         while (self.iter.next()) |entry| {
-            if (entry.value_ptr.selected) {
+            if (!single_thread_exec or entry.value_ptr.selected) {
                 return entry.value_ptr.*;
             }
         }
