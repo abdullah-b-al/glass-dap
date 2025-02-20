@@ -805,8 +805,8 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
             zgui.indent(.{ .indent_w = 1 });
 
-            for (thread.stack.items) |frame| {
-                if (zgui.selectable(tmp_name("{s}", .{frame.value.name}), .{})) {
+            for (thread.stack.items, 0..) |frame, i| {
+                if (zgui.selectable(tmp_name("{s}##{}", .{ frame.value.name, i }), .{})) {
                     if (frame.value.source) |s| {
                         state.active_source.set_source(thread.id, s);
                         state.scroll_to_active_line = true;
