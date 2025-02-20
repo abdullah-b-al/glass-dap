@@ -1643,8 +1643,14 @@ fn anytype_to_string(value: anytype, opts: ToStringOptions) []const u8 {
     return anytype_to_string_recurse(state.arena(), value, opts);
 }
 
-fn anytype_to_string_recurse(allocator: std.mem.Allocator, value: anytype, opts: ToStringOptions) []const u8 {
-    const T = @TypeOf(value);
+fn anytype_to_string_recurse(allocator: std.mem.Allocator, const_value: anytype, opts: ToStringOptions) []const u8 {
+    const Type = @TypeOf(const_value);
+    const is_mem_object = switch (@typeInfo(Type)) {
+        .@"enum", .@"struct", .@"union" => @hasDecl(Type, "utils_MemObject"),
+        else => false,
+    };
+    const T = if (is_mem_object) Type.ChildType else Type;
+    const value = if (is_mem_object) @field(const_value, "value") else const_value;
     if (T == []const u8) {
         return mabye_string_to_string(value);
     }
