@@ -100,6 +100,10 @@ pub fn window_size_callback(_: *glfw.Window, _: c_int, _: c_int) callconv(.C) vo
     continue_rendering();
 }
 
+pub fn window_focus_callback(_: *glfw.Window, _: glfw.Bool) callconv(.C) void {
+    continue_rendering();
+}
+
 pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
@@ -179,6 +183,7 @@ pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
     std.debug.assert(zgui_key_callback != null);
 
     _ = glfw.setWindowSizeCallback(window, window_size_callback);
+    _ = glfw.setWindowFocusCallback(window, window_focus_callback);
 
     return window;
 }
