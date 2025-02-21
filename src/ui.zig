@@ -802,8 +802,14 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
             zgui.sameLine(.{});
         }
 
-        const stack_name = tmp_name("{s} #{}", .{ thread.name, thread.id });
-        if (zgui.treeNode(stack_name)) {
+        const thread_state = switch (thread.state) {
+            .stopped => "Paused",
+            .continued => "Continued",
+            .unknown => "Unknown",
+        };
+        zgui.text("{s}", .{thread_state});
+        zgui.sameLine(.{});
+        if (zgui.treeNode(tmp_name("{s} #{}", .{ thread.name, thread.id }))) {
             defer zgui.treePop();
 
             if (!thread.requested_stack) {
@@ -938,7 +944,14 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
             zgui.text("{s}", .{anytype_to_string(thread.name, .{})});
 
             _ = zgui.tableNextColumn();
-            zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
+            switch (thread.state) {
+                .stopped => |stopped| {
+                    zgui.text("{s}", .{anytype_to_string(stopped, .{})});
+                },
+                else => {
+                    zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
+                },
+            }
         }
     }
 }
