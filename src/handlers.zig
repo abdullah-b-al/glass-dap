@@ -173,7 +173,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             const parsed = try connection.parse_event(message, protocol.ContinuedEvent, .continued);
             defer parsed.deinit();
 
-            try data.set_continued(parsed.value);
+            try data.set_continued_event(parsed.value);
 
             connection.handled_event(message, .continued);
         },
@@ -430,9 +430,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             );
             defer parsed.deinit();
 
-            if (parsed.value.body.allThreadsContinued orelse true) {
-                data.set_continued_all();
-            }
+            data.set_continued_response(parsed.value);
 
             connection.handled_response(message, response, .success);
         },

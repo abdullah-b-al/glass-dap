@@ -31,6 +31,19 @@ output_arena: std.heap.ArenaAllocator,
 function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint),
 source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false),
 
+all_threads_status: enum {
+    stopped,
+    continued,
+    null,
+
+    pub fn to_thread_status(s: @This()) ?Thread.Status {
+        return switch (s) {
+            .stopped => .{ .stopped = null },
+            .continued => .continued,
+            .null => null,
+        };
+    }
+},
 status: DebuggeeStatus,
 exit_code: ?i32,
 
@@ -46,6 +59,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .arena = std.heap.ArenaAllocator.init(allocator),
         .output_arena = std.heap.ArenaAllocator.init(allocator),
         .status = .not_running,
+        .all_threads_status = .null,
         .exit_code = null,
 
         .string_storage = .empty,
@@ -127,6 +141,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
 
     data.* = .{
         .status = .not_running,
+        .all_threads_status = .null,
 
         // keep
         .exit_code = data.exit_code,
@@ -168,39 +183,59 @@ pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
         try data.add_or_update_thread(@enumFromInt(id), null, .{ .stopped = stopped });
     }
 
+    if (stopped.value.allThreadsStopped == null) {
+        data.all_threads_status = .null;
+    }
+
     if (stopped.value.allThreadsStopped orelse false) {
+        data.all_threads_status = .stopped;
         var iter = data.threads.iterator();
         while (iter.next()) |entry| {
             const thread = entry.value_ptr;
-            switch (thread.state) {
+            switch (thread.status) {
                 .stopped => {},
-                .unknown, .continued => thread.state = .{ .stopped = null },
+                .unknown, .continued => thread.status = .{ .stopped = null },
             }
         }
     }
 }
 
-pub fn set_continued(data: *SessionData, event: protocol.ContinuedEvent) !void {
+pub fn set_continued_event(data: *SessionData, event: protocol.ContinuedEvent) !void {
     try data.add_or_update_thread(@enumFromInt(event.body.threadId), null, .continued);
+
+    if (event.body.allThreadsContinued != null) {
+        data.all_threads_status = .null;
+    }
 
     if (event.body.allThreadsContinued orelse true) {
         data.set_continued_all();
     }
 }
 
-pub fn set_continued_all(data: *SessionData) void {
+pub fn set_continued_response(data: *SessionData, response: protocol.ContinueResponse) void {
+    if (response.body.allThreadsContinued == null) {
+        data.all_threads_status = .null;
+    }
+
+    if (response.body.allThreadsContinued orelse true) {
+        data.set_continued_all();
+    }
+}
+
+fn set_continued_all(data: *SessionData) void {
+    data.all_threads_status = .continued;
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
-        switch (thread.state) {
+        switch (thread.status) {
             .continued => {},
             .stopped => {
-                thread.state.deinit();
-                thread.state = .continued;
+                thread.status.deinit();
+                thread.status = .continued;
                 thread.clear_all();
             },
             .unknown => {
-                thread.state = .continued;
+                thread.status = .continued;
                 thread.clear_all();
             },
         }
@@ -266,32 +301,32 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     }
 }
 
-fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, cloned_state: ?Thread.State) !void {
+fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, cloned_status: ?Thread.Status) !void {
     const gop = try data.threads.getOrPut(data.allocator, id);
     var thread = gop.value_ptr;
     if (gop.found_existing) {
-        if (cloned_state) |new_state| {
-            thread.state.deinit();
-            thread.state = new_state;
+        if (cloned_status) |new_status| {
+            thread.status.deinit();
+            thread.status = new_status;
         }
 
         thread.* = .{
             .id = id,
             .name = if (name) |n| try data.intern_string(n) else thread.name,
-            .state = thread.state,
+            .status = thread.status,
             .requested_stack = thread.requested_stack,
             .stack = thread.stack,
             .scopes = thread.scopes,
             .variables = thread.variables,
 
-            .selected = if (thread.state == .continued) true else thread.selected,
+            .selected = if (thread.status == .continued) true else thread.selected,
         };
     } else {
         gop.value_ptr.* = .{
             .id = id,
             .name = try data.intern_string(name orelse ""),
-            .state = cloned_state orelse .unknown,
-            .selected = !(cloned_state == null or cloned_state.? == .unknown),
+            .status = cloned_status orelse data.all_threads_status.to_thread_status() orelse .unknown,
+            .selected = !(cloned_status == null or cloned_status.? == .unknown),
             .requested_stack = false,
             .stack = .empty,
             .scopes = .empty,
@@ -299,7 +334,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
         };
     }
 
-    if (thread.state == .continued) {
+    if (thread.status == .continued) {
         thread.clear_all();
     }
 }
@@ -589,7 +624,7 @@ pub const VariableReference = enum(ID) { _ };
 
 pub const Threads = std.AutoArrayHashMapUnmanaged(ThreadID, Thread);
 pub const Thread = struct {
-    const State = union(enum) {
+    const Status = union(enum) {
         stopped: ?MemObject(Stopped),
         continued,
         unknown,
@@ -604,7 +639,7 @@ pub const Thread = struct {
 
     id: ThreadID,
     name: []const u8,
-    state: State,
+    status: Status,
     selected: bool,
 
     requested_stack: bool,
@@ -618,7 +653,7 @@ pub const Thread = struct {
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
-        thread.state.deinit();
+        thread.status.deinit();
     }
 
     pub fn clear_all(thread: *Thread) void {
@@ -638,7 +673,7 @@ pub const Thread = struct {
             // keep
             .id = thread.id,
             .name = thread.name,
-            .state = thread.state,
+            .status = thread.status,
             .stack = thread.stack,
             .scopes = thread.scopes,
             .variables = thread.variables,
@@ -657,7 +692,7 @@ pub const Thread = struct {
             .id = thread.id,
             .requested_stack = thread.requested_stack,
             .name = thread.name,
-            .state = thread.state,
+            .status = thread.status,
             .stack = thread.stack,
             .variables = thread.variables,
             .selected = thread.selected,
@@ -676,7 +711,7 @@ pub const Thread = struct {
             .id = thread.id,
             .requested_stack = thread.requested_stack,
             .name = thread.name,
-            .state = thread.state,
+            .status = thread.status,
             .stack = thread.stack,
             .selected = thread.selected,
         };

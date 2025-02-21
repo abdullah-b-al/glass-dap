@@ -544,7 +544,7 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     if (!zgui.begin(name, .{})) return;
 
     const thread = state.active_source.get_thread(data) orelse return;
-    if (thread.state != .stopped) return;
+    if (thread.status != .stopped) return;
 
     const frame = state.active_source.get_frame(data) orelse return;
     const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse {
@@ -802,12 +802,12 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
             zgui.sameLine(.{});
         }
 
-        const thread_state = switch (thread.state) {
+        const thread_status = switch (thread.status) {
             .stopped => "Paused",
             .continued => "Continued",
             .unknown => "Unknown",
         };
-        zgui.text("{s}", .{thread_state});
+        zgui.text("{s}", .{thread_status});
         zgui.sameLine(.{});
         if (zgui.treeNode(tmp_name("{s} #{}", .{ thread.name, thread.id }))) {
             defer zgui.treePop();
@@ -944,12 +944,12 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
             zgui.text("{s}", .{anytype_to_string(thread.name, .{})});
 
             _ = zgui.tableNextColumn();
-            switch (thread.state) {
+            switch (thread.status) {
                 .stopped => |stopped| {
                     zgui.text("{s}", .{anytype_to_string(stopped, .{})});
                 },
                 else => {
-                    zgui.text("{s}", .{anytype_to_string(thread.state, .{})});
+                    zgui.text("{s}", .{anytype_to_string(thread.status, .{})});
                 },
             }
         }
@@ -2391,7 +2391,7 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
 
 fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks) void {
     if (state.waiting_for_stack_trace) return;
-    if (thread.state != .stopped) return;
+    if (thread.status != .stopped) return;
 
     request.stack_trace(connection, thread.id) catch return;
 

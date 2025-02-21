@@ -254,7 +254,7 @@ pub fn next(data: SessionData, connection: *Connection, granularity: protocol.St
 pub fn continue_threads(data: SessionData, connection: *Connection) void {
     var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
-        switch (thread.state) {
+        switch (thread.status) {
             .continued => continue,
             .stopped, .unknown => {},
         }
@@ -271,7 +271,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
 pub fn pause(data: SessionData, connection: *Connection) void {
     var iter = SelectedThreadsIterator.init(data, connection);
     while (iter.next()) |thread| {
-        switch (thread.state) {
+        switch (thread.status) {
             .stopped => continue,
             .continued, .unknown => {},
         }
