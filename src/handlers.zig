@@ -408,6 +408,20 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
             connection.handled_response(message, response, .success);
         },
+        .setDataBreakpoints => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.SetDataBreakpointsResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            try data.set_breakpoints(.data, parsed.value.body.breakpoints);
+
+            connection.handled_response(message, response, .success);
+        },
+
         .source => {
             const parsed = try connection.parse_validate_response(
                 message,
@@ -504,7 +518,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
             connection.handled_response(message, response, .success);
         },
-        .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
 
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),

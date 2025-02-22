@@ -32,6 +32,7 @@ data_breakpoints_info: std.ArrayHashMapUnmanaged(DataBreakpointInfo.ID, MemObjec
 // These are cheap to store so for now don't use a MemObject
 function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint),
 source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false),
+data_breakpoints: std.ArrayHashMapUnmanaged(protocol.DataBreakpoint, void, DataBreakpointHash, false),
 
 all_threads_status: enum {
     stopped,
@@ -73,11 +74,14 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .output = .empty,
         .function_breakpoints = .empty,
         .source_breakpoints = .empty,
+        .data_breakpoints = .empty,
         .data_breakpoints_info = .empty,
     };
 }
 
 pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
+
+    // Free elements of data structures
 
     {
         var iter = data.threads.iterator();
@@ -108,12 +112,15 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
         }
     }
 
+    // Free data structures
+
     const to_free = .{
         &data.threads,
         &data.output,
         &data.sources_content,
         &data.function_breakpoints,
         &data.source_breakpoints,
+        &data.data_breakpoints,
         &data.data_breakpoints_info,
         &data.modules,
         &data.breakpoints,
@@ -162,6 +169,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
         .sources_content = data.sources_content,
         .output = data.output,
         .function_breakpoints = data.function_breakpoints,
+        .data_breakpoints = data.data_breakpoints,
         .source_breakpoints = data.source_breakpoints,
         .data_breakpoints_info = data.data_breakpoints_info,
     };
@@ -568,6 +576,33 @@ fn clear_dead_data_breakpoint_info(data: *SessionData, continued_thread: ThreadI
     }
 }
 
+pub fn add_data_breakpoint(data: *SessionData, breakpoint: protocol.DataBreakpoint) !bool {
+    if (data.data_breakpoints.contains(breakpoint)) return false;
+
+    try data.data_breakpoints.ensureUnusedCapacity(data.allocator, 1);
+    const clone = try data.clone_anytype(breakpoint);
+    data.data_breakpoints.putAssumeCapacity(clone, {});
+
+    return true;
+}
+
+pub fn remove_data_breakpoints_of_id(data: *SessionData, data_id: []const u8) bool {
+    var result = false;
+    var iter = data.data_breakpoints.iterator();
+    while (iter.next()) |entry| {
+        if (mem.eql(u8, entry.key_ptr.dataId, data_id)) {
+            _ = data.data_breakpoints.orderedRemove(entry.key_ptr.*);
+            iter.reset();
+            result = true;
+        }
+    }
+
+    return result;
+}
+pub fn remove_data_breakpoint(data: *SessionData, breakpoint: protocol.DataBreakpoint) bool {
+    return data.data_breakpoints.orderedRemove(breakpoint);
+}
+
 pub fn add_source_breakpoint(data: *SessionData, not_owned_source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
     try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
 
@@ -846,6 +881,7 @@ pub const BreakpointOrigin = union(enum) {
     event,
     source: SourceID,
     function,
+    data,
 };
 
 pub const Breakpoint = struct {
@@ -858,6 +894,31 @@ pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.Source
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 pub const Output = utils.get_field_type(protocol.OutputEvent, "body");
+
+pub const DataBreakpointHash = struct {
+    pub fn hash(_: @This(), key: protocol.DataBreakpoint) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+
+        std.hash.autoHashStrat(&hasher, key.dataId, .Deep);
+        std.hash.autoHashStrat(&hasher, key.accessType, .Deep);
+        std.hash.autoHashStrat(&hasher, key.condition, .Deep);
+        std.hash.autoHashStrat(&hasher, key.hitCondition, .Deep);
+
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: protocol.DataBreakpoint, b: protocol.DataBreakpoint, _: usize) bool {
+        if (mem.eql(u8, a.dataId, b.dataId) and
+            a.accessType == b.accessType and
+            mem.eql(u8, a.condition orelse "", b.condition orelse "") and
+            mem.eql(u8, a.hitCondition orelse "", b.hitCondition orelse ""))
+        {
+            return true;
+        }
+
+        return false;
+    }
+};
 
 pub const DataBreakpointInfo = struct {
     pub const Body = utils.get_field_type(protocol.DataBreakpointInfoResponse, "body");

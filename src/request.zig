@@ -305,6 +305,15 @@ pub fn set_breakpoints(data: SessionData, connection: *Connection, source_id: Se
     }, .none, .{ .set_breakpoints = .{ .source_id = source_id } });
 }
 
+pub fn set_data_breakpoints(data: *const SessionData, connection: *Connection) !void {
+    try connection.queue_request(
+        .setDataBreakpoints,
+        protocol.SetDataBreakpointsArguments{ .breakpoints = data.data_breakpoints.keys() },
+        .none,
+        .no_data,
+    );
+}
+
 pub fn data_breakpoint_info_variable(
     connection: *Connection,
     name: []const u8,

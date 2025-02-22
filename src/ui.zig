@@ -715,6 +715,7 @@ fn breakpoints(name: [:0]const u8, data: SessionData, connection: *Connection) v
             .event => "event",
             .source => |id| tmp_shorten_path(anytype_to_string(id, .{})),
             .function => "function",
+            .data => "data",
         };
 
         const line = item.value.breakpoint.line orelse continue;
@@ -1164,7 +1165,7 @@ fn debug_scopes(name: [:0]const u8, data: SessionData, connection: *Connection) 
     }
 }
 
-fn debug_variables(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn debug_variables(name: [:0]const u8, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -1188,6 +1189,39 @@ fn debug_variables(name: [:0]const u8, data: SessionData, connection: *Connectio
                     request.data_breakpoint_info_variable(connection, v.name, thread.id, ref) catch break :blk;
                 }
 
+                const data_breakpoint: ?protocol.DataBreakpoint = blk: {
+                    const mo = data.data_breakpoints_info.get(.{
+                        .variable = .{ .reference = ref, .name = v.name },
+                    }) orelse break :blk null;
+                    const id = switch (mo.value.data.dataId) {
+                        .string => |string| string,
+                        .null => break :blk null,
+                    };
+
+                    break :blk .{
+                        .dataId = id,
+                        .accessType = null,
+                        .condition = null,
+                        .hitCondition = null,
+                    };
+                };
+
+                if (zgui.button(tmp_name("Add Breakpoint##Button {} {s} {}", .{ ref, v.name, i }), .{})) blk: {
+                    if (data.add_data_breakpoint(data_breakpoint orelse break :blk) catch break :blk) {
+                        request.set_data_breakpoints(data, connection) catch break :blk;
+                    }
+                }
+                if (zgui.button(tmp_name("Remove Breakpoint##Button {} {s} {}", .{ ref, v.name, i }), .{})) blk: {
+                    if (data.remove_data_breakpoint(data_breakpoint orelse break :blk)) {
+                        request.set_data_breakpoints(data, connection) catch break :blk;
+                    }
+                }
+                if (zgui.button(tmp_name("Remove All Breakpoints##Button {} {s} {}", .{ ref, v.name, i }), .{})) blk: {
+                    const bp = data_breakpoint orelse break :blk;
+                    if (data.remove_data_breakpoints_of_id(bp.dataId)) {
+                        request.set_data_breakpoints(data, connection) catch break :blk;
+                    }
+                }
                 anytype_fill_table(v);
             }
         }
@@ -1327,7 +1361,7 @@ fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Co
     debug_threads("Debug Threads", data.*, connection);
     debug_stack_frames("Debug Stack Frames", data.*, connection);
     debug_scopes("Debug Scopes", data.*, connection);
-    debug_variables("Debug Variables", data.*, connection);
+    debug_variables("Debug Variables", data, connection);
     debug_breakpoints("Debug Breakpoints", data.*, connection);
     debug_sources("Debug Sources", data, connection);
     debug_sources_content("Debug Sources Content", data.*, connection);
@@ -2428,7 +2462,7 @@ fn breakpoint_in_line(data: *const SessionData, source_id: SessionData.SourceID,
     for (data.breakpoints.items) |item| {
         const id = switch (item.value.origin) {
             .source => |id| id,
-            .event, .function => continue,
+            .data, .event, .function => continue,
         };
 
         if (source_id.eql(id) and line == item.value.breakpoint.line) {
