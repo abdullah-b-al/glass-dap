@@ -279,7 +279,7 @@ pub fn MemObject(comptime T: type) type {
     };
 }
 
-pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@TypeOf(value)) {
+pub fn mem_object_undefined(allocator: std.mem.Allocator, comptime T: type) !MemObject(T) {
     var arena = try allocator.create(std.heap.ArenaAllocator);
     errdefer allocator.destroy(arena);
     arena.* = std.heap.ArenaAllocator.init(allocator);
@@ -289,6 +289,30 @@ pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@Type
     errdefer allocator.destroy(strings);
     strings.* = StringStorage.init(allocator);
     errdefer strings.deinit();
+
+    return MemObject(T){
+        .arena = arena,
+        .strings = strings,
+        .value = undefined,
+    };
+}
+
+pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@TypeOf(value)) {
+    var object = try mem_object_undefined(allocator, @TypeOf(value));
+    errdefer object.deinit();
+    object.value = try mem_object_clone(&object, value);
+    return object;
+}
+
+pub fn mem_object_clone(mem_object_pointer: anytype, to_clone: anytype) !@TypeOf(to_clone) {
+    const info = @typeInfo(@TypeOf(mem_object_pointer));
+    if (info != .pointer or info.pointer.is_const) {
+        @compileError("MemObject provided isn't a pointer or is a constant pointer.\nProvided: " ++ @typeName(@TypeOf(mem_object_pointer)));
+    }
+
+    if (!@hasDecl(info.pointer.child, "utils_MemObject")) {
+        @compileError("value provided isn't of the generic type MemObject.");
+    }
 
     const Cloner = struct {
         const Cloner = @This();
@@ -300,11 +324,10 @@ pub fn mem_object(allocator: std.mem.Allocator, value: anytype) !MemObject(@Type
     };
 
     var cloner = Cloner{
-        .strings = strings,
-        .allocator = arena.allocator(),
+        .strings = mem_object_pointer.strings,
+        .allocator = mem_object_pointer.arena.allocator(),
     };
-    const cloned = try clone_anytype(&cloner, value);
-    return .{ .arena = arena, .strings = strings, .value = cloned };
+    return try clone_anytype(&cloner, to_clone);
 }
 
 pub fn oom(_: error{OutOfMemory}) noreturn {
