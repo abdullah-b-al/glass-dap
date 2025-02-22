@@ -1393,19 +1393,15 @@ fn adapter_capabilities(connection: Connection) void {
     zgui.separator();
 
     const c = connection.adapter_capabilities;
-    if (c.completionTriggerCharacters) |chars| {
-        for (chars) |string| {
-            zgui.text("completionTriggerCharacters {s}", .{string});
-        }
-    } else {
-        zgui.text("No completionTriggerCharacters", .{});
+
+    {
+        const elements = anytype_to_string(c.completionTriggerCharacters orelse &[_][]const u8{""}, .{});
+        zgui.text("completionTriggerCharacters {s}", .{elements});
     }
-    if (c.supportedChecksumAlgorithms) |checksum| {
-        for (checksum) |kind| {
-            zgui.text("supportedChecksumAlgorithms.{s}", .{@tagName(kind)});
-        }
-    } else {
-        zgui.text("No supportedChecksumAlgorithms", .{});
+
+    {
+        const elements = anytype_to_string(c.supportedChecksumAlgorithms orelse &[_]protocol.ChecksumAlgorithm{}, .{});
+        zgui.text("supportedChecksumAlgorithms {s}", .{elements});
     }
 
     if (c.exceptionBreakpointFilters) |value| {
