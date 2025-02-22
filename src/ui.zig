@@ -1776,7 +1776,28 @@ fn anytype_to_string_recurse(allocator: std.mem.Allocator, const_value: anytype,
 
             return list.items;
         },
-        .pointer => return @typeName(T),
+        .pointer => |info| {
+            switch (info.size) {
+                .one, .many, .c => return @typeName(T),
+                .slice => {
+                    var list = std.ArrayList(u8).init(allocator);
+                    var writer = list.writer();
+                    writer.print("[ ", .{}) catch unreachable;
+                    for (value, 0..) |v, i| {
+                        const str = anytype_to_string_recurse(allocator, v, opts);
+                        if (i + 1 == value.len) {
+                            writer.print("{s}", .{str}) catch unreachable;
+                        } else {
+                            writer.print("{s}, ", .{str}) catch unreachable;
+                        }
+                    }
+                    writer.print(" ]", .{}) catch unreachable;
+
+                    return list.items;
+                },
+            }
+            return @typeName(T);
+        },
         .optional => return anytype_to_string_recurse(allocator, value orelse return opts.value_for_null, opts),
         else => {},
     }
