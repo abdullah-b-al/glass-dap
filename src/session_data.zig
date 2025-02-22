@@ -535,19 +535,22 @@ pub fn add_data_breakpoint_info(data: *SessionData, name: []const u8, thread_id:
     var clone = try utils.mem_object_undefined(data.allocator, DataBreakpointInfo);
     errdefer clone.deinit();
 
-    const key: DataBreakpointInfo.ID =
-        if (reference) |ref|
-        .{ .variable = .{ .reference = ref, .name = name } }
-    else if (frame_id) |frame|
-        .{ .frame_expression = .{ .frame = frame, .name = name } }
-    else
-        .{ .global_expression = name };
-
     const data_clone = try utils.mem_object_clone(&clone, info);
-    const key_clone = try utils.mem_object_clone(&clone, key);
+    const key_clone: DataBreakpointInfo.ID = blk: {
+        const key: DataBreakpointInfo.ID =
+            if (reference) |ref|
+            .{ .variable = .{ .reference = ref, .name = name } }
+        else if (frame_id) |frame|
+            .{ .frame_expression = .{ .frame = frame, .name = name } }
+        else
+            .{ .global_expression = name };
+
+        break :blk try utils.mem_object_clone(&clone, key);
+    };
+
     clone.value = .{
         .data = data_clone,
-        .lifetime = switch (key) {
+        .lifetime = switch (key_clone) {
             .frame_expression, .variable => .{ .while_thread_suspended = thread_id },
             .global_expression => .indefinite,
         },
@@ -557,6 +560,7 @@ pub fn add_data_breakpoint_info(data: *SessionData, name: []const u8, thread_id:
     if (gop.found_existing) {
         gop.value_ptr.deinit();
     }
+    gop.key_ptr.* = key_clone;
     gop.value_ptr.* = clone;
 }
 
