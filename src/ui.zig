@@ -296,6 +296,7 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
         zgui.dockBuilderDockWindow("Debug Breakpoints", id_source);
         zgui.dockBuilderDockWindow("Debug Sources", id_source);
         zgui.dockBuilderDockWindow("Debug Sources Content", id_source);
+        zgui.dockBuilderDockWindow("Debug Data Breakpoints Info", id_source);
 
         zgui.dockBuilderFinish(id_dockspace);
 
@@ -589,7 +590,15 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     }
 }
 
-fn variables_node(connection: *Connection, data: *SessionData, callbacks: *Callbacks, thread: *const SessionData.Thread, variable: protocol.Variable, reference: SessionData.VariableReference, index: usize) void {
+fn variables_node(
+    connection: *Connection,
+    data: *SessionData,
+    callbacks: *Callbacks,
+    thread: *const SessionData.Thread,
+    variable: protocol.Variable,
+    reference: SessionData.VariableReference,
+    index: usize,
+) void {
     const has_evaluate_name = variable.evaluateName != null;
 
     const static = struct {
@@ -1156,16 +1165,31 @@ fn debug_scopes(name: [:0]const u8, data: SessionData, connection: *Connection) 
 }
 
 fn debug_variables(name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
+    const fields = std.meta.fields(protocol.Variable);
+    const columns_count = fields.len + 1;
+    if (!zgui.beginTable("Variables Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) return;
+    defer zgui.endTable();
+
+    zgui.tableSetupColumn("Action", .{});
+    inline for (fields) |field| {
+        zgui.tableSetupColumn(field.name, .{});
+    }
+    zgui.tableHeadersRow();
+
     for (data.threads.values()) |thread| {
         for (thread.variables.keys(), thread.variables.values()) |ref, vars| {
-            var buf: [64]u8 = undefined;
-            const n = std.fmt.bufPrintZ(&buf, "Reference {}##variables slice", .{ref}) catch return;
-            draw_table_from_slice_of_struct(n, protocol.Variable, vars.value);
-            zgui.newLine();
+            for (vars.value, 0..) |v, i| {
+                zgui.tableNextRow(.{});
+                _ = zgui.tableSetColumnIndex(0);
+                if (zgui.button(tmp_name("Breakpoint Info##Button {} {s} {}", .{ ref, v.name, i }), .{})) blk: {
+                    request.data_breakpoint_info_variable(connection, v.name, thread.id, ref) catch break :blk;
+                }
+
+                anytype_fill_table(v);
+            }
         }
     }
 }
@@ -1264,6 +1288,35 @@ fn debug_sources_content(name: [:0]const u8, data: SessionData, connection: *Con
     }
 }
 
+fn debug_data_breakpoints_info(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const fields = std.meta.fields(SessionData.DataBreakpointInfo.Body);
+    const columns_count = fields.len + 1;
+    var buf: [64]u8 = undefined;
+    const n = std.fmt.bufPrintZ(&buf, "Data Breakpoints Info", .{}) catch return;
+    if (zgui.beginTable(n, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        defer zgui.endTable();
+        zgui.tableSetupColumn("ID & Lifetime", .{});
+        inline for (fields) |field| {
+            zgui.tableSetupColumn(field.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (data.data_breakpoints_info.keys(), data.data_breakpoints_info.values()) |id, mo| {
+            const info = mo.value;
+            zgui.tableNextRow(.{});
+            _ = zgui.tableNextColumn();
+            zgui.text("{s}", .{anytype_to_string(id, .{})});
+            zgui.text("{s}", .{anytype_to_string(info.lifetime, .{})});
+
+            anytype_fill_table(info.data);
+        }
+    }
+}
+
 fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
@@ -1278,6 +1331,7 @@ fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Co
     debug_breakpoints("Debug Breakpoints", data.*, connection);
     debug_sources("Debug Sources", data, connection);
     debug_sources_content("Debug Sources Content", data.*, connection);
+    debug_data_breakpoints_info("Debug Data Breakpoints Info", data.*, connection);
 
     if (state.imgui_demo) zgui.showDemoWindow(&state.imgui_demo);
     if (state.plot_demo) plot.showDemoWindow(&state.plot_demo);
@@ -1654,6 +1708,13 @@ fn format(comptime fmt: []const u8, args: anytype) []const u8 {
 
 fn anytype_to_string(value: anytype, opts: ToStringOptions) []const u8 {
     return anytype_to_string_recurse(state.arena(), value, opts);
+}
+
+fn anytype_fill_table(value: anytype) void {
+    inline for (meta.fields(@TypeOf(value))) |field| {
+        _ = zgui.tableNextColumn();
+        zgui.text("{s}", .{anytype_to_string(@field(value, field.name), .{})});
+    }
 }
 
 fn anytype_to_string_recurse(allocator: std.mem.Allocator, const_value: anytype, opts: ToStringOptions) []const u8 {

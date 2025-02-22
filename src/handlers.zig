@@ -107,6 +107,19 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
     const err = handle_response(message, data, connection, resp);
 
     err catch |e| switch (e) {
+        error.UnexpectedToken => {
+            const description = utils.get_value(message.value, "body.description", .string) orelse "";
+            ui.notify("command.{s}\n{s}", .{ @tagName(resp.command), description }, 5000);
+            log.err("command.{s}, {s}", .{ @tagName(resp.command), description });
+
+            const status = utils.get_value(message.value, "success", .bool) orelse false;
+            if (status) {
+                connection.handled_response(message, resp, .success);
+            } else {
+                connection.handled_response(message, resp, .failure);
+            }
+        },
+
         error.AdapterNotSpawned,
         error.AdapterNotDoneInitializing,
 
@@ -118,7 +131,6 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.OutOfMemory,
         error.Overflow,
         error.InvalidCharacter,
-        error.UnexpectedToken,
         error.InvalidNumber,
         error.InvalidEnumTag,
         error.DuplicateField,
@@ -246,16 +258,8 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
 }
 
 pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {
-    if (utils.get_value(message.value, "command", .string)) |command_string| {
-        if (command_string.len == 0) {
-            const msg = utils.get_value(message.value, "message", .string) orelse "";
-            const show_user = utils.get_value(message.value, "show_user", .bool) orelse false;
-            if (show_user) {
-                ui.notify("command.{s}\n{s}", .{ @tagName(response.command), msg }, 5000);
-            }
-
-            log.err("command.{s}, {s}", .{ @tagName(response.command), msg });
-            connection.handled_response(message, response, .failure);
+    if (utils.get_value_untyped(message.value, "command")) |_| {
+        if (handle_malformed_message(message, response, connection)) {
             return;
         }
     }
@@ -470,6 +474,37 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
             connection.handled_response(message, response, .success);
         },
+        .dataBreakpointInfo => {
+            const retained = response.request_data.data_breakpoint_info;
+            const parsed = connection.parse_validate_response(
+                message,
+                protocol.DataBreakpointInfoResponse,
+                response.request_seq,
+                response.command,
+            ) catch |err| switch (err) {
+                // Probably the request succeeded but no result was found
+                error.UnexpectedToken => {
+                    if (handle_malformed_message(message, response, connection)) {
+                        return;
+                    } else {
+                        return err;
+                    }
+                },
+                else => return err,
+            };
+            defer parsed.deinit();
+
+            try data.add_data_breakpoint_info(
+                retained.name,
+                retained.thread_id,
+                retained.reference,
+                retained.frame_id,
+                parsed.value.body,
+            );
+
+            connection.handled_response(message, response, .success);
+        },
+        .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
 
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -477,8 +512,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
         .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .dataBreakpointInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setDataBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
         .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
@@ -549,4 +582,33 @@ fn acknowledge_and_handled(message: Connection.RawMessage, connection: *Connecti
 fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, request_seq: i32, command: Connection.Command) !void {
     const resp = try connection.parse_validate_response(message, protocol.Response, request_seq, command);
     resp.deinit();
+}
+
+/// Returns true when handled
+fn handle_malformed_message(message: Connection.RawMessage, response: Connection.Response, connection: *Connection) bool {
+    if (utils.get_value(message.value, "command", .string)) |command_string| {
+        if (command_string.len == 0) {
+            const msg = utils.get_value(message.value, "message", .string) orelse "";
+            const show_user = utils.get_value(message.value, "show_user", .bool) orelse false;
+            if (show_user) {
+                ui.notify("command.{s}\n{s}", .{ @tagName(response.command), msg }, 5000);
+            }
+
+            log.err("command.{s}, {s}", .{ @tagName(response.command), msg });
+            connection.handled_response(message, response, .failure);
+            return true;
+        }
+    } else if (utils.get_value(message.value, "body.description", .string)) |description| {
+        ui.notify("command.{s}\n{s}", .{ @tagName(response.command), description }, 5000);
+        log.err("command.{s}, {s}", .{ @tagName(response.command), description });
+
+        const status = utils.get_value(message.value, "success", .bool) orelse false;
+        if (status) {
+            connection.handled_response(message, response, .success);
+        } else {
+            connection.handled_response(message, response, .failure);
+        }
+    }
+
+    return false;
 }

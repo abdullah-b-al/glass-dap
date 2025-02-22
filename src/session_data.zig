@@ -25,6 +25,8 @@ sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash
 output: std.ArrayListUnmanaged(Output),
 output_arena: std.heap.ArenaAllocator,
 
+data_breakpoints_info: std.ArrayHashMapUnmanaged(DataBreakpointInfo.ID, MemObject(DataBreakpointInfo), DataBreakpointInfo.IDHash, false),
+
 /// Setting of function breakpoints replaces all existing function breakpoints with new function breakpoints.
 /// These are here to allow adding and removing individual breakpoints.
 // These are cheap to store so for now don't use a MemObject
@@ -71,6 +73,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .output = .empty,
         .function_breakpoints = .empty,
         .source_breakpoints = .empty,
+        .data_breakpoints_info = .empty,
     };
 }
 
@@ -99,6 +102,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
         data.modules.values(),
         data.breakpoints.items,
         data.sources.values(),
+        data.data_breakpoints_info.values(),
     };
     inline for (mem_objects) |slice| {
         for (slice) |*mo| {
@@ -112,6 +116,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
         &data.sources_content,
         &data.function_breakpoints,
         &data.source_breakpoints,
+        &data.data_breakpoints_info,
         &data.modules,
         &data.breakpoints,
         &data.sources,
@@ -157,6 +162,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
         .output = data.output,
         .function_breakpoints = data.function_breakpoints,
         .source_breakpoints = data.source_breakpoints,
+        .data_breakpoints_info = data.data_breakpoints_info,
     };
 }
 
@@ -174,6 +180,12 @@ pub fn end_session(data: *SessionData, restart_data: ?protocol.Value) !void {
     if (restart_data) |d| {
         data.terminated_restart_data = try data.clone_anytype(d);
     }
+}
+
+pub fn thread_clear_data(data: *SessionData, thread_id: ThreadID) void {
+    var thread = data.threads.getPtr(thread_id) orelse return;
+    data.clear_dead_data_breakpoint_info(thread.id);
+    thread.clear_all();
 }
 
 pub fn set_stopped(data: *SessionData, event: protocol.StoppedEvent) !void {
@@ -224,21 +236,21 @@ pub fn set_continued_response(data: *SessionData, response: protocol.ContinueRes
 
 fn set_continued_all(data: *SessionData) void {
     data.all_threads_status = .continued;
-    var iter = data.threads.iterator();
-    while (iter.next()) |entry| {
-        const thread = entry.value_ptr;
+    for (data.threads.values()) |*thread| {
         switch (thread.status) {
             .continued => {},
             .stopped => {
                 thread.status.deinit();
                 thread.status = .continued;
-                thread.clear_all();
+                data.thread_clear_data(thread.id);
             },
             .unknown => {
                 thread.status = .continued;
-                thread.clear_all();
+                data.thread_clear_data(thread.id);
             },
         }
+
+        thread.status = .continued;
     }
 }
 
@@ -335,7 +347,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
     }
 
     if (thread.status == .continued) {
-        thread.clear_all();
+        data.thread_clear_data(thread.id);
     }
 }
 
@@ -343,7 +355,7 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
     const thread = data.threads.getPtr(thread_id) orelse return;
 
     if (clear) {
-        thread.clear_all();
+        data.thread_clear_data(thread.id);
     }
 
     try thread.stack.ensureUnusedCapacity(data.allocator, response.len);
@@ -508,6 +520,53 @@ fn update_breakpoint(data: *SessionData, breakpoint: protocol.Breakpoint) !void 
     data.breakpoints.items[index] = cloned;
 }
 
+pub fn add_data_breakpoint_info(data: *SessionData, name: []const u8, thread_id: ThreadID, reference: ?VariableReference, frame_id: ?FrameID, info: DataBreakpointInfo.Body) !void {
+    try data.data_breakpoints_info.ensureUnusedCapacity(data.allocator, 1);
+
+    var clone = try utils.mem_object_undefined(data.allocator, DataBreakpointInfo);
+    errdefer clone.deinit();
+
+    const key: DataBreakpointInfo.ID =
+        if (reference) |ref|
+        .{ .variable = .{ .reference = ref, .name = name } }
+    else if (frame_id) |frame|
+        .{ .frame_expression = .{ .frame = frame, .name = name } }
+    else
+        .{ .global_expression = name };
+
+    const data_clone = try utils.mem_object_clone(&clone, info);
+    const key_clone = try utils.mem_object_clone(&clone, key);
+    clone.value = .{
+        .data = data_clone,
+        .lifetime = switch (key) {
+            .frame_expression, .variable => .{ .while_thread_suspended = thread_id },
+            .global_expression => .indefinite,
+        },
+    };
+
+    const gop = data.data_breakpoints_info.getOrPutAssumeCapacity(key_clone);
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+    gop.value_ptr.* = clone;
+}
+
+fn clear_dead_data_breakpoint_info(data: *SessionData, continued_thread: ThreadID) void {
+    var iter = data.data_breakpoints_info.iterator();
+    while (iter.next()) |entry| {
+        switch (entry.value_ptr.value.lifetime) {
+            .while_thread_suspended => |thread_id| {
+                if (thread_id == continued_thread) {
+                    var kv = data.data_breakpoints_info.fetchOrderedRemove(entry.key_ptr.*).?;
+                    kv.value.deinit();
+                    iter.reset();
+                }
+            },
+            .indefinite => {},
+        }
+    }
+}
+
 pub fn add_source_breakpoint(data: *SessionData, not_owned_source_id: SourceID, breakpoint: protocol.SourceBreakpoint) !void {
     try data.source_breakpoints.ensureUnusedCapacity(data.allocator, 1);
 
@@ -656,13 +715,13 @@ pub const Thread = struct {
         thread.status.deinit();
     }
 
-    pub fn clear_all(thread: *Thread) void {
+    fn clear_all(thread: *Thread) void {
         thread.clear_variables();
         thread.clear_scopes();
         thread.clear_stack();
     }
 
-    pub fn clear_stack(thread: *Thread) void {
+    fn clear_stack(thread: *Thread) void {
         for (thread.stack.items) |*mo| {
             mo.deinit();
         }
@@ -681,7 +740,7 @@ pub const Thread = struct {
         };
     }
 
-    pub fn clear_scopes(thread: *Thread) void {
+    fn clear_scopes(thread: *Thread) void {
         for (thread.scopes.values()) |*mo| {
             mo.deinit();
         }
@@ -699,7 +758,7 @@ pub const Thread = struct {
         };
     }
 
-    pub fn clear_variables(thread: *Thread) void {
+    fn clear_variables(thread: *Thread) void {
         for (thread.variables.values()) |*mo| {
             mo.deinit();
         }
@@ -798,3 +857,64 @@ pub const SourceBreakpoints = std.AutoArrayHashMapUnmanaged(i32, protocol.Source
 pub const Stopped = utils.get_field_type(protocol.StoppedEvent, "body");
 pub const Continued = utils.get_field_type(protocol.ContinuedEvent, "body");
 pub const Output = utils.get_field_type(protocol.OutputEvent, "body");
+
+pub const DataBreakpointInfo = struct {
+    pub const Body = utils.get_field_type(protocol.DataBreakpointInfoResponse, "body");
+
+    lifetime: union(enum) {
+        while_thread_suspended: ThreadID,
+        indefinite,
+    },
+
+    data: Body,
+
+    pub fn available(self: DataBreakpointInfo) bool {
+        return self.id == .string;
+    }
+
+    pub const ID = union(enum) {
+        variable: struct {
+            reference: VariableReference,
+            name: []const u8,
+        },
+        frame_expression: struct {
+            frame: FrameID,
+            name: []const u8,
+        },
+        global_expression: []const u8,
+    };
+
+    pub const IDHash = union(enum) {
+        pub fn hash(_: @This(), key: DataBreakpointInfo.ID) u32 {
+            var hasher = std.hash.Wyhash.init(0);
+            switch (key) {
+                .variable => |variable| {
+                    std.hash.autoHashStrat(&hasher, variable.reference, .Shallow);
+                    std.hash.autoHashStrat(&hasher, variable.name, .Deep);
+                },
+                .frame_expression => |expr| {
+                    std.hash.autoHashStrat(&hasher, expr.frame, .Shallow);
+                    std.hash.autoHashStrat(&hasher, expr.name, .Deep);
+                },
+                .global_expression => |string| std.hash.autoHashStrat(&hasher, string, .Deep),
+            }
+
+            return @as(u32, @truncate(hasher.final()));
+        }
+
+        pub fn eql(_: @This(), a: DataBreakpointInfo.ID, b: DataBreakpointInfo.ID, _: usize) bool {
+            if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+            switch (a) {
+                .variable => {
+                    return a.variable.reference == b.variable.reference and std.mem.eql(u8, a.variable.name, b.variable.name);
+                },
+                .frame_expression => {
+                    return a.frame_expression.frame == b.frame_expression.frame and std.mem.eql(u8, a.frame_expression.name, b.frame_expression.name);
+                },
+                .global_expression => {
+                    return std.mem.eql(u8, a.global_expression, b.global_expression);
+                },
+            }
+        }
+    };
+};

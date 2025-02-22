@@ -305,6 +305,29 @@ pub fn set_breakpoints(data: SessionData, connection: *Connection, source_id: Se
     }, .none, .{ .set_breakpoints = .{ .source_id = source_id } });
 }
 
+pub fn data_breakpoint_info_variable(
+    connection: *Connection,
+    name: []const u8,
+    thread_id: SessionData.ThreadID,
+    reference: SessionData.VariableReference,
+) !void {
+    try connection.queue_request(.dataBreakpointInfo, protocol.DataBreakpointInfoArguments{
+        .variablesReference = @intFromEnum(reference),
+        .name = name,
+        .frameId = null,
+        .bytes = null,
+        .asAddress = null,
+        .mode = null,
+    }, .none, .{
+        .data_breakpoint_info = .{
+            .name = name,
+            .thread_id = thread_id,
+            .reference = reference,
+            .frame_id = null,
+        },
+    });
+}
+
 pub fn set_variable(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference, name: []const u8, value: []const u8, has_evaluate_name: bool) !void {
     const use_expression =
         connection.adapter_capabilities.support.contains(.supportsSetExpression) and
