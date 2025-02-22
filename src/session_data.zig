@@ -839,8 +839,8 @@ pub const SourceIDHash = union(enum) {
     pub fn hash(_: @This(), key: SourceID) u32 {
         var hasher = std.hash.Wyhash.init(0);
         switch (key) {
-            .path => |path| std.hash.autoHashStrat(&hasher, path, .Shallow),
-            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Shallow),
+            .path => |path| std.hash.autoHashStrat(&hasher, path, .Deep),
+            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Deep),
         }
 
         return @as(u32, @truncate(hasher.final()));
@@ -856,8 +856,8 @@ pub const ModuleHash = union(enum) {
     pub fn hash(_: @This(), key: ModuleID) u32 {
         var hasher = std.hash.Wyhash.init(0);
         switch (key) {
-            .integer => |integer| std.hash.autoHashStrat(&hasher, integer, .Shallow),
-            .string => |string| std.hash.autoHashStrat(&hasher, string, .Shallow),
+            .integer => |integer| std.hash.autoHashStrat(&hasher, integer, .Deep),
+            .string => |string| std.hash.autoHashStrat(&hasher, string, .Deep),
         }
 
         return @as(u32, @truncate(hasher.final()));
@@ -951,11 +951,11 @@ pub const DataBreakpointInfo = struct {
             var hasher = std.hash.Wyhash.init(0);
             switch (key) {
                 .variable => |variable| {
-                    std.hash.autoHashStrat(&hasher, variable.reference, .Shallow);
+                    std.hash.autoHashStrat(&hasher, variable.reference, .Deep);
                     std.hash.autoHashStrat(&hasher, variable.name, .Deep);
                 },
                 .frame_expression => |expr| {
-                    std.hash.autoHashStrat(&hasher, expr.frame, .Shallow);
+                    std.hash.autoHashStrat(&hasher, expr.frame, .Deep);
                     std.hash.autoHashStrat(&hasher, expr.name, .Deep);
                 },
                 .global_expression => |string| std.hash.autoHashStrat(&hasher, string, .Deep),
