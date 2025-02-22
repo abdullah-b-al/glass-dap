@@ -78,8 +78,6 @@ pub fn init(allocator: mem.Allocator) SessionData {
 }
 
 pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
-    data.string_storage.deinit(data.allocator);
-    data.string_storage = .empty;
 
     {
         var iter = data.threads.iterator();
@@ -132,6 +130,9 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
             },
         }
     }
+
+    data.string_storage.deinit(data.allocator);
+    data.string_storage = .empty;
 
     switch (reason) {
         .deinit => {
