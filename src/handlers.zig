@@ -46,6 +46,7 @@ pub fn send_queued_requests(connection: *Connection, data: *SessionData) void {
             error.AdapterNotSpawned,
             error.BrokenPipe,
             => {
+                log.err("{}", .{err});
                 connection.adapter_died();
                 data.end_session(null) catch |e| utils.oom(e);
                 return;
@@ -119,6 +120,11 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
                 connection.handled_response(message, resp, .failure);
             }
         },
+        error.RequestFailed => {
+            if (!handle_failed_message_if_error(message, resp, connection)) {
+                return false;
+            }
+        },
 
         error.AdapterNotSpawned,
         error.AdapterNotDoneInitializing,
@@ -140,7 +146,6 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.UnknownField,
         error.MissingField,
         error.RequestResponseMismatchedRequestSeq,
-        error.RequestFailed,
         => {
             log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
             return false;
@@ -615,13 +620,35 @@ fn handle_malformed_message(message: Connection.RawMessage, response: Connection
         ui.notify("command.{s}\n{s}", .{ @tagName(response.command), description }, 5000);
         log.err("command.{s}, {s}", .{ @tagName(response.command), description });
 
-        const status = utils.get_value(message.value, "success", .bool) orelse false;
+        if (utils.get_value(message.value, "success", .bool)) |status| {
+            if (status) {
+                connection.handled_response(message, response, .success);
+            } else {
+                connection.handled_response(message, response, .failure);
+            }
+        } else {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+/// Returns true when handled
+fn handle_failed_message_if_error(message: Connection.RawMessage, response: Connection.Response, connection: *Connection) bool {
+    if (utils.get_value(message.value, "message", .string)) |string| {
+        ui.notify("command.{s}\n{s}", .{ @tagName(response.command), string }, 5000);
+    }
+
+    if (utils.get_value(message.value, "success", .bool)) |status| {
         if (status) {
             connection.handled_response(message, response, .success);
         } else {
             connection.handled_response(message, response, .failure);
         }
+    } else {
+        return false;
     }
 
-    return false;
+    return true;
 }
