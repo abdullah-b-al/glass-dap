@@ -9,6 +9,28 @@ const config = @import("config.zig");
 const Callbacks = handlers.Callbacks;
 const Dependency = Connection.Dependency;
 
+pub const client_name = "glass-dap";
+pub const initialize_arguments = protocol.InitializeRequestArguments{
+    .clientID = client_name,
+    .clientName = client_name,
+    .adapterID = "???",
+    .locale = "en-US",
+    .pathFormat = .path,
+    .columnsStartAt1 = false,
+    .linesStartAt1 = false,
+
+    .supportsVariableType = false,
+    .supportsVariablePaging = false,
+    .supportsRunInTerminalRequest = false,
+    .supportsMemoryReferences = false,
+    .supportsProgressReporting = false,
+    .supportsInvalidatedEvent = false,
+    .supportsMemoryEvent = false,
+    .supportsArgsCanBeInterpretedByShell = false,
+    .supportsStartDebuggingRequest = false,
+    .supportsANSIStyling = false,
+};
+
 pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *SessionData) !bool {
     // send and respond to initialize
     // send launch or attach
@@ -33,20 +55,13 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
         var launch_when = Dependency.When.after_queueing;
     };
 
-    const init_args = protocol.InitializeRequestArguments{
-        .clientName = "glass-dap",
-        .adapterID = "???",
-        .columnsStartAt1 = false,
-        .linesStartAt1 = false,
-    };
-
     connection.adapter_spawn() catch |err| switch (err) {
         error.AdapterAlreadySpawned => {},
         else => return err,
     };
 
     if (!static.init_done) {
-        try connection.queue_request_init(init_args, .none);
+        try connection.queue_request_init(initialize_arguments, .none);
         static.init_done = true;
     }
     if (!static.launch_done) {

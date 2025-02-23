@@ -1468,14 +1468,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Initialize Adapter", .{})) {
-        const init_args = protocol.InitializeRequestArguments{
-            .clientName = "glass-dap",
-            .adapterID = "???",
-            .columnsStartAt1 = false,
-            .linesStartAt1 = false,
-        };
-
-        try connection.queue_request_init(init_args, .none);
+        try connection.queue_request_init(request.initialize_arguments, .none);
     }
 
     zgui.sameLine(.{});
