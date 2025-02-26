@@ -96,6 +96,9 @@ fn build_exe(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.Reso
     exe.root_module.addImport("zgui", zgui.module("root"));
     exe.linkLibrary(zgui.artifact("imgui"));
 
+    const known_folders = b.dependency("known_folders", .{}).module("known-folders");
+    exe.root_module.addImport("known-folders", known_folders);
+
     if (install) {
         b.installArtifact(exe);
     }
