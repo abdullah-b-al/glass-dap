@@ -38,6 +38,14 @@ pub fn build(b: *std.Build) void {
     build_exe(b, exe_check, target, optimize, false);
     const check = b.step("check", "Check if main compiles");
     check.dependOn(&exe_check.step);
+
+    const ini_unit_tests = b.addTest(.{
+        .root_module = exe.root_module,
+    });
+    const run_ini_unit_tests = b.addRunArtifact(ini_unit_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_ini_unit_tests.step);
 }
 
 fn build_gen(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
