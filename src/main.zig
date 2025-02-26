@@ -88,18 +88,19 @@ pub fn main() !void {
     const cwd = try std.fs.cwd().realpath(".", &cwd_buf);
 
     // set configurations
+    defer config.app.deinit();
 
-    // launch json
-    const file = try config.find_launch_json();
-    const launch = if (file) |path| try config.open_and_parse_launch_json(gpas.general.allocator(), path) else null;
-    defer if (launch) |l| l.deinit();
-    if (launch) |l| {
-        config.launch = l.value;
+    const config_file = config.open_config_file(gpas.general.allocator()) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (config_file) |file| file.close();
+
+    if (config_file) |file| {
+        const content = try file.readToEndAlloc(gpas.general.allocator(), std.math.maxInt(u32));
+        defer gpas.general.allocator().free(content);
+        config.app = try config.parse_config(gpas.general.allocator(), content);
     }
-
-    // key mappings
-    try set_mappings(gpas.general.allocator());
-    defer config.mappings.deinit(gpas.general.allocator());
 
     const window = try ui.init_ui(gpas.ui.allocator(), cwd);
     defer ui.deinit_ui(window);
@@ -192,40 +193,6 @@ fn get_arg_without_double_dash(iter: *std.process.ArgIterator, err: anyerror) ![
     return arg;
 }
 
-fn set_mappings(allocator: std.mem.Allocator) !void {
-    const mods = config.Key.Mods.init;
-    const m = &config.mappings;
-
-    config.mappings = .empty;
-    try config.mappings.ensureTotalCapacity(allocator, 512);
-
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .l },
-        .next_line,
-    );
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .s },
-        .next_statement,
-    );
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .i },
-        .next_instruction,
-    );
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .p },
-        .pause,
-    );
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .c },
-        .continue_threads,
-    );
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{ .control = true }), .key = .b },
-        .begin_session,
-    );
-
-    m.putAssumeCapacity(
-        .{ .mods = mods(.{}), .key = .f12 },
-        .toggle_debug_ui,
-    );
+test "imports" {
+    _ = @import("ini.zig");
 }

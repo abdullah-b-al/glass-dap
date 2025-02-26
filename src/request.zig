@@ -123,11 +123,11 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
 }
 
 pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
-    const l, const i = get_launch_config() orelse return error.NoLaunchConfig;
+    const launch_config = get_launch_config() orelse return error.NoLaunchConfig;
 
     var extra = protocol.Object{};
 
-    const object = l.configurations[i];
+    const object = launch_config;
     var iter = object.map.iterator();
     while (iter.next()) |entry| {
         const value = try utils.to_protocol_value(arena, entry.value_ptr.*);
@@ -135,6 +135,8 @@ pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Con
     }
 
     _ = try connection.queue_request_launch(.{}, extra, dependency);
+
+    ui.state.launch_config = null;
 }
 
 // Causes a chain of requests to get the state
@@ -403,13 +405,17 @@ pub const SelectedThreadsIterator = struct {
     }
 };
 
-fn get_launch_config() ?struct { config.Launch, usize } {
-    const l = config.launch orelse return null;
-    const i = ui.state.launch_config_index orelse return null;
-    if (i >= l.configurations.len) {
-        ui.state.launch_config_index = null;
-        return null;
+fn get_launch_config() ?config.Object {
+    const conf = ui.state.launch_config orelse return null;
+    for (config.app.projects.keys(), config.app.projects.values()) |project, configs| {
+        if (std.mem.eql(u8, project, conf.project.slice())) {
+            if (conf.index >= configs.items.len) {
+                ui.state.launch_config = null;
+            } else {
+                return configs.items[conf.index];
+            }
+        }
     }
 
-    return .{ l, i };
+    return null;
 }

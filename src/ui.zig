@@ -21,8 +21,15 @@ const plot = zgui.plot;
 const DebugAllocators = @import("main.zig").DebugAllocators;
 const time = std.time;
 const mem = std.mem;
+const math = std.math;
 
 const Path = std.BoundedArray(u8, std.fs.max_path_bytes);
+const String64 = std.BoundedArray(u8, 64);
+
+const SelectedLaunchConfig = struct {
+    project: String64,
+    index: usize,
+};
 
 const State = struct {
     arena_state: std.heap.ArenaAllocator,
@@ -37,9 +44,9 @@ const State = struct {
 
     files: Files = undefined,
     home_path: Path = Path.init(0) catch unreachable,
-    picker: ?Picker = null,
+    picker: PickerWidget = .none,
 
-    launch_config_index: ?usize = null,
+    launch_config: ?SelectedLaunchConfig = null,
 
     variable_edit: ?struct {
         reference: SessionData.VariableReference,
@@ -225,7 +232,7 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
     if (state.ask_for_launch_config) {
-        state.ask_for_launch_config = !pick("Pick Launch configuration", config.launch, .launch_config);
+        state.ask_for_launch_config = !pick(.launch_config);
     }
 
     if (state.begin_session) {
@@ -1434,7 +1441,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         var source_buf: [512:0]u8 = .{0} ** 512;
     };
 
-    draw_launch_configurations(config.launch);
+    // draw_launch_configurations(config.configurations);
 
     if (zgui.button("Hide Debug UI", .{})) {
         state.debug_ui = false;
@@ -1909,7 +1916,7 @@ fn thread_of_source(source: protocol.Source, data: SessionData) ?SessionData.Thr
     return null;
 }
 
-fn draw_launch_configurations(maybe_launch: ?config.Launch) void {
+fn draw_launch_configurations(maybe_launch: ?config.Object) void {
     const launch = maybe_launch orelse return;
 
     const table = .{
@@ -1919,7 +1926,7 @@ fn draw_launch_configurations(maybe_launch: ?config.Launch) void {
 
     const columns_count = std.meta.fields(@TypeOf(table)).len;
 
-    for (launch.configurations, 0..) |conf, i| {
+    for (launch, 0..) |conf, i| {
         const name = tmp_name("Launch Configuration {}", .{i});
         if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
             defer zgui.endTable();
@@ -1955,45 +1962,70 @@ fn draw_launch_configurations(maybe_launch: ?config.Launch) void {
     }
 }
 
-fn pick(name: [:0]const u8, args: anytype, comptime widget: std.meta.Tag(Picker.Widget)) bool {
-    if (state.picker == null) {
-        state.picker = Picker{};
-    }
+fn pick(comptime widget: std.meta.Tag(PickerWidget)) bool {
+
     // keep the state of the widget alive between frames
-    if (std.meta.activeTag(state.picker.?.widget) != widget) {
-        state.picker.?.widget = @unionInit(Picker.Widget, @tagName(widget), .{});
+    if (std.meta.activeTag(state.picker) != widget) {
+        state.picker = @unionInit(PickerWidget, @tagName(widget), .{});
     }
-    const done = state.picker.?.begin(args, name);
-    state.picker.?.end();
+    const done = state.picker.pick();
 
     if (done) {
-        state.picker = null;
+        state.picker.done();
+        state.picker = .none;
     }
     return done;
 }
 
-pub const Picker = struct {
+pub const PickerWidget = union(enum) {
+    none,
+    launch_config: PickerLaunchConfig,
+
+    pub fn pick(widget: *PickerWidget) bool {
+        return switch (widget.*) {
+            .none => true,
+            inline else => |*w| w.pick(),
+        };
+    }
+
+    pub fn done(widget: *PickerWidget) void {
+        switch (widget.*) {
+            .none => {},
+            inline else => |*w| w.done(),
+        }
+    }
+};
+
+pub const picker = struct {
     var window_x: f32 = 0;
     var window_y: f32 = 0;
     var fit_window_in_display = false;
 
-    pub const NextResult = struct {
+    pub const EntryResult = struct {
+        pub const none = EntryResult{
+            .start_pos = .{ 0, 0 },
+            .size = .{ 0, 0 },
+            .hovered = false,
+            .clicked = false,
+            .double_clicked = false,
+        };
+
+        start_pos: [2]f32,
         size: [2]f32,
         hovered: bool = false,
         clicked: bool = false,
         double_clicked: bool = false,
+
+        pub fn hightlight(result: EntryResult, color: [4]f32) void {
+            zgui.getWindowDrawList().addRectFilled(.{
+                .pmin = result.start_pos,
+                .pmax = .{ result.start_pos[0] + result.size[0], result.start_pos[1] + result.size[1] },
+                .col = zgui.colorConvertFloat4ToU32(color),
+            });
+        }
     };
 
-    pub const Widget = union(enum) {
-        none,
-        launch_config: LaunchConfig,
-    };
-
-    selected_index: usize = 0,
-
-    widget: Widget = .none,
-
-    pub fn begin(picker: *Picker, args: anytype, name: [:0]const u8) bool {
+    pub fn begin_window(name: [:0]const u8) bool {
         const display_size = zgui.io.getDisplaySize();
         if (fit_window_in_display) {
             fit_window_in_display = false;
@@ -2013,8 +2045,6 @@ pub const Picker = struct {
         zgui.openPopup(name, .{});
         const escaped = zgui.isKeyDown(.escape);
         if (!escaped and zgui.beginPopupModal(name, .{ .popen = &open })) {
-            defer zgui.endPopup();
-
             { // center the window
                 const window_size = zgui.getWindowSize();
                 window_x = (display_size[0] / 2) - (window_size[0] / 2);
@@ -2025,181 +2055,170 @@ pub const Picker = struct {
                 }
             }
 
-            picker.widget_begin();
-            defer picker.widget_end();
-
-            var i: usize = 0;
-            while (true) : (i += 1) {
-                const start = zgui.getCursorScreenPos();
-                const result = picker.widget_next(args) orelse break;
-
-                var color = zgui.getStyle().getColor(.text_selected_bg);
-                if (result.clicked) {
-                    picker.selected_index = i;
-                }
-
-                if (result.double_clicked) {
-                    picker.widget_confirm(args, picker.selected_index);
-                    return true;
-                }
-
-                if (result.hovered) {
-                    color[3] = 0.25;
-                    zgui.getWindowDrawList().addRectFilled(.{
-                        .pmin = start,
-                        .pmax = .{ start[0] + result.size[0], start[1] + result.size[1] },
-                        .col = zgui.colorConvertFloat4ToU32(color),
-                    });
-                }
-
-                if (i == picker.selected_index) {
-                    color[3] = 0.5;
-                    zgui.getWindowDrawList().addRectFilled(.{
-                        .pmin = start,
-                        .pmax = .{ start[0] + result.size[0], start[1] + result.size[1] },
-                        .col = zgui.colorConvertFloat4ToU32(color),
-                    });
-                }
-            }
-        } else {
             return true;
         }
 
         return false;
     }
 
-    pub fn end(_: *Picker) void {}
-
-    pub fn widget_begin(picker: *Picker) void {
-        return switch (picker.widget) {
-            .none => @panic("Cannot use picker with no widget"),
-            inline else => |*widget| widget.begin(),
-        };
+    pub fn end_window() void {
+        zgui.endPopup();
     }
+};
 
-    pub fn widget_end(picker: *Picker) void {
-        return switch (picker.widget) {
-            .none => @panic("Cannot use picker with no widget"),
-            inline else => |*widget| widget.end(),
-        };
-    }
+pub const PickerLaunchConfig = struct {
+    const size = 512;
+    var buffer: [size]u8 = undefined;
+    var fb_allocator = std.heap.FixedBufferAllocator.init(&buffer);
+    show_table_for: std.AutoArrayHashMapUnmanaged(u32, void) = .empty,
+    hash_of_selected: u32 = 0,
 
-    pub fn widget_next(picker: *Picker, args: anytype) ?NextResult {
-        return switch (picker.widget) {
-            .none => @panic("Cannot use picker with no widget"),
-            inline else => |*widget| widget.next(args),
-        };
-    }
+    pub fn pick(widget: *PickerLaunchConfig) bool {
+        if (!picker.begin_window("Pick Launch configuration")) return false;
+        defer picker.end_window();
 
-    pub fn widget_confirm(picker: *Picker, args: anytype, index: usize) void {
-        return switch (picker.widget) {
-            .none => @panic("Cannot use picker with no widget"),
-            inline else => |*widget| widget.confirm(args, index),
-        };
-    }
+        defer zgui.endTabBar();
+        if (!zgui.beginTabBar("PickerLaunchConfig Tab Bar", .{})) return false;
 
-    pub const LaunchConfig = struct {
-        i: usize = 0,
-        show_table_for: [512]bool = .{false} ** 512,
+        for (config.app.projects.keys(), config.app.projects.values()) |project_name, configs| {
+            if (zgui.beginTabItem(tmp_name("{s}##{s}", .{ project_name, @typeName(PickerLaunchConfig) }), .{})) {
+                defer zgui.endTabItem();
+                zgui.text("Right click to see full configuration", .{});
 
-        pub fn begin(widget: *LaunchConfig) void {
-            zgui.text("Right click to see full configuration", .{});
-            widget.i = 0;
-        }
-        pub fn end(_: *LaunchConfig) void {}
+                for (configs.items, 0..) |conf, i| {
+                    var hasher = std.hash.Wyhash.init(0);
+                    std.hash.autoHashStrat(&hasher, project_name, .Deep);
+                    std.hash.autoHashStrat(&hasher, i, .Deep);
+                    const hash = @as(u32, @truncate(hasher.final()));
 
-        pub fn next(widget: *LaunchConfig, maybe_launch: ?config.Launch) ?NextResult {
-            defer widget.i += 1;
-            const launch = maybe_launch orelse return null;
-            if (widget.i >= launch.configurations.len) return null;
-
-            const conf = launch.configurations[widget.i];
-            if (widget.show_table_for[widget.i]) {
-                const name = tmp_name("Launch Configuration {}", .{widget.i});
-                return widget.show_table(name, launch);
-            } else {
-                var name: []const u8 = tmp_name("Launch Configuration {}", .{widget.i});
-                if (conf.map.get("name")) |n| if (n == .string) {
-                    name = n.string;
-                };
-                zgui.text("{s}", .{name});
-                if (zgui.isItemClicked(.right)) {
-                    widget.show_table_for[widget.i] = true;
-                }
-                return .{
-                    .size = zgui.getItemRectSize(),
-                    .hovered = zgui.isItemHovered(.{}),
-                    .clicked = zgui.isItemClicked(.left),
-                    .double_clicked = zgui.isItemClicked(.left) and zgui.isMouseDoubleClicked(.left),
-                };
-            }
-
-            return null;
-        }
-
-        pub fn confirm(_: *LaunchConfig, maybe_launch: ?config.Launch, index: usize) void {
-            const launch = maybe_launch orelse return;
-            if (index < launch.configurations.len) {
-                state.launch_config_index = index;
-            }
-        }
-
-        pub fn show_table(widget: *LaunchConfig, name: [:0]const u8, launch: config.Launch) ?NextResult {
-            const table = .{
-                .{ .name = "Key" },
-                .{ .name = "Value" },
-            };
-
-            const columns_count = std.meta.fields(@TypeOf(table)).len;
-
-            const conf = launch.configurations[widget.i];
-            if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{
-                .sizing = .fixed_fit,
-                .borders = .{ .outer_h = true, .outer_v = true },
-            } })) {
-                inline for (table) |entry| zgui.tableSetupColumn(entry.name, .{});
-
-                var iter = conf.map.iterator();
-                while (iter.next()) |entry| {
-                    zgui.tableNextRow(.{});
-
-                    _ = zgui.tableNextColumn();
-                    zgui.text("{s}", .{entry.key_ptr.*});
-                    _ = zgui.tableNextColumn();
-                    const value = entry.value_ptr.*;
-                    if (@TypeOf(value) == std.json.Value and value == .array) {
-                        zgui.text("[", .{});
-                        for (value.array.items, 0..) |item, ai| {
-                            const last = ai + 1 == value.array.items.len;
-                            zgui.sameLine(.{});
-                            if (!last) {
-                                zgui.text("{s},", .{anytype_to_string(item, .{})});
-                            } else {
-                                zgui.text("{s}", .{anytype_to_string(item, .{})});
-                            }
-                        }
-                        zgui.sameLine(.{});
-                        zgui.text("]", .{});
-                    } else {
-                        zgui.text("{s}", .{anytype_to_string(value, .{})});
+                    const result = widget.show_config(hash, conf);
+                    if (widget.handle(result, hash, project_name, i)) {
+                        return true;
                     }
                 }
+            }
+        }
 
-                zgui.endTable();
-                if (zgui.isItemClicked(.right)) {
-                    widget.show_table_for[widget.i] = false;
+        return false;
+    }
+
+    pub fn done(_: *PickerLaunchConfig) void {
+        fb_allocator.reset();
+    }
+
+    fn handle(widget: *PickerLaunchConfig, result: picker.EntryResult, hash: u32, project_name: []const u8, config_index: usize) bool {
+        var color = zgui.getStyle().getColor(.text_selected_bg);
+        if (result.clicked) {
+            widget.hash_of_selected = hash;
+        }
+
+        if (result.hovered) {
+            color[3] = 0.25;
+            result.hightlight(color);
+        }
+
+        if (hash == widget.hash_of_selected) {
+            color[3] = 0.5;
+            result.hightlight(color);
+        }
+
+        if (result.double_clicked) {
+            widget.confirm(project_name, config_index);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn show_config(widget: *PickerLaunchConfig, hash: u32, conf: config.Object) picker.EntryResult {
+        const start_pos = zgui.getCursorScreenPos();
+        if (widget.show_table_for.contains(hash)) {
+            const name = tmp_name("Launch Configuration {}", .{hash});
+            return widget.show_table(name, hash, conf);
+        } else {
+            var name: []const u8 = tmp_name("Launch Configuration {}", .{hash});
+            if (conf.map.get("name")) |n| if (n == .string) {
+                name = n.string;
+            };
+            zgui.text("{s}", .{name});
+            if (zgui.isItemClicked(.right)) {
+                widget.show_table_for.put(fb_allocator.allocator(), hash, {}) catch log.err("OOM", .{});
+            }
+            return .{
+                .start_pos = start_pos,
+                .size = zgui.getItemRectSize(),
+                .hovered = zgui.isItemHovered(.{}),
+                .clicked = zgui.isItemClicked(.left),
+                .double_clicked = zgui.isItemClicked(.left) and zgui.isMouseDoubleClicked(.left),
+            };
+        }
+    }
+
+    pub fn confirm(_: *PickerLaunchConfig, project_name: []const u8, config_index: usize) void {
+        const name = String64.fromSlice(project_name) catch {
+            notify("Project name is too long: {s}", .{project_name}, 3000);
+            return;
+        };
+
+        state.launch_config = .{ .project = name, .index = config_index };
+    }
+
+    pub fn show_table(widget: *PickerLaunchConfig, name: [:0]const u8, hash: u32, conf: config.Object) picker.EntryResult {
+        const table = .{
+            .{ .name = "Key" },
+            .{ .name = "Value" },
+        };
+
+        const columns_count = std.meta.fields(@TypeOf(table)).len;
+
+        const start_pos = zgui.getCursorScreenPos();
+        if (zgui.beginTable(name, .{ .column = columns_count, .flags = .{
+            .sizing = .fixed_fit,
+            .borders = .{ .outer_h = true, .outer_v = true },
+        } })) {
+            inline for (table) |entry| zgui.tableSetupColumn(entry.name, .{});
+
+            var iter = conf.map.iterator();
+            while (iter.next()) |entry| {
+                zgui.tableNextRow(.{});
+
+                _ = zgui.tableNextColumn();
+                zgui.text("{s}", .{entry.key_ptr.*});
+                _ = zgui.tableNextColumn();
+                const value = entry.value_ptr.*;
+                if (@TypeOf(value) == std.json.Value and value == .array) {
+                    zgui.text("[", .{});
+                    for (value.array.items, 0..) |item, ai| {
+                        const last = ai + 1 == value.array.items.len;
+                        zgui.sameLine(.{});
+                        if (!last) {
+                            zgui.text("{s},", .{anytype_to_string(item, .{})});
+                        } else {
+                            zgui.text("{s}", .{anytype_to_string(item, .{})});
+                        }
+                    }
+                    zgui.sameLine(.{});
+                    zgui.text("]", .{});
+                } else {
+                    zgui.text("{s}", .{anytype_to_string(value, .{})});
                 }
-                return .{
-                    .size = zgui.getItemRectSize(),
-                    .hovered = zgui.isItemHovered(.{}),
-                    .clicked = zgui.isItemClicked(.left),
-                    .double_clicked = zgui.isItemClicked(.left) and zgui.isMouseDoubleClicked(.left),
-                };
             }
 
-            return null;
+            zgui.endTable();
+            if (zgui.isItemClicked(.right)) {
+                _ = widget.show_table_for.swapRemove(hash);
+            }
+            return .{
+                .start_pos = start_pos,
+                .size = zgui.getItemRectSize(),
+                .hovered = zgui.isItemHovered(.{}),
+                .clicked = zgui.isItemClicked(.left),
+                .double_clicked = zgui.isItemClicked(.left) and zgui.isMouseDoubleClicked(.left),
+            };
         }
-    };
+
+        return .none;
+    }
 };
 
 fn log_err(err: anyerror, src: std.builtin.SourceLocation) void {
@@ -2219,10 +2238,7 @@ fn get_action() ?config.Action {
         .alt = zgui.isKeyDown(.left_alt) or zgui.isKeyDown(.right_alt),
     });
 
-    var iter = config.mappings.iterator();
-    while (iter.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const action = entry.value_ptr.*;
+    for (config.app.mappings.keys(), config.app.mappings.values()) |key, action| {
         if (zgui.isKeyPressed(key.key, true) and key.mods.eql(mods)) {
             return action;
         }
