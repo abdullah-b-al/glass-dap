@@ -751,6 +751,20 @@ const State = enum {
             .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
         };
     }
+
+    pub fn accepts_requests(state: State) bool {
+        return switch (state) {
+            .initialized,
+            .launched,
+            .attached,
+            .partially_initialized,
+            .initializing,
+            .spawned,
+            => true,
+
+            .died, .not_spawned => false,
+        };
+    }
 };
 
 pub const Dependency = struct {

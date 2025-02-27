@@ -36,6 +36,10 @@ pub fn begin(connection: *Connection, data: *SessionData) void {
 }
 
 pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
+    if (!connection.state.accepts_requests()) {
+        return;
+    }
+
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
@@ -53,7 +57,6 @@ pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
             => {
                 log.err("{}", .{err});
                 connection.adapter_died();
-                // data.end_session(null) catch |e| utils.oom(e);
                 return;
             },
 
