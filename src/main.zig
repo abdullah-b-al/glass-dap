@@ -134,6 +134,7 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *session.Callba
         while (true) {
             const ok = connection.queue_messages(1) catch |err| switch (err) {
                 error.EndOfStream => blk: { // assume adapter died
+                    connection.adapter_died();
                     break :blk false;
                 },
                 else => blk: {
