@@ -586,7 +586,7 @@ fn clear_dead_data_breakpoint_info(data: *SessionData, continued_thread: ThreadI
                 if (thread_id == continued_thread) {
                     var kv = data.data_breakpoints_info.fetchOrderedRemove(entry.key_ptr.*).?;
                     kv.value.deinit();
-                    iter.reset();
+                    iter = data.data_breakpoints_info.iterator();
                 }
             },
             .indefinite => {},
@@ -610,7 +610,7 @@ pub fn remove_data_breakpoints_of_id(data: *SessionData, data_id: []const u8) bo
     while (iter.next()) |entry| {
         if (mem.eql(u8, entry.key_ptr.dataId, data_id)) {
             _ = data.data_breakpoints.orderedRemove(entry.key_ptr.*);
-            iter.reset();
+            iter = data.data_breakpoints.iterator();
             result = true;
         }
     }
