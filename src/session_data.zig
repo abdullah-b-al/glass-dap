@@ -299,22 +299,41 @@ pub fn set_terminated(data: *SessionData, _: protocol.TerminatedEvent) !void {
     data.status = .terminated;
 }
 
+pub const ThreadEventReason = blk: {
+    const Body = utils.get_field_type(protocol.ThreadEvent, "body");
+    break :blk utils.get_field_type(Body, "reason");
+};
+pub fn set_thread_from_event(data: *SessionData, id: ThreadID, reason: ThreadEventReason) !void {
+    switch (reason) {
+        .started => try data.add_or_update_thread(id, null, null),
+        .exited => data.remove_thread(id),
+        .string => |string| {
+            log.info("Thread Event with unknown reason: {s}", .{string});
+        },
+    }
+}
+
 pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
     // Remove threads that no longer exist
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const old = entry.key_ptr.*;
         if (!utils.entry_exists(threads, "id", @as(ID, @intFromEnum(old)))) {
-            _ = data.threads.orderedRemove(old);
-            entry.value_ptr.deinit(data.allocator);
-            // iterator invalidated reset
-            iter = data.threads.iterator();
+            data.remove_thread(old);
+
+            iter = data.threads.iterator(); // iterator invalidated
         }
     }
 
     for (threads) |new| {
         try data.add_or_update_thread(@enumFromInt(new.id), new.name, null);
     }
+}
+
+fn remove_thread(data: *SessionData, id: ThreadID) void {
+    var thread = data.threads.getPtr(id) orelse return;
+    thread.deinit(data.allocator);
+    _ = data.threads.orderedRemove(id);
 }
 
 fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, cloned_status: ?Thread.Status) !void {

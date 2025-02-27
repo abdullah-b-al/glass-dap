@@ -263,7 +263,16 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             connection.handled_event(message, .breakpoint);
         },
 
-        .thread,
+        .thread => {
+            const parsed = try connection.parse_event(message, protocol.ThreadEvent, .thread);
+            defer parsed.deinit();
+
+            const body = parsed.value.body;
+            try data.set_thread_from_event(@enumFromInt(body.threadId), body.reason);
+
+            connection.handled_event(message, .thread);
+        },
+
         .loadedSource,
         .process,
         .capabilities,
