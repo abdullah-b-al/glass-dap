@@ -30,7 +30,12 @@ pub const Callback = struct {
     timestamp: i128,
 };
 
-pub fn send_queued_requests(connection: *Connection, data: *SessionData) void {
+pub fn begin(connection: *Connection, data: *SessionData) void {
+    connection.begin_session();
+    data.begin_session();
+}
+
+pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
@@ -48,7 +53,7 @@ pub fn send_queued_requests(connection: *Connection, data: *SessionData) void {
             => {
                 log.err("{}", .{err});
                 connection.adapter_died();
-                data.end_session(null) catch |e| utils.oom(e);
+                // data.end_session(null) catch |e| utils.oom(e);
                 return;
             },
 

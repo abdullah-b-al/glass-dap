@@ -9,8 +9,8 @@ const utils = @import("utils.zig");
 const Args = @import("main.zig").Args;
 const request = @import("request.zig");
 const io = @import("io.zig");
-const handlers = @import("handlers.zig");
-const Callbacks = handlers.Callbacks;
+const session = @import("session.zig");
+const Callbacks = session.Callbacks;
 const config = @import("config.zig");
 const log = std.log.scoped(.ui);
 const Dir = std.fs.Dir;
@@ -566,7 +566,7 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
             }
         };
 
-        handlers.callback(callbacks, .success, .{ .response = .scopes }, null, static.func) catch return;
+        session.callback(callbacks, .success, .{ .response = .scopes }, null, static.func) catch return;
         state.waiting_for_scopes = true;
         return;
     };
@@ -2506,7 +2506,7 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
         }
     };
 
-    handlers.callback(callbacks, .always, .{ .response = .variables }, null, static.func) catch return;
+    session.callback(callbacks, .always, .{ .response = .variables }, null, static.func) catch return;
     state.waiting_for_variables = true;
 }
 
@@ -2522,6 +2522,6 @@ fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const Sessi
         }
     };
 
-    handlers.callback(callbacks, .always, .{ .response = .stackTrace }, null, static.func) catch return;
+    session.callback(callbacks, .always, .{ .response = .stackTrace }, null, static.func) catch return;
     state.waiting_for_stack_trace = true;
 }

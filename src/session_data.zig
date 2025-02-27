@@ -79,7 +79,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
     };
 }
 
-pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
+pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
 
     // Free elements of data structures
 
@@ -130,11 +130,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
     inline for (to_free) |ptr| {
         switch (reason) {
             .deinit => ptr.deinit(data.allocator),
-            .end_session => {
-                if (@intFromPtr(ptr) != @intFromPtr(&data.output)) {
-                    ptr.clearAndFree(data.allocator);
-                }
-            },
+            .begin_session => ptr.clearAndFree(data.allocator),
         }
     }
 
@@ -146,9 +142,9 @@ pub fn free(data: *SessionData, reason: enum { deinit, end_session }) void {
             data.arena.deinit();
             data.output_arena.deinit();
         },
-        .end_session => {
+        .begin_session => {
             _ = data.arena.reset(.free_all);
-            // keep the output arena so the output can be viewed
+            _ = data.output_arena.reset(.free_all);
         },
     }
 
@@ -180,8 +176,7 @@ pub fn deinit(data: *SessionData) void {
 }
 
 pub fn begin_session(data: *SessionData) void {
-    _ = data.output_arena.reset(.free_all);
-    data.output.clearAndFree(data.allocator);
+    data.free(.begin_session);
 }
 
 pub fn end_session(data: *SessionData, restart_data: ?protocol.Value) !void {
@@ -294,13 +289,13 @@ pub fn remove_module(data: *SessionData, module: protocol.Module) void {
     _ = data.modules.orderedRemove(module.id);
 }
 
-pub fn set_terminated(data: *SessionData, event: protocol.TerminatedEvent) !void {
-    const restart_data = if (event.body) |body|
-        body.restart
-    else
-        null;
+pub fn set_terminated(data: *SessionData, _: protocol.TerminatedEvent) !void {
+    // const restart_data = if (event.body) |body|
+    //     body.restart
+    // else
+    //     null;
 
-    try data.end_session(restart_data);
+    // TODO: Handle restart data
     data.status = .terminated;
 }
 
@@ -712,7 +707,6 @@ const DebuggeeStatus = union(enum) {
     running,
     stopped,
     terminated,
-    adapter_died,
 };
 
 pub const ID = i32;

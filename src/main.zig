@@ -9,7 +9,7 @@ const Object = protocol.Object;
 const time = std.time;
 const ui = @import("ui.zig");
 const log = std.log.scoped(.main);
-const handlers = @import("handlers.zig");
+const session = @import("session.zig");
 const config = @import("config.zig");
 const mem = std.mem;
 
@@ -112,7 +112,7 @@ pub fn main() !void {
     var connection = Connection.init(gpas.connection.allocator(), adapter, args.debug_connection);
     defer connection.deinit();
 
-    var callbacks = handlers.Callbacks.init(gpas.connection.allocator());
+    var callbacks = session.Callbacks.init(gpas.connection.allocator());
     defer {
         for (callbacks.items) |cb| {
             if (cb.message) |m| m.deinit();
@@ -125,7 +125,7 @@ pub fn main() !void {
     log.info("Window Closed", .{});
 }
 
-fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
+fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *session.Callbacks, connection: *Connection, data: *SessionData, args: Args) void {
     gpas.timer.reset();
 
     while (!window.shouldClose()) {
@@ -143,9 +143,9 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *handlers.Callb
             if (!ok) break;
         }
 
-        handlers.send_queued_requests(connection, data);
-        const handled_message = handlers.handle_queued_messages(callbacks, data, connection);
-        handlers.handle_callbacks(callbacks, data, connection);
+        session.send_queued_requests(connection, data);
+        const handled_message = session.handle_queued_messages(callbacks, data, connection);
+        session.handle_callbacks(callbacks, data, connection);
 
         if (handled_message) {
             ui.continue_rendering();

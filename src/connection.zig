@@ -36,11 +36,12 @@ debug_handled_events: std.ArrayList(RawMessage),
 state: State,
 debug: bool,
 
-/// Used for the seq field in the protocol
-seq: u32 = 1,
+/// Used for the seq field in the protocol. Starts at 1
+seq: u32,
 
 pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debug: bool) Connection {
     return .{
+        .seq = 1,
         .state = .not_spawned,
         .adapter = adapter_init(allocator, adapter_argv),
         .allocator = allocator,
@@ -65,7 +66,7 @@ pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debu
     };
 }
 
-fn free(connection: *Connection, reason: enum { deinit, adapter_died }) void {
+fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
     const to_free_with_items = .{
         &connection.queued_requests,
         &connection.messages,
@@ -82,44 +83,39 @@ fn free(connection: *Connection, reason: enum { deinit, adapter_died }) void {
 
         switch (reason) {
             .deinit => ptr.deinit(),
-            .adapter_died => ptr.clearAndFree(),
+            .begin_session => ptr.clearAndFree(),
         }
     }
 
     inline for (to_free) |ptr| {
         switch (reason) {
             .deinit => ptr.deinit(),
-            .adapter_died => ptr.clearAndFree(),
+            .begin_session => ptr.clearAndFree(),
         }
     }
 
     switch (reason) {
         .deinit => connection.free_debug(.deinit),
-        .adapter_died => connection.free_debug(.adapter_died),
+        .begin_session => connection.free_debug(.begin_session),
     }
 
     switch (reason) {
         .deinit => connection.arena.deinit(),
+        .begin_session => _ = connection.arena.reset(.free_all),
         // keep arena alive for debug data
-        .adapter_died => {},
-    }
-
-    if (reason == .adapter_died) {
-        connection.adapter = adapter_init(connection.allocator, connection.adapter.argv);
     }
 
     connection.* = Connection{
+        .seq = 1,
         .allocator = connection.allocator,
         .arena = connection.arena,
         .adapter = connection.adapter,
         .client_capabilities = connection.client_capabilities,
         .adapter_capabilities = switch (reason) {
-            .deinit => .{},
-            // since the arena is still alive this is safe
-            .adapter_died => connection.adapter_capabilities,
+            .begin_session, .deinit => .{},
         },
 
-        .state = .died,
+        .state = connection.state,
         .queued_requests = connection.queued_requests,
         .debug_requests = connection.debug_requests,
         .messages = connection.messages,
@@ -138,7 +134,7 @@ fn free(connection: *Connection, reason: enum { deinit, adapter_died }) void {
     };
 }
 
-fn free_debug(connection: *Connection, reason: enum { deinit, restarting_adapter, adapter_died }) void {
+fn free_debug(connection: *Connection, reason: enum { deinit, begin_session }) void {
     const debug_to_free = .{
         &connection.debug_requests,
         &connection.debug_failed_messages,
@@ -147,9 +143,7 @@ fn free_debug(connection: *Connection, reason: enum { deinit, restarting_adapter
     };
 
     switch (reason) {
-        // Keep debug data to be viewed
-        .adapter_died => {},
-        .restarting_adapter => {
+        .begin_session => {
             inline for (debug_to_free) |ptr| {
                 for (ptr.items) |*item| item.deinit();
                 ptr.clearAndFree();
@@ -166,6 +160,11 @@ fn free_debug(connection: *Connection, reason: enum { deinit, restarting_adapter
 
 pub fn deinit(connection: *Connection) void {
     connection.free(.deinit);
+}
+
+pub fn begin_session(connection: *Connection) void {
+    std.debug.assert(connection.state == .spawned or connection.state == .initialized);
+    connection.free(.begin_session);
 }
 
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
@@ -363,10 +362,6 @@ pub fn failed_message(connection: *Connection, message: RawMessage) void {
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
 pub fn queue_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments, depends_on: Dependency) !void {
-    if (connection.state.fully_initialized()) {
-        return error.AdapterAlreadyInitalized;
-    }
-
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
     try connection.queue_request(.initialize, arguments, depends_on, .no_data);
@@ -505,12 +500,8 @@ pub fn adapter_init(allocator: std.mem.Allocator, argv: []const []const u8) std.
 
 pub fn adapter_spawn(connection: *Connection) !void {
     switch (connection.state) {
-        .not_spawned => {},
+        .died, .not_spawned => {},
 
-        .died => {
-            connection.free_debug(.restarting_adapter);
-            connection.state = .not_spawned;
-        },
         .launched,
         .attached,
         .initialized,
@@ -531,7 +522,7 @@ pub fn adapter_wait(connection: *Connection) !std.process.Child.Term {
 }
 
 pub fn adapter_died(connection: *Connection) void {
-    connection.free(.adapter_died);
+    connection.state = .died;
 }
 
 pub fn adapter_kill(connection: *Connection) !std.process.Child.Term {
