@@ -536,3 +536,13 @@ pub fn to_protocol_value(allocator: std.mem.Allocator, value: std.json.Value) !p
         },
     };
 }
+
+pub fn join_variables(arena: std.mem.Allocator, parent: []const u8, child: []const u8) ![]const u8 {
+    if (parent.len == 0) return child;
+
+    if (child.len > 2 and child[0] == '[' and child[child.len - 1] == ']') {
+        return try std.fmt.allocPrint(arena, "{s}{s}", .{ parent, child });
+    } else {
+        return try std.fmt.allocPrint(arena, "{s}.{s}", .{ parent, child });
+    }
+}

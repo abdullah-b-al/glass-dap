@@ -503,6 +503,25 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
             connection.handled_response(message, response, .success);
         },
+        .setExpression => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.SetExpressionResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.set_expression;
+
+            try data.set_variable_expression(
+                retained.thread_id,
+                retained.reference,
+                retained.name,
+                parsed.value,
+            );
+
+            connection.handled_response(message, response, .success);
+        },
 
         .modules => {
             const parsed = try connection.parse_validate_response(
@@ -559,7 +578,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
         .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setExpression => log.err("TODO: {s}", .{@tagName(response.command)}),
         .stepInTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
         .gotoTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
         .completions => log.err("TODO: {s}", .{@tagName(response.command)}),

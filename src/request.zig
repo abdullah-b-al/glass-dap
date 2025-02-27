@@ -399,20 +399,63 @@ pub fn data_breakpoint_info_variable(
     });
 }
 
-pub fn set_variable(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference, name: []const u8, value: []const u8, has_evaluate_name: bool) !void {
+pub fn set_variable(
+    connection: *Connection,
+    thread_id: SessionData.ThreadID,
+    reference: SessionData.VariableReference,
+    frame_id: SessionData.FrameID,
+    parent_name: []const u8,
+    name: []const u8,
+    value: []const u8,
+    has_evaluate_name: bool,
+) !void {
     const use_expression =
         connection.adapter_capabilities.support.contains(.supportsSetExpression) and
         connection.adapter_capabilities.support.contains(.supportsSetVariable) and
         has_evaluate_name;
 
     if (use_expression) {
-        // TODO: use set expression when implemented
+        try set_expression(connection, thread_id, reference, parent_name, name, value, frame_id);
     } else {
         try protocol_set_variable(connection, thread_id, reference, name, value);
     }
 }
 
-fn protocol_set_variable(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference, name: []const u8, value: []const u8) !void {
+pub fn set_expression(
+    connection: *Connection,
+    thread_id: SessionData.ThreadID,
+    reference: SessionData.VariableReference,
+    parent_name: []const u8,
+    name: []const u8,
+    value: []const u8,
+    frame_id: SessionData.FrameID,
+) !void {
+    const expression = try utils.join_variables(ui.state.arena(), parent_name, name);
+
+    try connection.queue_request(
+        .setExpression,
+        protocol.SetExpressionArguments{
+            .expression = expression,
+            .value = value,
+            .frameId = @intFromEnum(frame_id),
+            .format = null,
+        },
+        .none,
+        .{ .set_expression = .{
+            .thread_id = thread_id,
+            .reference = reference,
+            .name = name,
+        } },
+    );
+}
+
+fn protocol_set_variable(
+    connection: *Connection,
+    thread_id: SessionData.ThreadID,
+    reference: SessionData.VariableReference,
+    name: []const u8,
+    value: []const u8,
+) !void {
     _ = try connection.queue_request(.setVariable, protocol.SetVariableArguments{
         .variablesReference = @intFromEnum(reference),
         .name = name,

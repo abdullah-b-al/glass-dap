@@ -561,10 +561,11 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     if (thread.status != .stopped) return;
 
     const frame = state.active_source.get_frame(data) orelse return;
-    const scopes = thread.scopes.get(@enumFromInt(frame.id)) orelse {
+    const frame_id: SessionData.FrameID = @enumFromInt(frame.id);
+    const scopes = thread.scopes.get(frame_id) orelse {
         if (state.waiting_for_scopes) return;
 
-        request.scopes(connection, thread.id, @enumFromInt(frame.id), false) catch return;
+        request.scopes(connection, thread.id, frame_id, false) catch return;
 
         const static = struct {
             fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
@@ -597,7 +598,7 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
             };
 
             for (vars.value, 0..) |v, i| {
-                variables_node(connection, data, callbacks, thread, v, reference, i);
+                variables_node(connection, data, callbacks, thread, "", v, reference, frame_id, i);
             }
         }
     }
@@ -608,12 +609,12 @@ fn variables_node(
     data: *SessionData,
     callbacks: *Callbacks,
     thread: *const SessionData.Thread,
+    parent_variable_name: []const u8,
     variable: protocol.Variable,
     reference: SessionData.VariableReference,
+    frame_id: SessionData.FrameID,
     index: usize,
 ) void {
-    const has_evaluate_name = variable.evaluateName != null;
-
     const static = struct {
         pub fn variable_type(v: protocol.Variable) void {
             const style = zgui.getStyle();
@@ -657,9 +658,11 @@ fn variables_node(
                         connection,
                         thread.id,
                         reference,
+                        frame_id,
+                        parent_variable_name,
                         variable.name,
                         new_value,
-                        has_evaluate_name,
+                        variable.evaluateName != null,
                     ) catch return;
 
                     state.variable_edit = null;
@@ -711,7 +714,23 @@ fn variables_node(
                     zgui.indent(.{ .indent_w = 1 });
                     defer zgui.unindent(.{ .indent_w = 1 });
                 }
-                variables_node(connection, data, callbacks, thread, nested, nested_reference, i);
+                const variable_name = utils.join_variables(
+                    state.arena(),
+                    parent_variable_name,
+                    variable.name,
+                ) catch return;
+
+                variables_node(
+                    connection,
+                    data,
+                    callbacks,
+                    thread,
+                    variable_name,
+                    nested,
+                    nested_reference,
+                    frame_id,
+                    i,
+                );
             }
         },
     }

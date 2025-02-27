@@ -761,6 +761,11 @@ pub const RetainedRequestData = union(enum) {
         reference: SessionData.VariableReference,
         name: []const u8,
     },
+    set_expression: struct {
+        thread_id: SessionData.ThreadID,
+        reference: SessionData.VariableReference,
+        name: []const u8,
+    },
     data_breakpoint_info: struct {
         name: []const u8,
         thread_id: SessionData.ThreadID,
