@@ -158,7 +158,6 @@ fn loop(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *session.Callba
 }
 
 pub const Args = struct {
-    adapter: []const u8 = "",
     cwd: []const u8 = "",
     debug_connection: bool = false,
 };
@@ -172,9 +171,7 @@ fn parse_args() !Args {
     var result = Args{};
     _ = iter.skip();
     while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--adapter")) {
-            result.adapter = try get_arg_without_double_dash(&iter, error.MissingAdapterPath);
-        } else if (std.mem.eql(u8, arg, "--cwd")) {
+        if (std.mem.eql(u8, arg, "--cwd")) {
             result.cwd = try get_arg_without_double_dash(&iter, error.MissingCurrentWorkingDirectory);
         } else if (std.mem.eql(u8, arg, "--debug_connection")) {
             result.debug_connection = true;
