@@ -263,15 +263,19 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             connection.handled_event(message, .breakpoint);
         },
 
-        .thread => log.err("TODO event: {s}", .{@tagName(event)}),
-        .loadedSource => log.err("TODO event: {s}", .{@tagName(event)}),
-        .process => log.err("TODO event: {s}", .{@tagName(event)}),
-        .capabilities => log.err("TODO event: {s}", .{@tagName(event)}),
-        .progressStart => log.err("TODO event: {s}", .{@tagName(event)}),
-        .progressUpdate => log.err("TODO event: {s}", .{@tagName(event)}),
-        .progressEnd => log.err("TODO event: {s}", .{@tagName(event)}),
-        .invalidated => log.err("TODO event: {s}", .{@tagName(event)}),
-        .memory => log.err("TODO event: {s}", .{@tagName(event)}),
+        .thread,
+        .loadedSource,
+        .process,
+        .capabilities,
+        .progressStart,
+        .progressUpdate,
+        .progressEnd,
+        .invalidated,
+        .memory,
+        => {
+            log.err("TODO event: {s}", .{@tagName(event)});
+            connection.handled_event(message, event);
+        },
     }
 }
 
