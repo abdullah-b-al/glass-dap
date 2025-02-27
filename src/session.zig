@@ -35,6 +35,11 @@ pub fn begin(connection: *Connection, data: *SessionData) void {
     data.begin_session();
 }
 
+pub fn adapter_died(connection: *Connection) void {
+    connection.adapter_died();
+    ui.notify("Adapter Died", .{}, 10_000);
+}
+
 pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
     if (!connection.state.accepts_requests()) {
         return;
@@ -56,7 +61,7 @@ pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
             error.BrokenPipe,
             => {
                 log.err("{}", .{err});
-                connection.adapter_died();
+                adapter_died(connection);
                 return;
             },
 
