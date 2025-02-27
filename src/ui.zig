@@ -1076,6 +1076,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
         .{ .name = "Queued Messages", .items = connection.messages.items },
         .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
         .{ .name = "Debug Failed Messages", .items = connection.debug_failed_messages.items },
+        .{ .name = "Debug Messages With Unknown Fields", .items = connection.debug_messages_with_unknown_fields.items },
         .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
     };
     inline for (table) |element| {

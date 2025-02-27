@@ -33,7 +33,9 @@ debug_requests: std.ArrayList(Request),
 debug_failed_messages: std.ArrayList(RawMessage),
 debug_handled_responses: std.ArrayList(RawMessage),
 debug_handled_events: std.ArrayList(RawMessage),
+debug_messages_with_unknown_fields: std.ArrayList(RawMessage),
 
+/// When true this flag will prevent freeing of messages
 debug: bool,
 
 /// Used for the seq field in the protocol. Starts at 1
@@ -54,6 +56,7 @@ pub fn init(allocator: std.mem.Allocator, debug: bool) Connection {
         .debug_failed_messages = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
         .debug_handled_events = std.ArrayList(RawMessage).init(allocator),
+        .debug_messages_with_unknown_fields = std.ArrayList(RawMessage).init(allocator),
         .debug = debug,
         .client_capabilities = .{},
         .adapter_capabilities = .{},
@@ -125,6 +128,7 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
         .debug_failed_messages = connection.debug_failed_messages,
         .debug_handled_responses = connection.debug_handled_responses,
         .debug_handled_events = connection.debug_handled_events,
+        .debug_messages_with_unknown_fields = connection.debug_messages_with_unknown_fields,
         .debug = connection.debug,
         .total_requests = 0,
         .total_events_received = 0,
@@ -139,6 +143,10 @@ fn free_debug(connection: *Connection, reason: enum { deinit, begin_session }) v
         &connection.debug_failed_messages,
         &connection.debug_handled_responses,
         &connection.debug_handled_events,
+
+        // Do not free it's elements
+        // Contains copies to messages in the other debug_ fields
+        // connection.debug_messages_with_unknown_fields,
     };
 
     switch (reason) {
@@ -154,6 +162,11 @@ fn free_debug(connection: *Connection, reason: enum { deinit, begin_session }) v
                 ptr.deinit();
             }
         },
+    }
+
+    switch (reason) {
+        .begin_session => connection.debug_messages_with_unknown_fields.clearAndFree(),
+        .deinit => connection.debug_messages_with_unknown_fields.deinit(),
     }
 }
 
@@ -315,15 +328,6 @@ fn dependency_satisfied(connection: Connection, to_send: Connection.Request) boo
 pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
     _, const index = connection.get_event(seq) catch @panic("Only call this if you got an event");
     return connection.events.orderedRemove(index);
-}
-
-pub fn delayed_handled_event(connection: *Connection, event: Event, raw_event: RawMessage) void {
-    connection.handled_events.appendAssumeCapacity(event);
-    if (connection.debug) {
-        connection.debug_handled_events.appendAssumeCapacity(raw_event);
-    } else {
-        raw_event.deinit();
-    }
 }
 
 pub fn handled_event(connection: *Connection, message: RawMessage, event: Event) void {
@@ -509,6 +513,7 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
         try connection.messages.ensureTotalCapacity(connection.total_messages_received + 1);
         try connection.debug_failed_messages.ensureTotalCapacity(connection.messages.cap);
+        try connection.debug_messages_with_unknown_fields.ensureTotalCapacity(connection.total_messages_received + 1);
 
         const responses_capacity = connection.total_responses_received + 1;
         try connection.handled_responses.ensureTotalCapacity(responses_capacity);
@@ -580,8 +585,9 @@ pub fn get_event(connection: *Connection, name_or_seq: anytype) error{EventDoesN
 }
 
 pub fn parse_validate_response(connection: *Connection, message: RawMessage, comptime T: type, request_seq: i32, command: Command) !std.json.Parsed(T) {
-    const resp = try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
+    const resp = try connection.parse_message(message, T);
     errdefer resp.deinit();
+
     try validate_response(resp.value, request_seq, command);
 
     return resp;
@@ -592,7 +598,42 @@ pub fn parse_event(connection: *Connection, message: RawMessage, comptime T: typ
     std.debug.assert(std.mem.eql(u8, e, @tagName(event)));
 
     // this clones everything in the raw_event
-    return try std.json.parseFromValue(T, connection.allocator, message.value, .{});
+    // const result = try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
+    return connection.parse_message(message, T);
+}
+
+fn parse_message(connection: *Connection, message: RawMessage, comptime T: type) !std.json.Parsed(T) {
+    if (!connection.debug) {
+        return try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
+    }
+
+    var has_unknown_fields = false;
+    const result = std.json.parseFromValue(
+        T,
+        connection.allocator,
+        message.value,
+        .{ .ignore_unknown_fields = false },
+    ) catch |err| switch (err) {
+        error.UnknownField => blk: {
+            has_unknown_fields = true;
+            break :blk try std.json.parseFromValue(
+                T,
+                connection.allocator,
+                message.value,
+                .{ .ignore_unknown_fields = true },
+            );
+        },
+
+        error.OutOfMemory, error.Overflow, error.InvalidCharacter, error.UnexpectedToken, error.InvalidNumber, error.InvalidEnumTag, error.DuplicateField, error.MissingField, error.LengthMismatch => return err,
+    };
+
+    if (has_unknown_fields) {
+        // since having debug flag enable this is memory safe
+        // As long as we don't free it
+        connection.debug_messages_with_unknown_fields.appendAssumeCapacity(message);
+    }
+
+    return result;
 }
 
 fn validate_response(resp: anytype, request_seq: i32, command: Command) !void {
