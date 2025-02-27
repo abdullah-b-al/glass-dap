@@ -84,6 +84,9 @@ pub fn main() !void {
         try dir.setAsCwd();
     }
 
+    var env_map = try std.process.getEnvMap(gpas.general.allocator());
+    defer env_map.deinit();
+
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = try std.fs.cwd().realpath(".", &cwd_buf);
 
@@ -102,14 +105,13 @@ pub fn main() !void {
         config.app = try config.parse_config(gpas.general.allocator(), content);
     }
 
-    const window = try ui.init_ui(gpas.ui.allocator(), cwd);
+    const window = try ui.init_ui(gpas.ui.allocator(), &env_map, cwd);
     defer ui.deinit_ui(window);
 
     var data = SessionData.init(gpas.session_data.allocator());
     defer data.deinit();
 
-    const adapter: []const []const u8 = &.{args.adapter};
-    var connection = Connection.init(gpas.connection.allocator(), adapter, args.debug_connection);
+    var connection = Connection.init(gpas.connection.allocator(), args.debug_connection);
     defer connection.deinit();
 
     var callbacks = session.Callbacks.init(gpas.connection.allocator());

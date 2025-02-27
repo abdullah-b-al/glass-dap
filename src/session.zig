@@ -41,7 +41,7 @@ pub fn adapter_died(connection: *Connection) void {
 }
 
 pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
-    if (!connection.state.accepts_requests()) {
+    if (!connection.adapter.state.accepts_requests()) {
         return;
     }
 

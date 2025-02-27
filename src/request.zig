@@ -10,26 +10,30 @@ const Callbacks = session.Callbacks;
 const Dependency = Connection.Dependency;
 
 pub const client_name = "glass-dap";
-pub const initialize_arguments = protocol.InitializeRequestArguments{
-    .clientID = client_name,
-    .clientName = client_name,
-    .adapterID = "???",
-    .locale = "en-US",
-    .pathFormat = .path,
-    .columnsStartAt1 = false,
-    .linesStartAt1 = false,
 
-    .supportsVariableType = false,
-    .supportsVariablePaging = false,
-    .supportsRunInTerminalRequest = false,
-    .supportsMemoryReferences = false,
-    .supportsProgressReporting = false,
-    .supportsInvalidatedEvent = false,
-    .supportsMemoryEvent = false,
-    .supportsArgsCanBeInterpretedByShell = false,
-    .supportsStartDebuggingRequest = false,
-    .supportsANSIStyling = false,
-};
+pub fn initialize_arguments(connection: *const Connection) protocol.InitializeRequestArguments {
+    std.debug.assert(connection.adapter.process != null);
+    return protocol.InitializeRequestArguments{
+        .clientID = client_name,
+        .clientName = client_name,
+        .adapterID = connection.adapter.id,
+        .locale = "en-US",
+        .pathFormat = .path,
+        .columnsStartAt1 = false,
+        .linesStartAt1 = false,
+
+        .supportsVariableType = false,
+        .supportsVariablePaging = false,
+        .supportsRunInTerminalRequest = false,
+        .supportsMemoryReferences = false,
+        .supportsProgressReporting = false,
+        .supportsInvalidatedEvent = false,
+        .supportsMemoryEvent = false,
+        .supportsArgsCanBeInterpretedByShell = false,
+        .supportsStartDebuggingRequest = false,
+        .supportsANSIStyling = false,
+    };
+}
 
 var begin_session_state: BeginSessionState = .begin;
 const BeginSessionState = enum {
@@ -56,10 +60,23 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
     // send configuration done
     // respond to launch or attach
 
+    if (connection.adapter.process == null and ui.state.adapter_cmd.len > 0) {
+        errdefer {
+            ui.state.adapter_cmd.clear();
+            ui.state.adapter_id.clear();
+        }
+        try connection.adapter.set(ui.state.adapter_id.slice(), &.{ui.state.adapter_cmd.slice()});
+    }
+
+    if (connection.adapter.process == null or ui.state.adapter_cmd.len == 0) {
+        ui.state.ask_for_adapter = true;
+        return false;
+    }
+
     switch (data.status) {
         .terminated, .not_running => {},
         .running, .stopped => {
-            switch (connection.state) {
+            switch (connection.adapter.state) {
                 .launched, .attached => {
                     return true;
                 },
@@ -78,7 +95,7 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
         .done, .config_done => {},
     }
 
-    connection.adapter_spawn() catch |err| switch (err) {
+    connection.adapter.spawn() catch |err| switch (err) {
         error.AdapterAlreadySpawned => {},
         else => return err,
     };
@@ -88,7 +105,7 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
             session.begin(connection, data);
         },
         .init_and_launch => {
-            try connection.queue_request_init(initialize_arguments, .none);
+            try connection.queue_request_init(initialize_arguments(connection), .none);
             launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .after_queueing }) catch |err| switch (err) {
                 error.NoLaunchConfig => unreachable,
                 else => return err,
@@ -112,7 +129,7 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !void {
-    switch (connection.state) {
+    switch (connection.adapter.state) {
         .initialized,
         .partially_initialized,
         .initializing,

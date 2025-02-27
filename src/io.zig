@@ -2,6 +2,7 @@ const std = @import("std");
 const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const SessionData = @import("session_data.zig");
+const fs = std.fs;
 
 pub const Header = struct {
     content_len: usize,
@@ -70,6 +71,28 @@ pub fn read_message(pipe: std.fs.File, allocator: std.mem.Allocator) !std.json.P
     }
 
     return parsed;
+}
+
+pub fn file_touch(path: []const u8) !void {
+    std.debug.assert(fs.path.isAbsolute(path));
+    const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    defer file.close();
+
+    switch ((try file.stat()).kind) {
+        .file => {},
+
+        .block_device,
+        .character_device,
+        .directory,
+        .named_pipe,
+        .sym_link,
+        .unix_domain_socket,
+        .whiteout,
+        .door,
+        .event_port,
+        .unknown,
+        => return error.PathIsNotAFile,
+    }
 }
 
 pub fn read_all(allocator: std.mem.Allocator, header: Header, reader: anytype) ![]const u8 {

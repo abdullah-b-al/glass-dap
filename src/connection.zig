@@ -3,6 +3,7 @@ const protocol = @import("protocol.zig");
 const utils = @import("utils.zig");
 const SessionData = @import("session_data.zig");
 const io = @import("io.zig");
+const fs = std.fs;
 
 const log = std.log.scoped(.connection);
 
@@ -11,7 +12,7 @@ const Connection = @This();
 allocator: std.mem.Allocator,
 /// Used for deeply cloned values
 arena: std.heap.ArenaAllocator,
-adapter: std.process.Child,
+adapter: Adapter,
 
 client_capabilities: ClientCapabilitiesSet,
 adapter_capabilities: AdapterCapabilities,
@@ -33,17 +34,14 @@ debug_failed_messages: std.ArrayList(RawMessage),
 debug_handled_responses: std.ArrayList(RawMessage),
 debug_handled_events: std.ArrayList(RawMessage),
 
-state: State,
 debug: bool,
 
 /// Used for the seq field in the protocol. Starts at 1
 seq: u32,
-
-pub fn init(allocator: std.mem.Allocator, adapter_argv: []const []const u8, debug: bool) Connection {
+pub fn init(allocator: std.mem.Allocator, debug: bool) Connection {
     return .{
         .seq = 1,
-        .state = .not_spawned,
-        .adapter = adapter_init(allocator, adapter_argv),
+        .adapter = Adapter.init(allocator),
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
         .queued_requests = std.ArrayList(Request).init(allocator),
@@ -100,9 +98,13 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
     }
 
     switch (reason) {
-        .deinit => connection.arena.deinit(),
+        .deinit => {
+            connection.adapter.deinit();
+            connection.arena.deinit();
+        },
+        // the adapter should only be freed at the end of the program
+        // as it contains data required at different points
         .begin_session => _ = connection.arena.reset(.free_all),
-        // keep arena alive for debug data
     }
 
     connection.* = Connection{
@@ -111,11 +113,8 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
         .arena = connection.arena,
         .adapter = connection.adapter,
         .client_capabilities = connection.client_capabilities,
-        .adapter_capabilities = switch (reason) {
-            .begin_session, .deinit => .{},
-        },
+        .adapter_capabilities = .{},
 
-        .state = connection.state,
         .queued_requests = connection.queued_requests,
         .debug_requests = connection.debug_requests,
         .messages = connection.messages,
@@ -163,12 +162,12 @@ pub fn deinit(connection: *Connection) void {
 }
 
 pub fn begin_session(connection: *Connection) void {
-    std.debug.assert(connection.state == .spawned or connection.state == .initialized);
+    std.debug.assert(connection.adapter.state == .spawned or connection.adapter.state == .initialized);
     connection.free(.begin_session);
 }
 
 pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, depends_on: Dependency, request_data: RetainedRequestData) !void {
-    switch (connection.state) {
+    switch (connection.adapter.state) {
         .partially_initialized => {
             switch (command) {
                 .launch, .attach => {},
@@ -226,7 +225,7 @@ pub fn send_request(connection: *Connection, index: usize) !void {
     if (!connection.dependency_satisfied(request.*)) return error.DependencyNotSatisfied;
     try connection.expected_responses.ensureUnusedCapacity(1);
 
-    switch (connection.state) {
+    switch (connection.adapter.state) {
         .partially_initialized => {
             switch (request.command) {
                 .launch, .attach => {},
@@ -255,7 +254,7 @@ pub fn send_request(connection: *Connection, index: usize) !void {
     try connection.check_request_capability(request.command);
     const message = try io.create_message(connection.allocator, as_object);
     defer connection.allocator.free(message);
-    try connection.adapter_write_all(message);
+    try connection.adapter.write_all(message);
 
     connection.expected_responses.appendAssumeCapacity(.{
         .request_seq = protocol_request.seq,
@@ -365,11 +364,11 @@ pub fn queue_request_init(connection: *Connection, arguments: protocol.Initializ
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
 
     try connection.queue_request(.initialize, arguments, depends_on, .no_data);
-    connection.state = .initializing;
+    connection.adapter.state = .initializing;
 }
 
 pub fn handle_response_init(connection: *Connection, message: RawMessage, response: Response) !void {
-    std.debug.assert(connection.state == .initializing);
+    std.debug.assert(connection.adapter.state == .initializing);
     const cloner = connection.create_cloner();
 
     const resp = try connection.parse_validate_response(message, protocol.InitializeResponse, response.request_seq, .initialize);
@@ -383,7 +382,7 @@ pub fn handle_response_init(connection: *Connection, message: RawMessage, respon
         connection.adapter_capabilities.breakpointModes = try utils.clone_anytype(cloner, body.breakpointModes);
     }
 
-    connection.state = .partially_initialized;
+    connection.adapter.state = .partially_initialized;
     connection.handled_response(message, response, .success);
 }
 
@@ -395,7 +394,7 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
 }
 
 pub fn handle_response_launch(connection: *Connection, message: RawMessage, response: Response) void {
-    connection.state = .launched;
+    connection.adapter.state = .launched;
     connection.handled_response(message, response, .success);
 }
 
@@ -416,19 +415,19 @@ pub fn handle_response_disconnect(connection: *Connection, message: RawMessage, 
     try validate_response(resp.value, response.request_seq, .disconnect);
 
     if (resp.value.success) {
-        connection.state = .initialized;
+        connection.adapter.state = .initialized;
     }
 
     connection.handled_response(message, response, .success);
 }
 
 pub fn handle_event_initialized(connection: *Connection, message: RawMessage) void {
-    connection.state = .initialized;
+    connection.adapter.state = .initialized;
     connection.handled_event(message, .initialized);
 }
 
 pub fn handle_event_terminated(connection: *Connection, message: RawMessage) void {
-    connection.state = .initialized;
+    connection.adapter.state = .initialized;
     connection.handled_event(message, .terminated);
 }
 
@@ -490,52 +489,8 @@ pub fn check_request_capability(connection: *Connection, command: Command) !void
     }
 }
 
-pub fn adapter_init(allocator: std.mem.Allocator, argv: []const []const u8) std.process.Child {
-    var adapter = std.process.Child.init(argv, allocator);
-    adapter.stdin_behavior = .Pipe;
-    adapter.stdout_behavior = .Pipe;
-    adapter.stderr_behavior = .Pipe;
-    return adapter;
-}
-
-pub fn adapter_spawn(connection: *Connection) !void {
-    switch (connection.state) {
-        .died, .not_spawned => {},
-
-        .launched,
-        .attached,
-        .initialized,
-        .partially_initialized,
-        .initializing,
-        .spawned,
-        => return error.AdapterAlreadySpawned,
-    }
-    try connection.adapter.spawn();
-    connection.state = .spawned;
-}
-
-pub fn adapter_wait(connection: *Connection) !std.process.Child.Term {
-    std.debug.assert(connection.state != .not_spawned);
-    const code = try connection.adapter.wait();
-    connection.state = .not_spawned;
-    return code;
-}
-
 pub fn adapter_died(connection: *Connection) void {
-    connection.state = .died;
-}
-
-pub fn adapter_kill(connection: *Connection) !std.process.Child.Term {
-    std.debug.assert(connection.state != .not_spawned);
-    const code = try connection.adapter.kill();
-    connection.state = .not_spawned;
-    return code;
-}
-
-pub fn adapter_write_all(connection: *Connection, message: []const u8) !void {
-    std.debug.assert(connection.state != .not_spawned);
-    const stdin = connection.adapter.stdin orelse return;
-    try stdin.writer().writeAll(message);
+    connection.adapter.state = .died;
 }
 
 pub fn new_seq(s: *Connection) i32 {
@@ -549,7 +504,8 @@ pub fn peek_seq(s: Connection) i32 {
 }
 
 pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
-    const stdout = connection.adapter.stdout orelse return false;
+    const adapter = connection.adapter.process orelse return false;
+    const stdout = adapter.stdout orelse return false;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
         try connection.messages.ensureTotalCapacity(connection.total_messages_received + 1);
         try connection.debug_failed_messages.ensureTotalCapacity(connection.messages.cap);
@@ -726,47 +682,6 @@ const AdapterCapabilities = struct {
 
 pub const RawMessage = std.json.Parsed(std.json.Value);
 
-const State = enum {
-    /// Adapter and debuggee are running
-    launched,
-    /// Adapter and debuggee are running
-    attached,
-    /// Adapter is running and the initialized event has been handled
-    initialized,
-    /// Adapter is running and the initialize request has been responded to
-    partially_initialized,
-    /// Adapter is running and the initialize request has been sent
-    initializing,
-    /// Adapter is running
-    spawned,
-    /// Adapter is not running
-    not_spawned,
-    /// RIP
-    died,
-
-    pub fn fully_initialized(state: State) bool {
-        return switch (state) {
-            .initialized, .launched, .attached => true,
-
-            .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
-        };
-    }
-
-    pub fn accepts_requests(state: State) bool {
-        return switch (state) {
-            .initialized,
-            .launched,
-            .attached,
-            .partially_initialized,
-            .initializing,
-            .spawned,
-            => true,
-
-            .died, .not_spawned => false,
-        };
-    }
-};
-
 pub const Dependency = struct {
     pub const When = enum { any, after_queueing, before_queueing };
     pub const none = Dependency{ .dep = .none, .handled_when = .any };
@@ -926,4 +841,118 @@ pub const Event = blk: {
         .decls = &.{},
         .is_exhaustive = true,
     } });
+};
+
+pub const Adapter = struct {
+    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    process: ?std.process.Child,
+    id: []const u8,
+    state: State,
+
+    pub fn init(allocator: std.mem.Allocator) Adapter {
+        return .{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .process = null,
+            .id = "",
+            .state = .not_spawned,
+        };
+    }
+
+    pub fn deinit(adapter: *Adapter) void {
+        adapter.arena.deinit();
+    }
+
+    pub fn set(adapter: *Adapter, adapter_id: []const u8, argv: []const []const u8) !void {
+        std.debug.assert(adapter.process == null);
+
+        if (argv.len == 0) {
+            return error.EmptyCommand;
+        }
+
+        if (!fs.path.isAbsolute(argv[0])) {
+            return error.AdapterCommandIsNotAnAbsolutePath;
+        }
+
+        try io.file_touch(argv[0]);
+
+        const cloned_id = try adapter.arena.allocator().dupe(u8, adapter_id);
+        const cloned_argv = try adapter.arena.allocator().dupe([]const u8, argv);
+        for (cloned_argv) |*arg| {
+            arg.* = try adapter.arena.allocator().dupe(u8, arg.*);
+        }
+        adapter.process = std.process.Child.init(cloned_argv, adapter.allocator);
+        adapter.process.?.stdin_behavior = .Pipe;
+        adapter.process.?.stdout_behavior = .Pipe;
+        adapter.process.?.stderr_behavior = .Pipe;
+        adapter.id = cloned_id;
+    }
+
+    pub fn spawn(adapter: *Adapter) !void {
+        std.debug.assert(adapter.process != null);
+
+        switch (adapter.state) {
+            .died, .not_spawned => {},
+
+            .launched,
+            .attached,
+            .initialized,
+            .partially_initialized,
+            .initializing,
+            .spawned,
+            => return error.AdapterAlreadySpawned,
+        }
+
+        try adapter.process.?.spawn();
+        adapter.state = .spawned;
+    }
+
+    pub fn write_all(adapter: *Adapter, message: []const u8) !void {
+        std.debug.assert(adapter.state != .not_spawned);
+        std.debug.assert(adapter.process != null);
+        const stdin = adapter.process.?.stdin orelse return;
+        try stdin.writer().writeAll(message);
+    }
+
+    const State = enum {
+        /// Adapter and debuggee are running
+        launched,
+        /// Adapter and debuggee are running
+        attached,
+        /// Adapter is running and the initialized event has been handled
+        initialized,
+        /// Adapter is running and the initialize request has been responded to
+        partially_initialized,
+        /// Adapter is running and the initialize request has been sent
+        initializing,
+        /// Adapter is running
+        spawned,
+        /// Adapter is not running
+        not_spawned,
+        /// RIP
+        died,
+
+        pub fn fully_initialized(state: State) bool {
+            return switch (state) {
+                .initialized, .launched, .attached => true,
+
+                .died, .partially_initialized, .initializing, .spawned, .not_spawned => false,
+            };
+        }
+
+        pub fn accepts_requests(state: State) bool {
+            return switch (state) {
+                .initialized,
+                .launched,
+                .attached,
+                .partially_initialized,
+                .initializing,
+                .spawned,
+                => true,
+
+                .died, .not_spawned => false,
+            };
+        }
+    };
 };

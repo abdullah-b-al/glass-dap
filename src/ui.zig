@@ -47,6 +47,8 @@ const State = struct {
     picker: PickerWidget = .none,
 
     launch_config: ?SelectedLaunchConfig = null,
+    adapter_cmd: Path = Path.init(0) catch unreachable,
+    adapter_id: String64 = String64.init(0) catch unreachable,
 
     variable_edit: ?struct {
         reference: SessionData.VariableReference,
@@ -55,6 +57,7 @@ const State = struct {
     } = null,
 
     // handled in ui_tick
+    ask_for_adapter: bool = false,
     ask_for_launch_config: bool = false,
     begin_session: bool = false,
     update_active_source_to_top_of_stack: bool = false,
@@ -111,9 +114,7 @@ pub fn window_focus_callback(_: *glfw.Window, _: glfw.Bool) callconv(.C) void {
     continue_rendering();
 }
 
-pub fn init_ui(allocator: std.mem.Allocator, cwd: []const u8) !*glfw.Window {
-    var env_map = try std.process.getEnvMap(allocator);
-    defer env_map.deinit();
+pub fn init_ui(allocator: std.mem.Allocator, env_map: *const std.process.EnvMap, cwd: []const u8) !*glfw.Window {
     state = State{
         .arena_state = std.heap.ArenaAllocator.init(allocator),
         .notifications = Notifications.init(allocator),
@@ -231,6 +232,10 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
 
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
+    if (state.ask_for_adapter) {
+        state.ask_for_adapter = !pick(.adapter);
+    }
+
     if (state.ask_for_launch_config) {
         state.ask_for_launch_config = !pick(.launch_config);
     }
@@ -238,6 +243,7 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     if (state.begin_session) {
         state.begin_session = !(request.begin_session(state.arena(), connection, data) catch |err| blk: {
             log_err(err, @src());
+            notify("{}", .{err}, 3000);
             break :blk true;
         });
     }
@@ -1379,7 +1385,7 @@ fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Co
 }
 
 fn adapter_capabilities(connection: Connection) void {
-    if (connection.state == .not_spawned) return;
+    if (connection.adapter.state == .not_spawned) return;
 
     inline for (std.meta.fields(Connection.AdapterCapabilitiesKind)) |field| {
         const contains = connection.adapter_capabilities.support.contains(@enumFromInt(field.value));
@@ -1453,7 +1459,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
         state.plot_demo = true;
     }
 
-    zgui.text("Adapter State: {s}", .{@tagName(connection.state)});
+    zgui.text("Adapter State: {s}", .{@tagName(connection.adapter.state)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
     zgui.text("Exit Code:", .{});
     if (data.exit_code) |code| {
@@ -1470,12 +1476,12 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Spawn Adapter", .{})) {
-        try connection.adapter_spawn();
+        try connection.adapter.spawn();
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Initialize Adapter", .{})) {
-        try connection.queue_request_init(request.initialize_arguments, .none);
+        try connection.queue_request_init(request.initialize_arguments(connection), .none);
     }
 
     zgui.sameLine(.{});
@@ -1980,6 +1986,7 @@ fn pick(comptime widget: std.meta.Tag(PickerWidget)) bool {
 pub const PickerWidget = union(enum) {
     none,
     launch_config: PickerLaunchConfig,
+    adapter: PickerAdapter,
 
     pub fn pick(widget: *PickerWidget) bool {
         return switch (widget.*) {
@@ -2064,6 +2071,60 @@ pub const picker = struct {
     pub fn end_window() void {
         zgui.endPopup();
     }
+};
+
+pub const PickerAdapter = struct {
+    pub fn pick(_: *PickerAdapter) bool {
+        if (!picker.begin_window("Pick Adapter")) return false;
+        defer picker.end_window();
+
+        for (config.app.adapters.keys(), config.app.adapters.values()) |name, entries| {
+            const cmd = blk: {
+                for (entries) |entry| {
+                    if (std.mem.eql(u8, entry.key, "command")) {
+                        switch (entry.value) {
+                            .string => |string| break :blk string,
+                            else => zgui.text("{s}: has a non-string command", .{name}),
+                        }
+                    }
+                }
+
+                zgui.text("{s}: Doesn't have a command entry", .{name});
+                continue;
+            };
+
+            const id = blk: {
+                for (entries) |entry| {
+                    if (std.mem.eql(u8, entry.key, "id")) {
+                        switch (entry.value) {
+                            .string => |string| break :blk string,
+                            else => zgui.text("{s}: has a non-string id", .{name}),
+                        }
+                    }
+                }
+
+                zgui.text("{s}: Doesn't have an id entry", .{name});
+                continue;
+            };
+
+            if (zgui.selectable(tmp_name("{s}: {s}", .{ name, cmd }), .{})) {
+                state.adapter_cmd = Path.fromSlice(cmd) catch {
+                    notify("Adapter command too long: {s}", .{name}, 3000);
+                    return false;
+                };
+
+                state.adapter_id = String64.fromSlice(id) catch {
+                    notify("Adapter id too long: {s}", .{name}, 3000);
+                    return false;
+                };
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn done(_: *PickerAdapter) void {}
 };
 
 pub const PickerLaunchConfig = struct {
