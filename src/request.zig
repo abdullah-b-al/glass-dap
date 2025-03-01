@@ -8,6 +8,7 @@ const session = @import("session.zig");
 const config = @import("config.zig");
 const Callbacks = session.Callbacks;
 const Dependency = Connection.Dependency;
+const log = std.log.scoped(.request);
 
 pub const client_name = "glass-dap";
 
@@ -60,15 +61,16 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
     // send configuration done
     // respond to launch or attach
 
-    if (connection.adapter.process == null and ui.state.adapter_cmd.len > 0) {
+    if (connection.adapter.process == null and ui.state.adapter_name.len > 0) {
         errdefer {
-            ui.state.adapter_cmd.clear();
-            ui.state.adapter_id.clear();
+            ui.state.adapter_name.clear();
         }
-        try connection.adapter.set(ui.state.adapter_id.slice(), &.{ui.state.adapter_cmd.slice()});
+
+        const id, const argv = get_id_and_argv() orelse return true;
+        try connection.adapter.set(id, argv);
     }
 
-    if (connection.adapter.process == null or ui.state.adapter_cmd.len == 0) {
+    if (connection.adapter.process == null or ui.state.adapter_name.len == 0) {
         ui.state.ask_for_adapter = true;
         return false;
     }
@@ -506,4 +508,39 @@ fn get_launch_config() ?config.Object {
     }
 
     return null;
+}
+
+fn get_id_and_argv() ?struct { []const u8, []const []const u8 } {
+    const entries = config.app.adapters.get(ui.state.adapter_name.slice()) orelse {
+        log.err("Could not get adapter config from ui widget", .{});
+        return null;
+    };
+
+    const id = blk: {
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.key, "id")) {
+                switch (entry.value) {
+                    .string => |string| break :blk string,
+                    else => {},
+                }
+            }
+        }
+
+        break :blk "";
+    };
+
+    const argv = blk: {
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.key, "command")) {
+                switch (entry.value) {
+                    .string_array => |array| break :blk array,
+                    else => {},
+                }
+            }
+        }
+
+        return null;
+    };
+
+    return .{ id, argv };
 }

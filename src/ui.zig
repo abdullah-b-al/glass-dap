@@ -47,8 +47,7 @@ const State = struct {
     picker: PickerWidget = .none,
 
     launch_config: ?SelectedLaunchConfig = null,
-    adapter_cmd: Path = Path.init(0) catch unreachable,
-    adapter_id: String64 = String64.init(0) catch unreachable,
+    adapter_name: String64 = String64.init(0) catch unreachable,
 
     variable_edit: ?struct {
         reference: SessionData.VariableReference,
@@ -2103,8 +2102,8 @@ pub const PickerAdapter = struct {
                 for (entries) |entry| {
                     if (std.mem.eql(u8, entry.key, "command")) {
                         switch (entry.value) {
-                            .string => |string| break :blk string,
-                            else => zgui.text("{s}: has a non-string command", .{name}),
+                            .string_array => |array| break :blk array,
+                            else => zgui.text("{s}: has a non-string_array command", .{name}),
                         }
                     }
                 }
@@ -2113,30 +2112,29 @@ pub const PickerAdapter = struct {
                 continue;
             };
 
-            const id = blk: {
+            const id_exists = blk: {
                 for (entries) |entry| {
                     if (std.mem.eql(u8, entry.key, "id")) {
                         switch (entry.value) {
-                            .string => |string| break :blk string,
+                            .string => break :blk true,
                             else => zgui.text("{s}: has a non-string id", .{name}),
                         }
                     }
                 }
-
-                zgui.text("{s}: Doesn't have an id entry", .{name});
-                continue;
+                break :blk false;
             };
 
+            if (!id_exists) {
+                zgui.text("{s}: Doesn't have an id entry", .{name});
+                continue;
+            }
+
             if (zgui.selectable(tmp_name("{s}: {s}", .{ name, cmd }), .{})) {
-                state.adapter_cmd = Path.fromSlice(cmd) catch {
+                state.adapter_name = String64.fromSlice(name) catch {
                     notify("Adapter command too long: {s}", .{name}, 3000);
                     return false;
                 };
 
-                state.adapter_id = String64.fromSlice(id) catch {
-                    notify("Adapter id too long: {s}", .{name}, 3000);
-                    return false;
-                };
                 return true;
             }
         }
