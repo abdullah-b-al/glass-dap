@@ -329,9 +329,8 @@ pub fn set_threads(data: *SessionData, threads: []const protocol.Thread) !void {
 }
 
 fn remove_thread(data: *SessionData, id: ThreadID) void {
-    var thread = data.threads.getPtr(id) orelse return;
-    thread.deinit(data.allocator);
-    _ = data.threads.orderedRemove(id);
+    var kv = data.threads.fetchOrderedRemove(id) orelse return;
+    kv.value.deinit(data.allocator);
 }
 
 fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, cloned_status: ?Thread.Status) !void {
