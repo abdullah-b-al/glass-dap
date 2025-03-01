@@ -348,11 +348,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
-                    protocol.StackTraceArguments{
-                        .threadId = @intFromEnum(retained.thread_id),
-                        .startFrame = 0, // all
-                        .levels = 0, // all
-                    },
+                    request.defualt_stack_trace_args(retained.thread_id),
                     .none,
                     .{ .stack_trace = retained },
                 );
@@ -385,7 +381,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 for (parsed.value.body.scopes) |scope| {
                     _ = try connection.queue_request(
                         .variables,
-                        protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
+                        request.defualt_variables_args(@enumFromInt(scope.variablesReference)),
                         .none,
                         .{ .variables = .{
                             .thread_id = retained.thread_id,

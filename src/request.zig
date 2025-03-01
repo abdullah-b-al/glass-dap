@@ -200,10 +200,17 @@ pub fn get_thread_state(connection: *Connection, thread_id: SessionData.ThreadID
     );
 }
 
+pub fn defualt_stack_trace_args(thread_id: SessionData.ThreadID) protocol.StackTraceArguments {
+    return .{
+        .threadId = @intFromEnum(thread_id),
+        .startFrame = 0, // all
+        .levels = std.math.maxInt(u16), // some adapters don't want null or 0
+    };
+}
 pub fn stack_trace(connection: *Connection, thread_id: SessionData.ThreadID) !void {
     _ = try connection.queue_request(
         .stackTrace,
-        protocol.StackTraceArguments{ .threadId = @intFromEnum(thread_id) },
+        defualt_stack_trace_args(thread_id),
         .none,
         .{ .stack_trace = .{
             .thread_id = thread_id,
@@ -226,10 +233,19 @@ pub fn scopes(connection: *Connection, thread_id: SessionData.ThreadID, frame_id
     );
 }
 
+pub fn defualt_variables_args(reference: SessionData.VariableReference) protocol.VariablesArguments {
+    return .{
+        .variablesReference = @intFromEnum(reference),
+        // all variables
+        .start = 0,
+        .count = 0,
+    };
+}
+
 pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference) !void {
     _ = try connection.queue_request(
         .variables,
-        protocol.VariablesArguments{ .variablesReference = @intFromEnum(reference) },
+        defualt_variables_args(reference),
         .none,
         .{ .variables = .{
             .thread_id = thread_id,
@@ -346,7 +362,12 @@ pub fn pause(data: SessionData, connection: *Connection) void {
 
         _ = connection.queue_request(
             .stackTrace,
-            protocol.StackTraceArguments{ .threadId = @intFromEnum(thread.id) },
+            protocol.StackTraceArguments{
+                .threadId = @intFromEnum(thread.id),
+                // get all frames
+                .startFrame = 0,
+                .levels = 0,
+            },
             .{ .dep = .{ .response = .threads }, .handled_when = .after_queueing },
             .{ .stack_trace = .{
                 .thread_id = thread.id,
