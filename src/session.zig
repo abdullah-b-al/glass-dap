@@ -133,7 +133,8 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
                 connection.handled_response(message, resp, .failure);
             }
         },
-        error.RequestFailed => {
+
+        error.MissingField, error.RequestFailed => {
             if (!handle_failed_message_if_error(message, resp, connection)) {
                 return false;
             }
@@ -157,7 +158,6 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.WrongCommandForResponse,
 
         error.UnknownField,
-        error.MissingField,
         error.RequestResponseMismatchedRequestSeq,
         => {
             log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
