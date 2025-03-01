@@ -283,10 +283,8 @@ pub fn set_module(data: *SessionData, module: protocol.Module) !void {
 }
 
 pub fn remove_module(data: *SessionData, module: protocol.Module) void {
-    if (data.modules.getPtr(module.id)) |ptr| {
-        ptr.deinit();
-    }
-    _ = data.modules.orderedRemove(module.id);
+    var kv = data.modules.fetchOrderedRemove(module.id) orelse return;
+    kv.value.deinit();
 }
 
 pub fn set_terminated(data: *SessionData, _: protocol.TerminatedEvent) !void {
