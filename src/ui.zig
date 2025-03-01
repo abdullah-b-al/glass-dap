@@ -615,9 +615,12 @@ fn variables_node(
     index: usize,
 ) void {
     const static = struct {
-        pub fn variable_type(v: protocol.Variable) void {
+        pub fn variable_type(v: protocol.Variable, same_line: bool) void {
             const style = zgui.getStyle();
             if (v.type) |t| {
+                if (same_line) {
+                    zgui.sameLine(.{ .spacing = 0 });
+                }
                 zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(.text_disabled) });
                 defer zgui.popStyleColor(.{ .count = 1 });
                 zgui.text(": {s}", .{t});
@@ -633,6 +636,15 @@ fn variables_node(
     else
         .value;
 
+    const unique_string = tmp_name("{} {s} {s} {} {} {}", .{
+        thread.id,
+        parent_variable_name,
+        variable.name,
+        reference,
+        frame_id,
+        index,
+    });
+
     widget: switch (widget) {
         .input_text => {
             var edit = &state.variable_edit.?;
@@ -640,13 +652,12 @@ fn variables_node(
                 continue :widget .value;
             } else {
                 zgui.text("{s}", .{variable.name});
-                zgui.sameLine(.{ .spacing = 0 });
-                static.variable_type(variable);
+                static.variable_type(variable, true);
 
                 zgui.sameLine(.{});
                 zgui.setNextItemWidth(zgui.getContentRegionMax()[0]);
                 _ = zgui.inputText(
-                    tmp_name("##InputText {} {s} {}", .{ reference, variable.name, index }),
+                    tmp_name("##InputText {s}", .{unique_string}),
                     .{ .buf = &edit.buffer, .flags = .{} },
                 );
 
@@ -689,15 +700,13 @@ fn variables_node(
 
             zgui.sameLine(.{});
             zgui.text("{s}", .{variable.name});
-            zgui.sameLine(.{ .spacing = 0 });
-            static.variable_type(variable);
+            static.variable_type(variable, true);
             zgui.sameLine(.{});
             zgui.text("{s}", .{variable.value});
         },
         .node => {
-            const node_opened = zgui.treeNode(tmp_name("{s}##Node {} {}", .{ variable.name, reference, index }));
-            zgui.sameLine(.{ .spacing = 0 });
-            static.variable_type(variable);
+            const node_opened = zgui.treeNode(tmp_name("{s}##Node {s}", .{ variable.name, unique_string }));
+            static.variable_type(variable, true);
 
             if (!node_opened) return;
             defer zgui.treePop();
