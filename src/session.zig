@@ -4,7 +4,7 @@ const Connection = @import("connection.zig");
 const SessionData = @import("session_data.zig");
 const StringStorageUnmanaged = @import("slice_storage.zig").StringStorageUnmanaged;
 const utils = @import("utils.zig");
-const log = std.log.scoped(.handlers);
+const log = std.log.scoped(.session);
 const request = @import("request.zig");
 const ui = @import("ui.zig");
 
