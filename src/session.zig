@@ -336,14 +336,14 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 return;
             }
 
+            // codelldb doesn't include totalFrames even when it should.
+            // orelse 0 to avoid infinitely requesting stack traces
             const total: usize = @intCast(parsed.value.body.totalFrames orelse 0);
             const request_more = total > parsed.value.body.stackFrames.len;
 
             try data.set_stack(retained.thread_id, !request_more, parsed.value.body.stackFrames);
 
             const thread = data.threads.get(retained.thread_id) orelse return;
-            // codelldb doesn't include totalFrames even when it should.
-            // orelse 0 to avoid infinitely requesting stack traces
             defer connection.handled_response(message, response, .success);
             if (request_more) {
                 _ = try connection.queue_request(
