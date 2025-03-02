@@ -348,7 +348,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
-                    request.defualt_stack_trace_args(retained.thread_id),
+                    request.default_stack_trace_args(retained.thread_id),
                     .none,
                     .{ .stack_trace = retained },
                 );
@@ -381,7 +381,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 for (parsed.value.body.scopes) |scope| {
                     _ = try connection.queue_request(
                         .variables,
-                        request.defualt_variables_args(@enumFromInt(scope.variablesReference)),
+                        request.default_variables_args(@enumFromInt(scope.variablesReference)),
                         .none,
                         .{ .variables = .{
                             .thread_id = retained.thread_id,
@@ -678,6 +678,7 @@ fn handle_malformed_message(message: Connection.RawMessage, response: Connection
 fn handle_failed_message_if_error(message: Connection.RawMessage, response: Connection.Response, connection: *Connection) bool {
     if (utils.get_value(message.value, "message", .string)) |string| {
         ui.notify("command.{s}\n{s}", .{ @tagName(response.command), string }, 5000);
+        log.err("command.{s}\n{s}", .{ @tagName(response.command), string });
     }
 
     if (utils.get_value(message.value, "success", .bool)) |status| {
