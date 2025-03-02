@@ -351,7 +351,8 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .scopes = thread.scopes,
             .variables = thread.variables,
 
-            .selected = if (thread.status == .continued) true else thread.selected,
+            // user controlled
+            .selected = thread.selected,
         };
     } else {
         gop.value_ptr.* = .{

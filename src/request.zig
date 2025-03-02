@@ -505,9 +505,8 @@ pub const SelectedThreadsIterator = struct {
     }
 
     pub fn next(self: *SelectedThreadsIterator) ?SessionData.Thread {
-        const single_thread_exec = self.connection.adapter_capabilities.support.contains(.supportsSingleThreadExecutionRequests);
         while (self.iter.next()) |entry| {
-            if (!single_thread_exec or entry.value_ptr.selected) {
+            if (entry.value_ptr.selected) {
                 return entry.value_ptr.*;
             }
         }
