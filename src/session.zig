@@ -573,7 +573,26 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
         .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .evaluate => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .evaluate => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.EvaluateResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.evaluate;
+
+            try data.set_evaluted(
+                retained.thread_id,
+                retained.frame_id,
+                retained.expression,
+                parsed.value.body,
+            );
+
+            connection.handled_response(message, response, .success);
+        },
+
         .stepInTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
         .gotoTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
         .completions => log.err("TODO: {s}", .{@tagName(response.command)}),

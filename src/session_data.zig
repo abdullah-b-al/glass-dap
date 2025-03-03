@@ -344,12 +344,13 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
 
         thread.* = .{
             .id = id,
-            .name = if (name) |n| try data.intern_string(n) else thread.name,
+            .name = try data.intern_string(name orelse thread.name),
             .status = thread.status,
             .requested_stack = thread.requested_stack,
             .stack = thread.stack,
             .scopes = thread.scopes,
             .variables = thread.variables,
+            .evaluated = thread.evaluated,
 
             // user controlled
             .selected = thread.selected,
@@ -364,6 +365,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .stack = .empty,
             .scopes = .empty,
             .variables = .empty,
+            .evaluated = .empty,
         };
     }
 
@@ -383,12 +385,30 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
 
     for (response) |frame| {
         thread.stack.appendAssumeCapacity(try utils.mem_object(data.allocator, frame));
+
         if (frame.source) |source| {
             try data.set_source(source);
         }
     }
 
     thread.requested_stack = true;
+
+    // Clear evaluated variables that don't exist anymore
+    var iter = thread.evaluated.iterator();
+    next_frame: while (iter.next()) |entry| {
+        const frame_id: ID = @intFromEnum(entry.key_ptr.frame_id orelse continue);
+
+        for (thread.stack.items) |mo| {
+            if (mo.value.id == frame_id) {
+                continue :next_frame;
+            }
+        }
+
+        // not found
+        var kv = thread.evaluated.fetchOrderedRemove(entry.key_ptr.*).?;
+        kv.value.deinit();
+        iter = thread.evaluated.iterator();
+    }
 }
 
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
@@ -447,6 +467,12 @@ pub fn set_scopes(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, re
     gop.value_ptr.* = mo;
 }
 
+pub fn remove_variable(data: *SessionData, thread_id: ThreadID, reference: VariableReference) void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    var entry = thread.variables.fetchOrderedRemove(reference) orelse return;
+    entry.value.deinit();
+}
+
 pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_reference: VariableReference, response: []protocol.Variable) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
     try thread.variables.ensureUnusedCapacity(data.allocator, 1);
@@ -492,10 +518,25 @@ pub fn set_variable_expression(data: *SessionData, thread_id: ThreadID, referenc
     }
 }
 
-pub fn remove_variable(data: *SessionData, thread_id: ThreadID, reference: VariableReference) void {
+pub fn set_evaluted(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, expression: []const u8, response: Evaluated) !void {
     const thread = data.threads.getPtr(thread_id) orelse return;
-    var entry = thread.variables.fetchOrderedRemove(reference) orelse return;
-    entry.value.deinit();
+    try thread.evaluated.ensureUnusedCapacity(data.allocator, 1);
+
+    var value = try utils.mem_object(data.allocator, response);
+    errdefer value.deinit();
+    const key = try utils.mem_object_clone(&value, EvaluatedID{
+        .frame_id = frame_id,
+        .expression = expression,
+    });
+
+    const gop = thread.evaluated.getOrPutAssumeCapacity(key);
+
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+
+    gop.key_ptr.* = key;
+    gop.value_ptr.* = value;
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
@@ -769,13 +810,19 @@ pub const Thread = struct {
     stack: std.ArrayListUnmanaged(MemObject(protocol.StackFrame)),
     scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
     variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
+    evaluated: std.ArrayHashMapUnmanaged(EvaluatedID, MemObject(Evaluated), EvaluatedHash, false),
 
     pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
-        thread.clear_all();
+        thread.clear_variables();
+        thread.clear_scopes();
+        thread.clear_stack();
+
+        for (thread.evaluated.values()) |*mo| mo.deinit();
 
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
+        thread.evaluated.deinit(allocator);
         thread.status.deinit();
     }
 
@@ -800,6 +847,7 @@ pub const Thread = struct {
             .stack = thread.stack,
             .scopes = thread.scopes,
             .variables = thread.variables,
+            .evaluated = thread.evaluated,
             .selected = thread.selected,
         };
     }
@@ -818,6 +866,7 @@ pub const Thread = struct {
             .status = thread.status,
             .stack = thread.stack,
             .variables = thread.variables,
+            .evaluated = thread.evaluated,
             .selected = thread.selected,
         };
     }
@@ -835,9 +884,31 @@ pub const Thread = struct {
             .requested_stack = thread.requested_stack,
             .name = thread.name,
             .status = thread.status,
+            .evaluated = thread.evaluated,
             .stack = thread.stack,
             .selected = thread.selected,
         };
+    }
+};
+
+const Evaluated = utils.get_field_type(protocol.EvaluateResponse, "body");
+
+pub const EvaluatedID = struct {
+    frame_id: ?FrameID,
+    expression: []const u8,
+};
+
+pub const EvaluatedHash = struct {
+    pub fn hash(_: @This(), key: EvaluatedID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHashStrat(&hasher, key.frame_id, .Deep);
+        std.hash.autoHashStrat(&hasher, key.expression, .Deep);
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: EvaluatedID, b: EvaluatedID, _: usize) bool {
+        return a.frame_id == b.frame_id and
+            std.mem.eql(u8, a.expression, b.expression);
     }
 };
 

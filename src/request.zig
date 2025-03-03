@@ -254,6 +254,42 @@ pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, refer
     );
 }
 
+pub const EvaluateContext = enum {
+    watch,
+    repl,
+    hover,
+    clipboard,
+    variables,
+};
+pub fn evaluate(connection: *Connection, thread_id: SessionData.ThreadID, frame_id: SessionData.FrameID, evaluate_name: []const u8, context: EvaluateContext) !void {
+    const arguments = protocol.EvaluateArguments{
+        .expression = evaluate_name,
+        .frameId = @intFromEnum(frame_id),
+        .line = null,
+        .column = null,
+        .source = null,
+        .context = switch (context) {
+            .watch => .watch,
+            .repl => .repl,
+            .hover => .hover,
+            .clipboard => .clipboard,
+            .variables => .variables,
+        },
+        .format = null,
+    };
+
+    _ = try connection.queue_request(
+        .evaluate,
+        arguments,
+        .none,
+        .{ .evaluate = .{
+            .thread_id = thread_id,
+            .frame_id = frame_id,
+            .expression = evaluate_name,
+        } },
+    );
+}
+
 const Step = enum {
     next,
     in,

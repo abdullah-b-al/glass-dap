@@ -1219,6 +1219,26 @@ fn debug_variables(name: [:0]const u8, data: *SessionData, connection: *Connecti
             for (vars.value, 0..) |v, i| {
                 zgui.tableNextRow(.{});
                 _ = zgui.tableSetColumnIndex(0);
+
+                evaluate: {
+                    const frame_id = frame_id_of_variable(data, thread.id, ref) orelse break :evaluate;
+                    if (zgui.button(tmp_name("Evaluate##Button {} {s} {}", .{ ref, v.name, i }), .{})) {
+                        const eval_name = v.evaluateName orelse break :evaluate;
+                        request.evaluate(
+                            connection,
+                            thread.id,
+                            frame_id,
+                            eval_name,
+                            .variables,
+                        ) catch break :evaluate;
+                    }
+
+                    if (thread.evaluated.get(.{ .frame_id = frame_id, .expression = v.evaluateName orelse "" })) |result| {
+                        zgui.sameLine(.{});
+                        zgui.text("{s}", .{anytype_to_string(result.value.result, .{})});
+                    }
+                }
+
                 if (zgui.button(tmp_name("Breakpoint Info##Button {} {s} {}", .{ ref, v.name, i }), .{})) blk: {
                     request.data_breakpoint_info_variable(connection, v.name, thread.id, ref) catch break :blk;
                 }
@@ -1256,6 +1276,7 @@ fn debug_variables(name: [:0]const u8, data: *SessionData, connection: *Connecti
                         request.set_data_breakpoints(data, connection) catch break :blk;
                     }
                 }
+
                 anytype_fill_table(v);
             }
         }
@@ -2569,6 +2590,20 @@ fn breakpoint_toggle(source_id: SessionData.SourceID, line: i32, data: *SessionD
     }
 
     request.set_breakpoints(data.*, connection, source_id) catch return;
+}
+
+fn frame_id_of_variable(data: *const SessionData, thread_id: SessionData.ThreadID, reference: SessionData.VariableReference) ?SessionData.FrameID {
+    var thread = data.threads.get(thread_id).?;
+
+    for (thread.scopes.keys(), thread.scopes.values()) |frame_id, scopes_mo| {
+        for (scopes_mo.value) |scope| {
+            if (scope.variablesReference == @intFromEnum(reference)) {
+                return frame_id;
+            }
+        }
+    }
+
+    return null;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -772,6 +772,11 @@ pub const RetainedRequestData = union(enum) {
         reference: ?SessionData.VariableReference,
         frame_id: ?SessionData.FrameID,
     },
+    evaluate: struct {
+        thread_id: SessionData.ThreadID,
+        frame_id: SessionData.FrameID,
+        expression: []const u8,
+    },
     no_data,
 };
 
