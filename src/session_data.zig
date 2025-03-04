@@ -292,13 +292,17 @@ pub fn remove_module(data: *SessionData, module: protocol.Module) void {
     kv.value.deinit();
 }
 
-pub fn set_terminated(data: *SessionData, _: protocol.TerminatedEvent) !void {
+pub fn handle_event_terminated(data: *SessionData, _: protocol.TerminatedEvent) !void {
     // const restart_data = if (event.body) |body|
     //     body.restart
     // else
     //     null;
 
     // TODO: Handle restart data
+    data.terminated();
+}
+
+pub fn terminated(data: *SessionData) void {
     data.status = .terminated;
 }
 

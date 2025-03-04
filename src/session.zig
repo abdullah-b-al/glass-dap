@@ -219,7 +219,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             const parsed = try connection.parse_event(message, protocol.TerminatedEvent, .terminated);
             defer parsed.deinit();
 
-            try data.set_terminated(parsed.value);
+            try data.handle_event_terminated(parsed.value);
             connection.handle_event_terminated(message);
         },
         .output => {
@@ -629,6 +629,11 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             );
 
             connection.handled_response(message, response, .success);
+        },
+
+        .terminate => {
+            try acknowledge_and_handled(message, connection, response);
+            data.terminated();
         },
 
         .completions => log.err("TODO: {s}", .{@tagName(response.command)}),
