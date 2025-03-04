@@ -290,6 +290,20 @@ pub fn evaluate(connection: *Connection, thread_id: SessionData.ThreadID, frame_
     );
 }
 
+pub fn step_in_targets(connection: *Connection, thread_id: SessionData.ThreadID, frame_id: SessionData.FrameID) !void {
+    _ = try connection.queue_request(
+        .stepInTargets,
+        protocol.StepInTargetsArguments{
+            .frameId = @intFromEnum(frame_id),
+        },
+        .none,
+        .{ .step_in_targets = .{
+            .thread_id = thread_id,
+            .frame_id = frame_id,
+        } },
+    );
+}
+
 const Step = enum {
     next,
     in,

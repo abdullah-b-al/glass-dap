@@ -309,6 +309,8 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
         zgui.dockBuilderDockWindow("Debug Sources", id_source);
         zgui.dockBuilderDockWindow("Debug Sources Content", id_source);
         zgui.dockBuilderDockWindow("Debug Data Breakpoints Info", id_source);
+        zgui.dockBuilderDockWindow("Debug Output", id_source);
+        zgui.dockBuilderDockWindow("Debug Step-in Targets", id_source);
 
         zgui.dockBuilderFinish(id_dockspace);
 
@@ -1169,18 +1171,36 @@ fn debug_modules(name: [:0]const u8, data: SessionData) void {
 }
 
 fn debug_stack_frames(name: [:0]const u8, data: SessionData, connection: *Connection) void {
-    _ = connection;
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
+    const fields = std.meta.fields(protocol.StackFrame);
+    const columns_count = fields.len + 1;
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
 
-        var buf: [64]u8 = undefined;
-        const n = std.fmt.bufPrintZ(&buf, "Thread ID {}##variables slice", .{thread.id}) catch return;
-        draw_table_from_slice_of_struct(n, utils.MemObject(protocol.StackFrame), thread.stack.items);
-        zgui.newLine();
+        const n = tmp_name("Thread ID {}##frames slice", .{thread.id});
+        if (zgui.beginTable(n, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+            defer zgui.endTable();
+            zgui.tableSetupColumn("Actions", .{});
+            inline for (fields) |field| {
+                zgui.tableSetupColumn(field.name, .{});
+            }
+            zgui.tableHeadersRow();
+
+            for (thread.stack.items) |item| {
+                zgui.tableNextRow(.{});
+                _ = zgui.tableSetColumnIndex(0);
+
+                const label = tmp_name("Get Step-in Targets##Thread {} Frame {}", .{ thread.id, item.value.id });
+                if (zgui.button(label, .{})) {
+                    request.step_in_targets(connection, thread.id, @enumFromInt(item.value.id)) catch return;
+                }
+
+                anytype_fill_table(item.value);
+            }
+        }
     }
 }
 
@@ -1406,6 +1426,55 @@ fn debug_data_breakpoints_info(name: [:0]const u8, data: SessionData, connection
     }
 }
 
+fn debug_output(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const fields = std.meta.fields(SessionData.Output);
+    const columns_count = fields.len;
+    const n = tmp_name("Output", .{});
+    if (zgui.beginTable(n, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+        defer zgui.endTable();
+        inline for (fields) |field| {
+            zgui.tableSetupColumn(field.name, .{});
+        }
+        zgui.tableHeadersRow();
+
+        for (data.output.items) |item| {
+            zgui.tableNextRow(.{});
+            anytype_fill_table(item);
+        }
+    }
+}
+
+fn debug_step_in_targets(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const fields = std.meta.fields(protocol.StepInTarget);
+    const columns_count = fields.len;
+    for (data.threads.keys(), data.threads.values()) |thread_id, thread| {
+        for (thread.step_in_targets.keys(), thread.step_in_targets.values()) |frame_id, targets| {
+            const n = tmp_name("Step-in Targets##{} {}", .{ thread_id, frame_id });
+
+            if (zgui.beginTable(n, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+                defer zgui.endTable();
+                inline for (fields) |field| {
+                    zgui.tableSetupColumn(field.name, .{});
+                }
+                zgui.tableHeadersRow();
+
+                for (targets.value) |target| {
+                    zgui.tableNextRow(.{});
+                    anytype_fill_table(target);
+                }
+            }
+        }
+    }
+}
+
 fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
@@ -1421,6 +1490,8 @@ fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Co
     debug_sources("Debug Sources", data, connection);
     debug_sources_content("Debug Sources Content", data.*, connection);
     debug_data_breakpoints_info("Debug Data Breakpoints Info", data.*, connection);
+    debug_output("Debug Output", data.*, connection);
+    debug_step_in_targets("Debug Step-in Targets", data.*, connection);
 
     if (state.imgui_demo) zgui.showDemoWindow(&state.imgui_demo);
     if (state.plot_demo) plot.showDemoWindow(&state.plot_demo);

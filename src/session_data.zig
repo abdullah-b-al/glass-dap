@@ -351,6 +351,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .scopes = thread.scopes,
             .variables = thread.variables,
             .evaluated = thread.evaluated,
+            .step_in_targets = thread.step_in_targets,
 
             // user controlled
             .selected = thread.selected,
@@ -366,6 +367,7 @@ fn add_or_update_thread(data: *SessionData, id: ThreadID, name: ?[]const u8, clo
             .scopes = .empty,
             .variables = .empty,
             .evaluated = .empty,
+            .step_in_targets = .empty,
         };
     }
 
@@ -537,6 +539,20 @@ pub fn set_evaluted(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, 
 
     gop.key_ptr.* = key;
     gop.value_ptr.* = value;
+}
+
+pub fn set_step_in_targets(data: *SessionData, thread_id: ThreadID, frame_id: FrameID, targets: []protocol.StepInTarget) !void {
+    const thread = data.threads.getPtr(thread_id) orelse return;
+    try thread.step_in_targets.ensureUnusedCapacity(data.allocator, 1);
+
+    const cloned = try utils.mem_object(data.allocator, targets);
+    const gop = thread.step_in_targets.getOrPutAssumeCapacity(frame_id);
+
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+
+    gop.value_ptr.* = cloned;
 }
 
 pub fn set_breakpoints(data: *SessionData, origin: BreakpointOrigin, breakpoints: []const protocol.Breakpoint) !void {
@@ -811,6 +827,7 @@ pub const Thread = struct {
     scopes: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.Scope)),
     variables: std.AutoArrayHashMapUnmanaged(VariableReference, MemObject([]protocol.Variable)),
     evaluated: std.ArrayHashMapUnmanaged(EvaluatedID, MemObject(Evaluated), EvaluatedHash, false),
+    step_in_targets: std.AutoArrayHashMapUnmanaged(FrameID, MemObject([]protocol.StepInTarget)),
 
     pub fn deinit(thread: *Thread, allocator: mem.Allocator) void {
         thread.clear_variables();
@@ -818,11 +835,13 @@ pub const Thread = struct {
         thread.clear_stack();
 
         for (thread.evaluated.values()) |*mo| mo.deinit();
+        for (thread.step_in_targets.values()) |*mo| mo.deinit();
 
         thread.stack.deinit(allocator);
         thread.scopes.deinit(allocator);
         thread.variables.deinit(allocator);
         thread.evaluated.deinit(allocator);
+        thread.step_in_targets.deinit(allocator);
         thread.status.deinit();
     }
 
@@ -849,6 +868,7 @@ pub const Thread = struct {
             .variables = thread.variables,
             .evaluated = thread.evaluated,
             .selected = thread.selected,
+            .step_in_targets = thread.step_in_targets,
         };
     }
 
@@ -868,6 +888,7 @@ pub const Thread = struct {
             .variables = thread.variables,
             .evaluated = thread.evaluated,
             .selected = thread.selected,
+            .step_in_targets = thread.step_in_targets,
         };
     }
 
@@ -887,6 +908,7 @@ pub const Thread = struct {
             .evaluated = thread.evaluated,
             .stack = thread.stack,
             .selected = thread.selected,
+            .step_in_targets = thread.step_in_targets,
         };
     }
 };

@@ -777,6 +777,10 @@ pub const RetainedRequestData = union(enum) {
         frame_id: SessionData.FrameID,
         expression: []const u8,
     },
+    step_in_targets: struct {
+        thread_id: SessionData.ThreadID,
+        frame_id: SessionData.FrameID,
+    },
     no_data,
 };
 
