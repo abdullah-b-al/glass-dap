@@ -746,6 +746,8 @@ pub fn remove_source_breakpoint(data: *SessionData, source_id: SourceID, line: i
 fn update_source_breakpoints_line(data: *SessionData, source_id: SourceID, new_breakpoints: []const protocol.Breakpoint) !void {
     const breakpoints = data.source_breakpoints.getPtr(source_id) orelse return;
 
+    // The breakpoints returned are in the same order as the elements of the breakpoints
+    // (or the deprecated lines) array in the arguments.
     // https://microsoft.github.io/debug-adapter-protocol/specification#Requests_SetBreakpoints
     if (new_breakpoints.len != breakpoints.count()) return error.InvalidBreakpointResponse;
     for (breakpoints.keys(), breakpoints.values(), new_breakpoints) |*key, *a, b| {
