@@ -781,6 +781,11 @@ pub const RetainedRequestData = union(enum) {
         thread_id: SessionData.ThreadID,
         frame_id: SessionData.FrameID,
     },
+
+    goto_targets: struct {
+        source_id: SessionData.SourceID,
+        line: i32,
+    },
     no_data,
 };
 

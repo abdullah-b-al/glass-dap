@@ -20,6 +20,7 @@ modules: std.ArrayHashMapUnmanaged(ModuleID, MemObject(protocol.Module), ModuleH
 breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)),
 sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false),
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false),
+goto_targets: std.ArrayHashMapUnmanaged(GotoTargetID, MemObject([]protocol.GotoTarget), GotoTargetHash, false),
 
 // Output needs to be available for the whole session so MemObject isn't needed.
 output: std.ArrayListUnmanaged(Output),
@@ -76,6 +77,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .source_breakpoints = .empty,
         .data_breakpoints = .empty,
         .data_breakpoints_info = .empty,
+        .goto_targets = .empty,
     };
 }
 
@@ -105,6 +107,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
         data.breakpoints.items,
         data.sources.values(),
         data.data_breakpoints_info.values(),
+        data.goto_targets.values(),
     };
     inline for (mem_objects) |slice| {
         for (slice) |*mo| {
@@ -118,6 +121,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
         &data.threads,
         &data.output,
         &data.sources_content,
+        &data.goto_targets,
         &data.function_breakpoints,
         &data.source_breakpoints,
         &data.data_breakpoints,
@@ -163,6 +167,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
         .breakpoints = data.breakpoints,
         .sources = data.sources,
         .sources_content = data.sources_content,
+        .goto_targets = data.goto_targets,
         .output = data.output,
         .function_breakpoints = data.function_breakpoints,
         .data_breakpoints = data.data_breakpoints,
@@ -552,6 +557,24 @@ pub fn set_step_in_targets(data: *SessionData, thread_id: ThreadID, frame_id: Fr
         gop.value_ptr.deinit();
     }
 
+    gop.value_ptr.* = cloned;
+}
+
+pub fn set_goto_targets(data: *SessionData, non_owned_source_id: SourceID, line: i32, targets: []protocol.GotoTarget) !void {
+    try data.goto_targets.ensureUnusedCapacity(data.allocator, 1);
+
+    const id = GotoTargetID{
+        .source_id = try data.intern_source_id(non_owned_source_id),
+        .line = line,
+    };
+    const cloned = try utils.mem_object(data.allocator, targets);
+    const gop = data.goto_targets.getOrPutAssumeCapacity(id);
+
+    if (gop.found_existing) {
+        gop.value_ptr.deinit();
+    }
+
+    gop.key_ptr.* = id;
     gop.value_ptr.* = cloned;
 }
 
@@ -956,15 +979,36 @@ pub const SourceID = union(enum) {
     }
 };
 
+pub const GotoTargetID = struct {
+    source_id: SourceID,
+    line: i32,
+};
+
+pub const GotoTargetHash = struct {
+    pub fn hash(_: @This(), key: GotoTargetID) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHashStrat(&hasher, key.line, .Deep);
+        SourceIDHash.hash_id(&hasher, key.source_id);
+        return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn eql(_: @This(), a: GotoTargetID, b: GotoTargetID, _: usize) bool {
+        return a.source_id.eql(b.source_id) and a.line == b.line;
+    }
+};
+
 pub const SourceIDHash = union(enum) {
     pub fn hash(_: @This(), key: SourceID) u32 {
         var hasher = std.hash.Wyhash.init(0);
-        switch (key) {
-            .path => |path| std.hash.autoHashStrat(&hasher, path, .Deep),
-            .reference => |ref| std.hash.autoHashStrat(&hasher, ref, .Deep),
-        }
-
+        hash_id(&hasher, key);
         return @as(u32, @truncate(hasher.final()));
+    }
+
+    pub fn hash_id(hasher: anytype, key: SourceID) void {
+        switch (key) {
+            .path => |path| std.hash.autoHashStrat(hasher, path, .Deep),
+            .reference => |ref| std.hash.autoHashStrat(hasher, ref, .Deep),
+        }
     }
 
     pub fn eql(_: @This(), a: SourceID, b: SourceID, _: usize) bool {

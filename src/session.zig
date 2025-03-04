@@ -612,7 +612,25 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handled_response(message, response, .success);
         },
 
-        .gotoTargets => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .gotoTargets => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.GotoTargetsResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+            const retained = response.request_data.goto_targets;
+
+            try data.set_goto_targets(
+                retained.source_id,
+                retained.line,
+                parsed.value.body.targets,
+            );
+
+            connection.handled_response(message, response, .success);
+        },
+
         .completions => log.err("TODO: {s}", .{@tagName(response.command)}),
         .exceptionInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
         .readMemory => log.err("TODO: {s}", .{@tagName(response.command)}),

@@ -311,6 +311,7 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
         zgui.dockBuilderDockWindow("Debug Data Breakpoints Info", id_source);
         zgui.dockBuilderDockWindow("Debug Output", id_source);
         zgui.dockBuilderDockWindow("Debug Step-in Targets", id_source);
+        zgui.dockBuilderDockWindow("Debug Goto Targets", id_source);
 
         zgui.dockBuilderFinish(id_dockspace);
 
@@ -1324,10 +1325,10 @@ fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection
         zgui.tableHeadersRow();
 
         for (data.sources.values(), 0..) |source, i| {
-            const button_name = std.fmt.allocPrintZ(state.arena(), "Get Content##{}", .{i}) catch return;
+            const get_content = tmp_name("Get Content##{}", .{i});
             zgui.tableNextRow(.{});
             _ = zgui.tableNextColumn();
-            if (zgui.button(button_name, .{})) blk: {
+            if (zgui.button(get_content, .{})) blk: {
                 if (source.value.path) |path| {
                     const key, const new_source = io.open_file_as_source_content(state.arena(), path) catch break :blk;
                     data.set_source_content(key, new_source) catch break :blk;
@@ -1344,11 +1345,20 @@ fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection
                 }
             }
 
-            inline for (std.meta.fields(protocol.Source)) |field| {
-                _ = zgui.tableNextColumn();
-                const value = @field(source.value, field.name);
-                zgui.text("{s}", .{anytype_to_string(value, .{})});
+            const static = struct {
+                var buf: [32:0]u8 = .{0} ** 32;
+            };
+            const get_goto = tmp_name("Get Goto Targets##{}", .{i});
+            if (zgui.inputText(get_goto, .{
+                .buf = &static.buf,
+                .flags = .{ .enter_returns_true = true, .chars_decimal = true },
+            })) blk: {
+                const len = std.mem.indexOfScalar(u8, &static.buf, 0) orelse break :blk;
+                const line = std.fmt.parseInt(i32, static.buf[0..len], 10) catch break :blk;
+                request.goto_targets(connection, source.value, line) catch return;
             }
+
+            anytype_fill_table(source.value);
         }
         zgui.endTable();
     }
@@ -1475,6 +1485,31 @@ fn debug_step_in_targets(name: [:0]const u8, data: SessionData, connection: *Con
     }
 }
 
+fn debug_goto_targets(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+    _ = connection;
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const fields = std.meta.fields(protocol.GotoTarget);
+    const columns_count = fields.len;
+    for (data.goto_targets.keys(), data.goto_targets.values()) |source_id, targets| {
+        const n = tmp_name("Goto Targets##{}", .{source_id});
+
+        if (zgui.beginTable(n, .{ .column = columns_count, .flags = .{ .resizable = true } })) {
+            defer zgui.endTable();
+            inline for (fields) |field| {
+                zgui.tableSetupColumn(field.name, .{});
+            }
+            zgui.tableHeadersRow();
+
+            for (targets.value) |target| {
+                zgui.tableNextRow(.{});
+                anytype_fill_table(target);
+            }
+        }
+    }
+}
+
 fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = callbacks;
 
@@ -1492,6 +1527,7 @@ fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Co
     debug_data_breakpoints_info("Debug Data Breakpoints Info", data.*, connection);
     debug_output("Debug Output", data.*, connection);
     debug_step_in_targets("Debug Step-in Targets", data.*, connection);
+    debug_goto_targets("Debug Goto Targets", data.*, connection);
 
     if (state.imgui_demo) zgui.showDemoWindow(&state.imgui_demo);
     if (state.plot_demo) plot.showDemoWindow(&state.plot_demo);

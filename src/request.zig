@@ -304,6 +304,24 @@ pub fn step_in_targets(connection: *Connection, thread_id: SessionData.ThreadID,
     );
 }
 
+pub fn goto_targets(connection: *Connection, source: protocol.Source, line: i32) !void {
+    const source_id = SessionData.SourceID.from_source(source) orelse @panic("assert: Unidentifiable source");
+
+    _ = try connection.queue_request(
+        .gotoTargets,
+        protocol.GotoTargetsArguments{
+            .source = source,
+            .line = line,
+            .column = null,
+        },
+        .none,
+        .{ .goto_targets = .{
+            .source_id = source_id,
+            .line = line,
+        } },
+    );
+}
+
 const Step = enum {
     next,
     in,
