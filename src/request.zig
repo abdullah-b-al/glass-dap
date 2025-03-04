@@ -322,6 +322,17 @@ pub fn goto_targets(connection: *Connection, source: protocol.Source, line: i32)
     );
 }
 
+pub fn loaded_sources(connection: *Connection) !void {
+    try connection.queue_request(
+        .loadedSources,
+        // protocol.LoadedSourcesArguments{ .map = .{} },
+        // FIXME: LoadedSourcesArguments should be an empty struct. Fix gen.zig
+        .{}, // take no args.
+        .none,
+        .no_data,
+    );
+}
+
 const Step = enum {
     next,
     in,

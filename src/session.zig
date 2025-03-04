@@ -273,7 +273,18 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             connection.handled_event(message, .thread);
         },
 
-        .loadedSource,
+        .loadedSource => {
+            const parsed = try connection.parse_event(message, protocol.LoadedSourceEvent, .loadedSource);
+            defer parsed.deinit();
+
+            switch (parsed.value.body.reason) {
+                .new, .changed => try data.set_source(parsed.value.body.source),
+                .removed => data.remove_source(parsed.value.body.source),
+            }
+
+            connection.handled_event(message, .loadedSource);
+        },
+
         .process,
         .capabilities,
         .progressStart,
@@ -565,14 +576,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             connection.handled_response(message, response, .success);
         },
 
-        .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .attach => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .terminate => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .breakpointLocations => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setExceptionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .setInstructionBreakpoints => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .loadedSources => log.err("TODO: {s}", .{@tagName(response.command)}),
         .evaluate => {
             const parsed = try connection.parse_validate_response(
                 message,
@@ -636,12 +639,42 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             data.terminated();
         },
 
-        .completions => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .exceptionInfo => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .readMemory => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .writeMemory => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .disassemble => log.err("TODO: {s}", .{@tagName(response.command)}),
-        .locations => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .loadedSources => {
+            const parsed = try connection.parse_validate_response(
+                message,
+                protocol.LoadedSourcesResponse,
+                response.request_seq,
+                response.command,
+            );
+            defer parsed.deinit();
+
+            for (parsed.value.body.sources) |source| {
+                data.set_source(source) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    error.SourceWithoutID => continue,
+                };
+            }
+
+            connection.handled_response(message, response, .success);
+        },
+
+        .attach,
+        .locations,
+
+        // requires flag
+        .breakpointLocations,
+        .completions,
+        .readMemory,
+        .writeMemory,
+        .disassemble,
+        .setExceptionBreakpoints,
+        .exceptionInfo,
+        .setInstructionBreakpoints,
+        => log.err("TODO: {s}", .{@tagName(response.command)}),
+
+        // Reverse requests
+        .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
+        .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
     }
 }
 

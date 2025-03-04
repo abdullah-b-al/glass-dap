@@ -437,6 +437,12 @@ pub fn set_source(data: *SessionData, source: protocol.Source) !void {
     gop.value_ptr.* = cloned;
 }
 
+pub fn remove_source(data: *SessionData, source: protocol.Source) void {
+    const id = SourceID.from_source(source) orelse return;
+    var kv = data.sources.fetchOrderedRemove(id) orelse return;
+    kv.value.deinit();
+}
+
 pub fn get_source(data: SessionData, source_id: SourceID) ?protocol.Source {
     const maybe = switch (source_id) {
         .path => |path| data.sources.get(.{ .path = path }),

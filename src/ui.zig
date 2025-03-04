@@ -1316,7 +1316,12 @@ fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
+    if (zgui.button("Get All Sources", .{})) {
+        request.loaded_sources(connection) catch return;
+    }
+
     const columns_count = std.meta.fields(protocol.Source).len + 1;
+    var source_to_remove: ?protocol.Source = null;
     if (zgui.beginTable("Source Table", .{ .column = columns_count, .flags = .{ .resizable = true } })) {
         zgui.tableSetupColumn("Actions", .{});
         inline for (std.meta.fields(protocol.Source)) |field| {
@@ -1357,10 +1362,18 @@ fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection
                 const line = std.fmt.parseInt(i32, static.buf[0..len], 10) catch break :blk;
                 request.goto_targets(connection, source.value, line) catch return;
             }
+            if (zgui.button(tmp_name("Remove Source##{}", .{i}), .{})) {
+                source_to_remove = source.value;
+            }
 
             anytype_fill_table(source.value);
         }
+
         zgui.endTable();
+
+        if (source_to_remove) |source| {
+            data.remove_source(source);
+        }
     }
 }
 
