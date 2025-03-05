@@ -17,7 +17,7 @@ adapter: Adapter,
 client_capabilities: ClientCapabilitiesSet,
 adapter_capabilities: AdapterCapabilities,
 
-queued_requests: std.ArrayList(Request),
+requests: std.ArrayList(Request),
 expected_responses: std.ArrayList(Response),
 handled_responses: std.ArrayList(HandledResponse),
 handled_events: std.ArrayList(HandledEvent),
@@ -46,7 +46,7 @@ pub fn init(allocator: std.mem.Allocator, debug: bool) Connection {
         .adapter = Adapter.init(allocator),
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
-        .queued_requests = std.ArrayList(Request).init(allocator),
+        .requests = std.ArrayList(Request).init(allocator),
         .debug_requests = std.ArrayList(Request).init(allocator),
         .messages = Messages.init(allocator, {}),
         .expected_responses = std.ArrayList(Response).init(allocator),
@@ -69,7 +69,7 @@ pub fn init(allocator: std.mem.Allocator, debug: bool) Connection {
 
 fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
     const to_free_with_items = .{
-        &connection.queued_requests,
+        &connection.requests,
         &connection.messages,
     };
 
@@ -118,7 +118,7 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
         .client_capabilities = connection.client_capabilities,
         .adapter_capabilities = .{},
 
-        .queued_requests = connection.queued_requests,
+        .requests = connection.requests,
         .debug_requests = connection.debug_requests,
         .messages = connection.messages,
         .expected_responses = connection.expected_responses,
@@ -179,7 +179,8 @@ pub fn begin_session(connection: *Connection) void {
     connection.free(.begin_session);
 }
 
-pub fn queue_request(connection: *Connection, comptime command: Command, arguments: anytype, request_data: RetainedRequestData) !void {
+pub fn queue_request(connection: *Connection, command: Command, arguments: anytype, request_data: RetainedRequestData) !void {
+    try connection.check_request_capability(command);
     switch (connection.adapter.state) {
         .partially_initialized => {
             switch (command) {
@@ -198,21 +199,15 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
     }
 
     const total_requests = connection.total_requests + 1;
-    try connection.queued_requests.ensureUnusedCapacity(1);
+    try connection.requests.ensureTotalCapacity(total_requests);
     try connection.debug_requests.ensureTotalCapacity(total_requests);
 
-    // don't use the request's arena so as not to free the expected_responses data
-    // when the request is sent
-    const cloned_request_data = blk: {
-        const cloner = connection.create_cloner();
-        break :blk try utils.clone_anytype(cloner, request_data);
-    };
-
-    // FIXME: This leaks for some reason.
     var arena = std.heap.ArenaAllocator.init(connection.allocator);
     errdefer arena.deinit();
 
     const cloner = .{ .allocator = arena.allocator() };
+
+    const cloned_request_data = try utils.clone_anytype(cloner, request_data);
 
     const object = switch (@TypeOf(arguments)) {
         @TypeOf(null) => protocol.Object{},
@@ -222,7 +217,7 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
 
     const args = try utils.clone_anytype(cloner, object);
 
-    connection.queued_requests.appendAssumeCapacity(.{
+    connection.requests.appendAssumeCapacity(.{
         .arena = arena,
         .args = args,
         .command = command,
@@ -232,7 +227,16 @@ pub fn queue_request(connection: *Connection, comptime command: Command, argumen
 }
 
 pub fn send_request(connection: *Connection, index: usize) !void {
-    var request = &connection.queued_requests.items[index];
+    if (!connection.adapter.state.accepts_requests()) {
+        return;
+    }
+
+    var request = &connection.requests.items[index];
+    if (request.request_seq != null) {
+        // Already sent. Removed when handled
+        return;
+    }
+
     try connection.expected_responses.ensureUnusedCapacity(1);
 
     switch (connection.adapter.state) {
@@ -261,34 +265,40 @@ pub fn send_request(connection: *Connection, index: usize) !void {
 
     const as_object = try utils.value_to_object(request.arena.allocator(), protocol_request);
 
-    try connection.check_request_capability(request.command);
     const message = try io.create_message(connection.allocator, as_object);
     defer connection.allocator.free(message);
     try connection.adapter.write_all(message);
+
+    request.request_seq = protocol_request.seq;
 
     connection.expected_responses.appendAssumeCapacity(.{
         .request_seq = protocol_request.seq,
         .command = request.command,
         .request_data = request.request_data,
     });
-
-    _ = connection.remove_request(index, protocol_request.seq);
 }
 
-pub fn remove_request(connection: *Connection, index: usize, debug_request_seq: ?i32) Command {
-    var request = &connection.queued_requests.items[index];
-    const command = request.command;
+fn request_index(connection: *Connection, request_seq: i32) ?usize {
+    for (connection.requests.items, 0..) |req, i| {
+        if (req.request_seq == request_seq) {
+            return i;
+        }
+    }
+
+    return null;
+}
+
+fn remove_request(connection: *Connection, request_seq: i32) void {
+    const index = connection.request_index(request_seq).?;
+    var request = &connection.requests.items[index];
 
     if (connection.debug) {
-        request.debug_request_seq = debug_request_seq;
         connection.debug_requests.appendAssumeCapacity(request.*);
     } else {
         request.arena.deinit();
     }
 
-    _ = connection.queued_requests.orderedRemove(index);
-
-    return command;
+    _ = connection.requests.orderedRemove(index);
 }
 
 pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
@@ -319,6 +329,8 @@ pub fn handled_response(connection: *Connection, message: RawMessage, response: 
     } else {
         message.deinit();
     }
+
+    connection.remove_request(response.request_seq);
 }
 
 pub fn failed_message(connection: *Connection, message: RawMessage) void {
@@ -758,7 +770,7 @@ pub const HandledResponse = struct {
 };
 
 pub const Request = struct {
-    debug_request_seq: ?i32 = null,
+    request_seq: ?i32 = null,
     arena: std.heap.ArenaAllocator,
     args: protocol.Object,
     command: Command,

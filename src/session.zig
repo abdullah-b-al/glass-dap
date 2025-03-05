@@ -41,18 +41,8 @@ pub fn adapter_died(connection: *Connection) void {
 }
 
 pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
-    if (!connection.adapter.state.accepts_requests()) {
-        return;
-    }
-
-    var i: usize = 0;
-    while (i < connection.queued_requests.items.len) {
+    for (connection.requests.items, 0..) |_, i| {
         connection.send_request(i) catch |err| switch (err) {
-            error.AdapterDoesNotSupportRequest => {
-                const cmd = connection.remove_request(i, null);
-                log.err("{} {s}", .{ err, @tagName(cmd) });
-            },
-
             error.AdapterNotSpawned,
             error.BrokenPipe,
             => {
@@ -82,13 +72,13 @@ pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
 
             error.AdapterNotDoneInitializing,
             => {
-                i += 1;
                 log.err("{}", .{err});
             },
         };
     }
 }
 
+// TODO: instead of using get_value parse the values into the messages queue
 pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connection: *Connection) bool {
     var handled_message = false;
     while (connection.messages.removeOrNull()) |message| {
@@ -117,6 +107,9 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
     const err = handle_response(message, data, connection, resp);
 
     err catch |e| switch (e) {
+        error.AdapterDoesNotSupportRequest => {
+            log.err("{!}", .{err});
+        },
         error.UnexpectedToken => {
             const description = utils.get_value(message.value, "body.description", .string) orelse "";
             ui.notify("command.{s}\n{s}", .{ @tagName(resp.command), description }, 5000);
@@ -130,7 +123,7 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
             }
         },
 
-        error.MissingField, error.RequestFailed => {
+        error.UnknownField, error.MissingField, error.RequestFailed => {
             if (!handle_failed_message_if_error(message, resp, connection)) {
                 return false;
             }
@@ -153,7 +146,6 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.LengthMismatch,
         error.WrongCommandForResponse,
 
-        error.UnknownField,
         error.RequestResponseMismatchedRequestSeq,
         => {
             log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
@@ -183,7 +175,7 @@ pub fn handle_event_message(message: Connection.RawMessage, callbacks: *Callback
 
 pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data: *SessionData, connection: *Connection, event: Connection.Event) !void {
     _ = callbacks;
-    switch (event) {
+    return switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
             _ = try connection.queue_request(.threads, protocol.Object{}, .no_data);
@@ -292,7 +284,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             log.err("TODO event: {s}", .{@tagName(event)});
             connection.handled_event(message, event);
         },
-    }
+    };
 }
 
 pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {

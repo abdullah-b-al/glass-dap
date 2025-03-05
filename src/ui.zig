@@ -1089,7 +1089,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
         defer zgui.endTabItem();
         for (connection.debug_requests.items) |item| {
             var buf: [512]u8 = undefined;
-            const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.debug_request_seq, @tagName(item.command) }) catch unreachable;
+            const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.request_seq, @tagName(item.command) }) catch unreachable;
             recursively_draw_protocol_object(state.arena(), slice, slice, .{ .object = item.args });
         }
     }
@@ -1127,7 +1127,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
 
     if (zgui.beginTabItem("Queued Requests", .{})) {
         defer zgui.endTabItem();
-        draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.queued_requests.items);
+        draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.requests.items);
     }
 }
 
