@@ -29,35 +29,24 @@ total_events_received: u32 = 0,
 total_messages_received: u32 = 0,
 messages: Messages,
 
-debug_requests: std.ArrayList(Request),
-debug_failed_messages: std.ArrayList(RawMessage),
-debug_handled_responses: std.ArrayList(RawMessage),
-debug_handled_events: std.ArrayList(RawMessage),
-debug_messages_with_unknown_fields: std.ArrayList(RawMessage),
-
-/// When true this flag will prevent freeing of messages
-debug: bool,
+/// When enabled this will prevent freeing of messages
+debug: Debug,
 
 /// Used for the seq field in the protocol. Starts at 1
 seq: u32,
-pub fn init(allocator: std.mem.Allocator, debug: bool) Connection {
+pub fn init(allocator: std.mem.Allocator, debug_connection: bool) Connection {
     return .{
         .seq = 1,
         .adapter = Adapter.init(allocator),
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
         .requests = std.ArrayList(Request).init(allocator),
-        .debug_requests = std.ArrayList(Request).init(allocator),
         .messages = Messages.init(allocator, {}),
         .expected_responses = std.ArrayList(Response).init(allocator),
         .handled_responses = std.ArrayList(HandledResponse).init(allocator),
         .handled_events = std.ArrayList(HandledEvent).init(allocator),
 
-        .debug_failed_messages = std.ArrayList(RawMessage).init(allocator),
-        .debug_handled_responses = std.ArrayList(RawMessage).init(allocator),
-        .debug_handled_events = std.ArrayList(RawMessage).init(allocator),
-        .debug_messages_with_unknown_fields = std.ArrayList(RawMessage).init(allocator),
-        .debug = debug,
+        .debug = .init(debug_connection),
         .client_capabilities = .{},
         .adapter_capabilities = .{},
         .total_requests = 0,
@@ -96,8 +85,8 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
     }
 
     switch (reason) {
-        .deinit => connection.free_debug(.deinit),
-        .begin_session => connection.free_debug(.begin_session),
+        .deinit => connection.debug.free(connection.allocator, .deinit),
+        .begin_session => connection.debug.free(connection.allocator, .begin_session),
     }
 
     switch (reason) {
@@ -119,55 +108,17 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
         .adapter_capabilities = .{},
 
         .requests = connection.requests,
-        .debug_requests = connection.debug_requests,
         .messages = connection.messages,
         .expected_responses = connection.expected_responses,
         .handled_responses = connection.handled_responses,
         .handled_events = connection.handled_events,
 
-        .debug_failed_messages = connection.debug_failed_messages,
-        .debug_handled_responses = connection.debug_handled_responses,
-        .debug_handled_events = connection.debug_handled_events,
-        .debug_messages_with_unknown_fields = connection.debug_messages_with_unknown_fields,
         .debug = connection.debug,
         .total_requests = 0,
         .total_events_received = 0,
         .total_messages_received = 0,
         .total_responses_received = 0,
     };
-}
-
-fn free_debug(connection: *Connection, reason: enum { deinit, begin_session }) void {
-    const debug_to_free = .{
-        &connection.debug_requests,
-        &connection.debug_failed_messages,
-        &connection.debug_handled_responses,
-        &connection.debug_handled_events,
-
-        // Do not free it's elements
-        // Contains copies to messages in the other debug_ fields
-        // connection.debug_messages_with_unknown_fields,
-    };
-
-    switch (reason) {
-        .begin_session => {
-            inline for (debug_to_free) |ptr| {
-                for (ptr.items) |*item| item.deinit();
-                ptr.clearAndFree();
-            }
-        },
-        .deinit => {
-            inline for (debug_to_free) |ptr| {
-                for (ptr.items) |*item| item.deinit();
-                ptr.deinit();
-            }
-        },
-    }
-
-    switch (reason) {
-        .begin_session => connection.debug_messages_with_unknown_fields.clearAndFree(),
-        .deinit => connection.debug_messages_with_unknown_fields.deinit(),
-    }
 }
 
 pub fn deinit(connection: *Connection) void {
@@ -200,7 +151,7 @@ pub fn queue_request(connection: *Connection, command: Command, arguments: anyty
 
     const total_requests = connection.total_requests + 1;
     try connection.requests.ensureTotalCapacity(total_requests);
-    try connection.debug_requests.ensureTotalCapacity(total_requests);
+    try connection.debug.requests.ensureTotalCapacity(connection.allocator, total_requests);
 
     var arena = std.heap.ArenaAllocator.init(connection.allocator);
     errdefer arena.deinit();
@@ -288,19 +239,6 @@ fn request_index(connection: *Connection, request_seq: i32) ?usize {
     return null;
 }
 
-fn remove_request(connection: *Connection, request_seq: i32) void {
-    const index = connection.request_index(request_seq).?;
-    var request = &connection.requests.items[index];
-
-    if (connection.debug) {
-        connection.debug_requests.appendAssumeCapacity(request.*);
-    } else {
-        request.arena.deinit();
-    }
-
-    _ = connection.requests.orderedRemove(index);
-}
-
 pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
     _, const index = connection.get_event(seq) catch @panic("Only call this if you got an event");
     return connection.events.orderedRemove(index);
@@ -311,37 +249,33 @@ pub fn handled_event(connection: *Connection, message: RawMessage, event: Event)
         .event = event,
         .timestamp = std.time.nanoTimestamp(),
     });
-    if (connection.debug) {
-        connection.debug_handled_events.appendAssumeCapacity(message);
-    } else {
-        message.deinit();
-    }
+    connection.debug.own_or_free_message(message, .event);
 }
 
 pub fn handled_response(connection: *Connection, message: RawMessage, response: Response, status: ResponseStatus) void {
-    _, const index = connection.get_response_by_request_seq(response.request_seq).?;
-    _ = connection.expected_responses.orderedRemove(index);
+    {
+        _, const index = connection.get_response_by_request_seq(response.request_seq).?;
+        _ = connection.expected_responses.orderedRemove(index);
 
-    connection.handled_responses.appendAssumeCapacity(.{
-        .response = response,
-        .status = status,
-        .timestamp = std.time.nanoTimestamp(),
-    });
-    if (connection.debug) {
-        connection.debug_handled_responses.appendAssumeCapacity(message);
-    } else {
-        message.deinit();
+        connection.handled_responses.appendAssumeCapacity(.{
+            .response = response,
+            .status = status,
+            .timestamp = std.time.nanoTimestamp(),
+        });
+
+        connection.debug.own_or_free_message(message, .response);
     }
 
-    connection.remove_request(response.request_seq);
+    {
+        const i = connection.request_index(response.request_seq).?;
+        const request = connection.requests.items[i];
+        connection.debug.own_or_free_request(request);
+        _ = connection.requests.orderedRemove(i);
+    }
 }
 
 pub fn failed_message(connection: *Connection, message: RawMessage) void {
-    if (connection.debug) {
-        connection.debug_failed_messages.appendAssumeCapacity(message);
-    } else {
-        message.deinit();
-    }
+    connection.debug.own_or_free_message(message, .failed);
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
@@ -486,17 +420,15 @@ pub fn queue_messages(connection: *Connection, timeout_ms: u64) !bool {
     const adapter = connection.adapter.process orelse return false;
     const stdout = adapter.stdout orelse return false;
     if (try io.message_exists(stdout, connection.allocator, timeout_ms)) {
+        try connection.debug.ensure_one_more_message(connection);
+
         try connection.messages.ensureTotalCapacity(connection.total_messages_received + 1);
-        try connection.debug_failed_messages.ensureTotalCapacity(connection.messages.cap);
-        try connection.debug_messages_with_unknown_fields.ensureTotalCapacity(connection.total_messages_received + 1);
 
         const responses_capacity = connection.total_responses_received + 1;
         try connection.handled_responses.ensureTotalCapacity(responses_capacity);
-        try connection.debug_handled_responses.ensureTotalCapacity(responses_capacity);
 
         const events_capacity = connection.total_events_received + 1;
         try connection.handled_events.ensureTotalCapacity(events_capacity);
-        try connection.debug_handled_events.ensureTotalCapacity(events_capacity);
 
         const parsed = try io.read_message(stdout, connection.allocator);
         errdefer {
@@ -578,7 +510,7 @@ pub fn parse_event(connection: *Connection, message: RawMessage, comptime T: typ
 }
 
 fn parse_message(connection: *Connection, message: RawMessage, comptime T: type) !std.json.Parsed(T) {
-    if (!connection.debug) {
+    if (!connection.debug.enabled) {
         return try std.json.parseFromValue(T, connection.allocator, message.value, .{ .ignore_unknown_fields = true });
     }
 
@@ -603,9 +535,8 @@ fn parse_message(connection: *Connection, message: RawMessage, comptime T: type)
     };
 
     if (has_unknown_fields) {
-        // since having debug flag enable this is memory safe
-        // As long as we don't free it
-        connection.debug_messages_with_unknown_fields.appendAssumeCapacity(message);
+        const seq = utils.get_value_untyped(message.value, "seq");
+        log.err("Message of seq {?} contains unknown fields", .{seq});
     }
 
     return result;
@@ -975,4 +906,82 @@ pub const Adapter = struct {
             };
         }
     };
+};
+
+pub const Debug = struct {
+    enabled: bool,
+    requests: std.ArrayListUnmanaged(Request),
+    messages: std.ArrayListUnmanaged(RawMessage),
+
+    // These are references to debug.messages
+    handled_responses: std.ArrayListUnmanaged(RawMessage),
+    handled_events: std.ArrayListUnmanaged(RawMessage),
+    failed_messages: std.ArrayListUnmanaged(RawMessage),
+
+    pub fn init(enabled: bool) Debug {
+        return .{
+            .enabled = enabled,
+            .requests = .empty,
+            .messages = .empty,
+            .handled_responses = .empty,
+            .handled_events = .empty,
+            .failed_messages = .empty,
+        };
+    }
+
+    pub fn ensure_one_more_message(debug: *Debug, c: *Connection) !void {
+        try debug.messages.ensureTotalCapacity(c.allocator, c.total_messages_received + 1);
+        try debug.failed_messages.ensureTotalCapacity(c.allocator, c.total_messages_received + 1);
+
+        try debug.handled_responses.ensureTotalCapacity(c.allocator, c.total_responses_received + 1);
+
+        try debug.handled_events.ensureTotalCapacity(c.allocator, c.total_events_received + 1);
+    }
+
+    pub fn own_or_free_request(debug: *Debug, request: Request) void {
+        if (debug.enabled) {
+            debug.requests.appendAssumeCapacity(request);
+        } else {
+            request.arena.deinit();
+        }
+    }
+
+    pub fn own_or_free_message(debug: *Debug, message: RawMessage, kind: enum { response, event, failed }) void {
+        if (!debug.enabled) {
+            message.deinit();
+            return;
+        }
+
+        debug.messages.appendAssumeCapacity(message);
+        switch (kind) {
+            .response => debug.handled_responses.appendAssumeCapacity(message),
+            .event => debug.handled_events.appendAssumeCapacity(message),
+            .failed => debug.failed_messages.appendAssumeCapacity(message),
+        }
+    }
+
+    pub fn free(debug: *Debug, allocator: std.mem.Allocator, reason: enum { deinit, begin_session }) void {
+        for (debug.requests.items) |*request| {
+            request.deinit();
+        }
+
+        for (debug.messages.items) |*message| {
+            message.deinit();
+        }
+
+        const table = .{
+            &debug.requests,
+            &debug.messages,
+            &debug.handled_responses,
+            &debug.handled_events,
+            &debug.failed_messages,
+        };
+
+        inline for (table) |list| {
+            switch (reason) {
+                .deinit => list.deinit(allocator),
+                .begin_session => list.clearAndFree(allocator),
+            }
+        }
+    }
 };

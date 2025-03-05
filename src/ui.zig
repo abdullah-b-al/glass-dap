@@ -1012,7 +1012,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
         defer zgui.endTabItem();
         continue_rendering();
 
-        zgui.text("Debug Connection: {}", .{connection.debug});
+        zgui.text("Debug Connection: {}", .{connection.debug.enabled});
 
         if (zgui.beginTable("Memory Usage Table", .{ .column = 4, .flags = .{
             .sizing = .fixed_fit,
@@ -1087,7 +1087,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
 
     if (zgui.beginTabItem("Sent Requests", .{})) {
         defer zgui.endTabItem();
-        for (connection.debug_requests.items) |item| {
+        for (connection.debug.requests.items) |item| {
             var buf: [512]u8 = undefined;
             const slice = std.fmt.bufPrint(&buf, "seq({?}){s}", .{ item.request_seq, @tagName(item.command) }) catch unreachable;
             recursively_draw_protocol_object(state.arena(), slice, slice, .{ .object = item.args });
@@ -1096,10 +1096,9 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
 
     const table = .{
         .{ .name = "Queued Messages", .items = connection.messages.items },
-        .{ .name = "Debug Handled Responses", .items = connection.debug_handled_responses.items },
-        .{ .name = "Debug Failed Messages", .items = connection.debug_failed_messages.items },
-        .{ .name = "Debug Messages With Unknown Fields", .items = connection.debug_messages_with_unknown_fields.items },
-        .{ .name = "Debug Handled Events", .items = connection.debug_handled_events.items },
+        .{ .name = "Debug Handled Responses", .items = connection.debug.handled_responses.items },
+        .{ .name = "Debug Failed Messages", .items = connection.debug.failed_messages.items },
+        .{ .name = "Debug Handled Events", .items = connection.debug.handled_events.items },
     };
     inline for (table) |element| {
         if (zgui.beginTabItem(element.name, .{})) {
