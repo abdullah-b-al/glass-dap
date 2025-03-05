@@ -82,51 +82,45 @@ pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
 pub fn handle_queued_messages(callbacks: *Callbacks, data: *SessionData, connection: *Connection) bool {
     var handled_message = false;
     while (connection.messages.removeOrNull()) |message| {
-        var ok = false;
         const message_type = utils.get_value(message.value, "type", .string).?;
         if (std.mem.eql(u8, message_type, "event")) {
-            ok = handle_event_message(message, callbacks, data, connection);
+            const ok = handle_event_message(message, callbacks, data, connection);
+            if (!ok) {
+                connection.failed_message(message);
+            }
         } else if (std.mem.eql(u8, message_type, "response")) {
             const request_seq: i32 = @truncate(utils.get_value(message.value, "request_seq", .integer).?);
-            ok = handle_response_message(message, request_seq, data, connection);
+            const resp, _ = connection.get_response_by_request_seq(request_seq).?;
+            const status = handle_response_message(message, resp, data, connection);
+            connection.handled_response(
+                message,
+                resp,
+                status,
+            );
         } else {
             @panic("opps!");
         }
 
-        if (!ok) {
-            connection.failed_message(message);
-        }
         handled_message = true;
     }
 
     return handled_message;
 }
 
-pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32, data: *SessionData, connection: *Connection) bool {
-    const resp, const index = connection.get_response_by_request_seq(request_seq).?;
-    const err = handle_response(message, data, connection, resp);
-
-    err catch |e| switch (e) {
+pub fn handle_response_message(message: Connection.RawMessage, response: Connection.Response, data: *SessionData, connection: *Connection) Connection.ResponseStatus {
+    if (handle_response(message, data, connection, response)) |_| {
+        return .success;
+    } else |err| switch (err) {
         error.AdapterDoesNotSupportRequest => {
             log.err("{!}", .{err});
+            return .failure;
         },
-        error.UnexpectedToken => {
-            const description = utils.get_value(message.value, "body.description", .string) orelse "";
-            ui.notify("command.{s}\n{s}", .{ @tagName(resp.command), description }, 5000);
-            log.err("command.{s}, {s}", .{ @tagName(resp.command), description });
-
-            const status = utils.get_value(message.value, "success", .bool) orelse false;
-            if (status) {
-                connection.handled_response(message, resp, .success);
-            } else {
-                connection.handled_response(message, resp, .failure);
-            }
-        },
-
-        error.UnknownField, error.MissingField, error.RequestFailed => {
-            if (!handle_failed_message_if_error(message, resp, connection)) {
-                return false;
-            }
+        error.UnexpectedToken,
+        error.UnknownField,
+        error.MissingField,
+        error.RequestFailed,
+        => {
+            return handle_failed_message_if_error(message, response);
         },
 
         error.AdapterNotSpawned,
@@ -145,16 +139,13 @@ pub fn handle_response_message(message: Connection.RawMessage, request_seq: i32,
         error.DuplicateField,
         error.LengthMismatch,
         error.WrongCommandForResponse,
-
+        error.MalformedMessage,
         error.RequestResponseMismatchedRequestSeq,
         => {
-            log.err("{!} from response of command {} request_seq {}", .{ e, resp.command, resp.request_seq });
-            return false;
+            log.err("{!} from response of command {} request_seq {}", .{ err, response.command, response.request_seq });
+            return .failure;
         },
-    };
-
-    _ = connection.expected_responses.orderedRemove(index);
-    return true;
+    }
 }
 
 pub fn handle_event_message(message: Connection.RawMessage, callbacks: *Callbacks, data: *SessionData, connection: *Connection) bool {
@@ -163,14 +154,17 @@ pub fn handle_event_message(message: Connection.RawMessage, callbacks: *Callback
         log.err("Unknown event {s}", .{value});
         return false;
     };
+    var ok = true;
     handle_event(message, callbacks, data, connection, event) catch |err| switch (err) {
         else => {
             log.err("{}", .{err});
-            return false;
+            ok = false;
         },
     };
 
-    return true;
+    connection.handled_event(message, event);
+
+    return ok;
 }
 
 pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data: *SessionData, connection: *Connection, event: Connection.Event) !void {
@@ -184,39 +178,31 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             defer parsed.deinit();
 
             try data.set_stopped(parsed.value);
-
-            connection.handled_event(message, event);
         },
         .continued => {
             const parsed = try connection.parse_event(message, protocol.ContinuedEvent, .continued);
             defer parsed.deinit();
 
             try data.set_continued_event(parsed.value);
-
-            connection.handled_event(message, .continued);
         },
         .exited => {
             const parsed = try connection.parse_event(message, protocol.ExitedEvent, .exited);
             defer parsed.deinit();
 
             try data.set_existed(parsed.value);
-
-            connection.handled_event(message, .exited);
         },
         .terminated => {
             const parsed = try connection.parse_event(message, protocol.TerminatedEvent, .terminated);
             defer parsed.deinit();
 
             try data.handle_event_terminated(parsed.value);
-            connection.handle_event_terminated(message);
+            connection.handle_event_terminated();
         },
         .output => {
             const parsed = try connection.parse_event(message, protocol.OutputEvent, .output);
             defer parsed.deinit();
 
             try data.set_output(parsed.value);
-
-            connection.handled_event(message, .output);
         },
         .module => {
             const parsed = try connection.parse_event(message, protocol.ModuleEvent, .module);
@@ -226,13 +212,11 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
                 .new, .changed => try data.set_module(parsed.value.body.module),
                 .removed => data.remove_module(parsed.value.body.module),
             }
-
-            connection.handled_event(message, .module);
         },
         .initialized => {
             const parsed = try connection.parse_event(message, protocol.InitializedEvent, .initialized);
             defer parsed.deinit();
-            connection.handle_event_initialized(message);
+            connection.handle_event_initialized();
         },
         .breakpoint => {
             const parsed = try connection.parse_event(message, protocol.BreakpointEvent, .breakpoint);
@@ -247,8 +231,6 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
                     .{ @tagName(event), string },
                 ),
             }
-
-            connection.handled_event(message, .breakpoint);
         },
 
         .thread => {
@@ -257,8 +239,6 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
 
             const body = parsed.value.body;
             try data.set_thread_from_event(@enumFromInt(body.threadId), body.reason);
-
-            connection.handled_event(message, .thread);
         },
 
         .loadedSource => {
@@ -269,8 +249,6 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
                 .new, .changed => try data.set_source(parsed.value.body.source),
                 .removed => data.remove_source(parsed.value.body.source),
             }
-
-            connection.handled_event(message, .loadedSource);
         },
 
         .process,
@@ -282,23 +260,18 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
         .memory,
         => {
             log.err("TODO event: {s}", .{@tagName(event)});
-            connection.handled_event(message, event);
         },
     };
 }
 
 pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {
-    if (utils.get_value_untyped(message.value, "command")) |_| {
-        if (handle_malformed_message(message, response, connection)) {
-            return;
-        }
-    }
+    try handle_if_malformed_message(message, response);
 
-    switch (response.command) {
+    return switch (response.command) {
         .launch => {
             try acknowledge_only(message, connection, response.request_seq, response.command);
             data.status = .running;
-            connection.handle_response_launch(message, response);
+            connection.handle_response_launch();
         },
 
         .terminateThreads,
@@ -323,8 +296,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
 
             try data.set_threads(parsed.value.body.threads);
-
-            connection.handled_response(message, response, .success);
         },
         .stackTrace => {
             const parsed = try connection.parse_validate_response(message, protocol.StackTraceResponse, response.request_seq, .stackTrace);
@@ -343,7 +314,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             try data.set_stack(retained.thread_id, !request_more, parsed.value.body.stackFrames);
 
             const thread = data.threads.get(retained.thread_id) orelse return;
-            defer connection.handled_response(message, response, .success);
             if (request_more) {
                 _ = try connection.queue_request(
                     .stackTrace,
@@ -374,7 +344,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             const retained = response.request_data.scopes;
 
             try data.set_scopes(retained.thread_id, retained.frame_id, parsed.value.body.scopes);
-            defer connection.handled_response(message, response, .success);
 
             if (retained.request_variables) {
                 for (parsed.value.body.scopes) |scope| {
@@ -400,8 +369,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
             const retained = response.request_data.variables;
             try data.set_variables(retained.thread_id, retained.variables_reference, parsed.value.body.variables);
-
-            connection.handled_response(message, response, .success);
         },
 
         .setFunctionBreakpoints => {
@@ -414,8 +381,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
 
             try data.set_breakpoints(.function, parsed.value.body.breakpoints);
-
-            connection.handled_response(message, response, .success);
         },
         .setBreakpoints => {
             const parsed = try connection.parse_validate_response(
@@ -431,8 +396,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             try data.set_breakpoints(.{
                 .source = retained.source_id,
             }, parsed.value.body.breakpoints);
-
-            connection.handled_response(message, response, .success);
         },
         .setDataBreakpoints => {
             const parsed = try connection.parse_validate_response(
@@ -444,8 +407,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
 
             try data.set_breakpoints(.data, parsed.value.body.breakpoints);
-
-            connection.handled_response(message, response, .success);
         },
 
         .source => {
@@ -462,8 +423,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 .content = parsed.value.body.content,
                 .mime_type = parsed.value.body.mimeType,
             });
-
-            connection.handled_response(message, response, .success);
         },
         .@"continue" => {
             const parsed = try connection.parse_validate_response(
@@ -475,8 +434,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             defer parsed.deinit();
 
             data.set_continued_response(parsed.value);
-
-            connection.handled_response(message, response, .success);
         },
 
         .setVariable => {
@@ -495,8 +452,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.name,
                 parsed.value,
             );
-
-            connection.handled_response(message, response, .success);
         },
         .setExpression => {
             const parsed = try connection.parse_validate_response(
@@ -514,8 +469,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.name,
                 parsed.value,
             );
-
-            connection.handled_response(message, response, .success);
         },
 
         .modules => {
@@ -530,8 +483,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             for (parsed.value.body.modules) |module| {
                 try data.set_module(module);
             }
-
-            connection.handled_response(message, response, .success);
         },
         .dataBreakpointInfo => {
             const retained = response.request_data.data_breakpoint_info;
@@ -543,11 +494,8 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             ) catch |err| switch (err) {
                 // Probably the request succeeded but no result was found
                 error.UnexpectedToken => {
-                    if (handle_malformed_message(message, response, connection)) {
-                        return;
-                    } else {
-                        return err;
-                    }
+                    try handle_if_malformed_message(message, response);
+                    return err;
                 },
                 else => return err,
             };
@@ -560,8 +508,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.frame_id,
                 parsed.value.body,
             );
-
-            connection.handled_response(message, response, .success);
         },
 
         .evaluate => {
@@ -580,8 +526,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.expression,
                 parsed.value.body,
             );
-
-            connection.handled_response(message, response, .success);
         },
 
         .stepInTargets => {
@@ -599,8 +543,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.frame_id,
                 parsed.value.body.targets,
             );
-
-            connection.handled_response(message, response, .success);
         },
 
         .gotoTargets => {
@@ -618,8 +560,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 retained.line,
                 parsed.value.body.targets,
             );
-
-            connection.handled_response(message, response, .success);
         },
 
         .terminate => {
@@ -642,8 +582,6 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                     error.SourceWithoutID => continue,
                 };
             }
-
-            connection.handled_response(message, response, .success);
         },
 
         .attach,
@@ -663,7 +601,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         // Reverse requests
         .runInTerminal => log.err("TODO: {s}", .{@tagName(response.command)}),
         .startDebugging => log.err("TODO: {s}", .{@tagName(response.command)}),
-    }
+    };
 }
 
 pub fn callback(
@@ -715,7 +653,6 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
 fn acknowledge_and_handled(message: Connection.RawMessage, connection: *Connection, response: Connection.Response) !void {
     const resp = try connection.parse_validate_response(message, protocol.Response, response.request_seq, response.command);
     defer resp.deinit();
-    connection.handled_response(message, response, .success);
 }
 
 fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, request_seq: i32, command: Connection.Command) !void {
@@ -723,8 +660,7 @@ fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, req
     resp.deinit();
 }
 
-/// Returns true when handled
-fn handle_malformed_message(message: Connection.RawMessage, response: Connection.Response, connection: *Connection) bool {
+fn handle_if_malformed_message(message: Connection.RawMessage, response: Connection.Response) !void {
     if (utils.get_value(message.value, "command", .string)) |command_string| {
         if (command_string.len == 0) {
             const msg = utils.get_value(message.value, "message", .string) orelse "";
@@ -734,43 +670,31 @@ fn handle_malformed_message(message: Connection.RawMessage, response: Connection
             }
 
             log.err("command.{s}, {s}", .{ @tagName(response.command), msg });
-            connection.handled_response(message, response, .failure);
-            return true;
+            return error.MalformedMessage;
         }
     } else if (utils.get_value(message.value, "body.description", .string)) |description| {
         ui.notify("command.{s}\n{s}", .{ @tagName(response.command), description }, 5000);
         log.err("command.{s}, {s}", .{ @tagName(response.command), description });
 
-        if (utils.get_value(message.value, "success", .bool)) |status| {
-            if (status) {
-                connection.handled_response(message, response, .success);
-            } else {
-                connection.handled_response(message, response, .failure);
-            }
-        } else {
-            return false;
-        }
+        return error.MalformedMessage;
     }
-
-    return false;
 }
 
-/// Returns true when handled
-fn handle_failed_message_if_error(message: Connection.RawMessage, response: Connection.Response, connection: *Connection) bool {
+fn handle_failed_message_if_error(message: Connection.RawMessage, response: Connection.Response) Connection.ResponseStatus {
     if (utils.get_value(message.value, "message", .string)) |string| {
         ui.notify("command.{s}\n{s}", .{ @tagName(response.command), string }, 5000);
         log.err("command.{s}\n{s}", .{ @tagName(response.command), string });
     }
 
+    const description = utils.get_value(message.value, "body.description", .string) orelse "";
+    ui.notify("command.{s}\n{s}", .{ @tagName(response.command), description }, 5000);
+    log.err("command.{s}, {s}", .{ @tagName(response.command), description });
+
     if (utils.get_value(message.value, "success", .bool)) |status| {
         if (status) {
-            connection.handled_response(message, response, .success);
-        } else {
-            connection.handled_response(message, response, .failure);
+            return .success;
         }
-    } else {
-        return false;
     }
 
-    return true;
+    return .failure;
 }

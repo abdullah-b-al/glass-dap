@@ -319,6 +319,9 @@ pub fn handled_event(connection: *Connection, message: RawMessage, event: Event)
 }
 
 pub fn handled_response(connection: *Connection, message: RawMessage, response: Response, status: ResponseStatus) void {
+    _, const index = connection.get_response_by_request_seq(response.request_seq).?;
+    _ = connection.expected_responses.orderedRemove(index);
+
     connection.handled_responses.appendAssumeCapacity(.{
         .response = response,
         .status = status,
@@ -365,7 +368,6 @@ pub fn handle_response_init(connection: *Connection, message: RawMessage, respon
     }
 
     connection.adapter.state = .partially_initialized;
-    connection.handled_response(message, response, .success);
 }
 
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
@@ -375,9 +377,8 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
     try connection.queue_request(.launch, args, .no_data);
 }
 
-pub fn handle_response_launch(connection: *Connection, message: RawMessage, response: Response) void {
+pub fn handle_response_launch(connection: *Connection) void {
     connection.adapter.state = .launched;
-    connection.handled_response(message, response, .success);
 }
 
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !void {
@@ -399,18 +400,14 @@ pub fn handle_response_disconnect(connection: *Connection, message: RawMessage, 
     if (resp.value.success) {
         connection.adapter.state = .initialized;
     }
-
-    connection.handled_response(message, response, .success);
 }
 
-pub fn handle_event_initialized(connection: *Connection, message: RawMessage) void {
+pub fn handle_event_initialized(connection: *Connection) void {
     connection.adapter.state = .initialized;
-    connection.handled_event(message, .initialized);
 }
 
-pub fn handle_event_terminated(connection: *Connection, message: RawMessage) void {
+pub fn handle_event_terminated(connection: *Connection) void {
     connection.adapter.state = .initialized;
-    connection.handled_event(message, .terminated);
 }
 
 pub fn check_request_capability(connection: *Connection, command: Command) !void {
