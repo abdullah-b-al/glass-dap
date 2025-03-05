@@ -32,11 +32,11 @@ messages: Messages,
 /// When enabled this will prevent freeing of messages
 debug: Debug,
 
-/// Used for the seq field in the protocol. Starts at 1
-seq: u32,
+/// Used for the seq field in the protocol.
+seq: Seq,
 pub fn init(allocator: std.mem.Allocator, debug_connection: bool) Connection {
     return .{
-        .seq = 1,
+        .seq = .new(),
         .adapter = Adapter.init(allocator),
         .allocator = allocator,
         .arena = std.heap.ArenaAllocator.init(allocator),
@@ -100,7 +100,7 @@ fn free(connection: *Connection, reason: enum { deinit, begin_session }) void {
     }
 
     connection.* = Connection{
-        .seq = 1,
+        .seq = .new(),
         .allocator = connection.allocator,
         .arena = connection.arena,
         .adapter = connection.adapter,
@@ -406,10 +406,10 @@ pub fn adapter_died(connection: *Connection) void {
     connection.adapter.state = .died;
 }
 
-pub fn new_seq(s: *Connection) i32 {
-    const seq = s.seq;
-    s.seq += 1;
-    return @intCast(seq);
+pub fn new_seq(connection: *Connection) i32 {
+    const seq: i32 = @intFromEnum(connection.seq);
+    connection.seq.increment();
+    return seq;
 }
 
 pub fn peek_seq(s: Connection) i32 {
@@ -984,4 +984,16 @@ pub const Debug = struct {
             }
         }
     }
+};
+
+const Seq = enum(i32) {
+    pub fn new() Seq {
+        return @enumFromInt(1);
+    }
+
+    pub fn increment(seq: *Seq) void {
+        seq.* = @enumFromInt(@intFromEnum(seq.*) + 1);
+    }
+
+    _,
 };
