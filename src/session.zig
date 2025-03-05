@@ -48,10 +48,6 @@ pub fn send_queued_requests(connection: *Connection, _: *SessionData) void {
     var i: usize = 0;
     while (i < connection.queued_requests.items.len) {
         connection.send_request(i) catch |err| switch (err) {
-            error.DependencyNotSatisfied => {
-                i += 1;
-            },
-
             error.AdapterDoesNotSupportRequest => {
                 const cmd = connection.remove_request(i, null);
                 log.err("{} {s}", .{ err, @tagName(cmd) });
@@ -190,7 +186,7 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
     switch (event) {
         .stopped => {
             // Per the overview page: Request the threads on a stopped event
-            _ = try connection.queue_request(.threads, protocol.Object{}, .none, .no_data);
+            _ = try connection.queue_request(.threads, protocol.Object{}, .no_data);
 
             const parsed = try connection.parse_event(message, protocol.StoppedEvent, .stopped);
             defer parsed.deinit();
@@ -360,7 +356,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                 _ = try connection.queue_request(
                     .stackTrace,
                     request.default_stack_trace_args(retained.thread_id),
-                    .none,
+
                     .{ .stack_trace = retained },
                 );
             } else if (retained.request_scopes) {
@@ -368,7 +364,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                     _ = try connection.queue_request(
                         .scopes,
                         protocol.ScopesArguments{ .frameId = frame.value.id },
-                        .none,
+
                         .{
                             .scopes = .{
                                 .thread_id = retained.thread_id,
@@ -393,7 +389,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
                     _ = try connection.queue_request(
                         .variables,
                         request.default_variables_args(@enumFromInt(scope.variablesReference)),
-                        .none,
+
                         .{ .variables = .{
                             .thread_id = retained.thread_id,
                             .variables_reference = @enumFromInt(scope.variablesReference),

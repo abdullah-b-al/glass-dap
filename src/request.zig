@@ -7,7 +7,6 @@ const ui = @import("ui.zig");
 const session = @import("session.zig");
 const config = @import("config.zig");
 const Callbacks = session.Callbacks;
-const Dependency = Connection.Dependency;
 const log = std.log.scoped(.request);
 
 pub const client_name = "glass-dap";
@@ -54,6 +53,7 @@ const BeginSessionState = enum {
 };
 
 pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *SessionData) !bool {
+    _ = arena;
     // send and respond to initialize
     // send launch or attach
     // when the adapter is ready it'll send a initialized event
@@ -107,21 +107,23 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
             session.begin(connection, data);
         },
         .init_and_launch => {
-            try connection.queue_request_init(initialize_arguments(connection), .none);
-            launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .after_queueing }) catch |err| switch (err) {
-                error.NoLaunchConfig => unreachable,
-                else => return err,
-            };
+            try connection.queue_request_init(initialize_arguments(connection));
+            // TODO: launch
+            // launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .after_queueing }) catch |err| switch (err) {
+            //     error.NoLaunchConfig => unreachable,
+            //     else => return err,
+            // };
         },
 
         // TODO: send configurations
 
         .config_done => {
-            _ = try connection.queue_request_configuration_done(
-                null,
-                .{},
-                .{ .dep = .{ .event = .initialized }, .handled_when = .any },
-            );
+            // TODO: configuration done
+            // _ = try connection.queue_request_configuration_done(
+            //     null,
+            //     .{},
+            //     .{ .dep = .{ .event = .initialized }, .handled_when = .any },
+            // );
         },
         .done => {},
     }
@@ -148,7 +150,6 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                     protocol.TerminateArguments{
                         .restart = false,
                     },
-                    .none,
                     .no_data,
                 ),
 
@@ -159,7 +160,6 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                         .terminateDebuggee = null,
                         .suspendDebuggee = null,
                     },
-                    .none,
                     .no_data,
                 ),
             }
@@ -169,7 +169,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
     begin_session_state = .begin;
 }
 
-pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Connection.Dependency) !void {
+pub fn launch(arena: std.mem.Allocator, connection: *Connection) !void {
     const launch_config = get_launch_config() orelse return error.NoLaunchConfig;
 
     var extra = protocol.Object{};
@@ -181,7 +181,7 @@ pub fn launch(arena: std.mem.Allocator, connection: *Connection, dependency: Con
         try extra.map.put(arena, entry.key_ptr.*, value);
     }
 
-    _ = try connection.queue_request_launch(.{}, extra, dependency);
+    _ = try connection.queue_request_launch(.{}, extra);
 
     ui.state.launch_config = null;
 }
@@ -191,7 +191,6 @@ pub fn get_thread_state(connection: *Connection, thread_id: SessionData.ThreadID
     _ = try connection.queue_request(
         .stackTrace,
         protocol.StackTraceArguments{ .threadId = @intFromEnum(thread_id) },
-        .none,
         .{ .stack_trace = .{
             .thread_id = thread_id,
             .request_scopes = true,
@@ -211,7 +210,6 @@ pub fn stack_trace(connection: *Connection, thread_id: SessionData.ThreadID) !vo
     _ = try connection.queue_request(
         .stackTrace,
         default_stack_trace_args(thread_id),
-        .none,
         .{ .stack_trace = .{
             .thread_id = thread_id,
             .request_scopes = false,
@@ -224,7 +222,6 @@ pub fn scopes(connection: *Connection, thread_id: SessionData.ThreadID, frame_id
     _ = try connection.queue_request(
         .scopes,
         protocol.ScopesArguments{ .frameId = @intFromEnum(frame_id) },
-        .none,
         .{ .scopes = .{
             .thread_id = thread_id,
             .frame_id = frame_id,
@@ -246,7 +243,6 @@ pub fn variables(connection: *Connection, thread_id: SessionData.ThreadID, refer
     _ = try connection.queue_request(
         .variables,
         default_variables_args(reference),
-        .none,
         .{ .variables = .{
             .thread_id = thread_id,
             .variables_reference = reference,
@@ -281,7 +277,6 @@ pub fn evaluate(connection: *Connection, thread_id: SessionData.ThreadID, frame_
     _ = try connection.queue_request(
         .evaluate,
         arguments,
-        .none,
         .{ .evaluate = .{
             .thread_id = thread_id,
             .frame_id = frame_id,
@@ -296,7 +291,6 @@ pub fn step_in_targets(connection: *Connection, thread_id: SessionData.ThreadID,
         protocol.StepInTargetsArguments{
             .frameId = @intFromEnum(frame_id),
         },
-        .none,
         .{ .step_in_targets = .{
             .thread_id = thread_id,
             .frame_id = frame_id,
@@ -314,7 +308,6 @@ pub fn goto_targets(connection: *Connection, source: protocol.Source, line: i32)
             .line = line,
             .column = null,
         },
-        .none,
         .{ .goto_targets = .{
             .source_id = source_id,
             .line = line,
@@ -328,7 +321,6 @@ pub fn loaded_sources(connection: *Connection) !void {
         // protocol.LoadedSourcesArguments{ .map = .{} },
         // FIXME: LoadedSourcesArguments should be an empty struct. Fix gen.zig
         .{}, // take no args.
-        .none,
         .no_data,
     );
 }
@@ -381,7 +373,7 @@ fn step_in(data: SessionData, connection: *Connection, granularity: protocol.Ste
             .granularity = granularity,
         };
 
-        _ = connection.queue_request(.stepIn, arg, .none, .no_data) catch return;
+        _ = connection.queue_request(.stepIn, arg, .no_data) catch return;
     }
 }
 fn step_out(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
@@ -393,7 +385,7 @@ fn step_out(data: SessionData, connection: *Connection, granularity: protocol.St
             .granularity = granularity,
         };
 
-        _ = connection.queue_request(.stepOut, arg, .none, .no_data) catch return;
+        _ = connection.queue_request(.stepOut, arg, .no_data) catch return;
     }
 }
 
@@ -406,7 +398,7 @@ pub fn next(data: SessionData, connection: *Connection, granularity: protocol.St
             .granularity = granularity,
         };
 
-        _ = connection.queue_request(.next, arg, .none, .no_data) catch return;
+        _ = connection.queue_request(.next, arg, .no_data) catch return;
     }
 }
 
@@ -423,7 +415,7 @@ pub fn continue_threads(data: SessionData, connection: *Connection) void {
             .singleThread = true,
         };
 
-        _ = connection.queue_request(.@"continue", args, Dependency.none, .no_data) catch return;
+        _ = connection.queue_request(.@"continue", args, .no_data) catch return;
     }
 }
 
@@ -437,18 +429,19 @@ pub fn pause(data: SessionData, connection: *Connection) void {
 
         _ = connection.queue_request(.pause, protocol.PauseArguments{
             .threadId = @intFromEnum(thread.id),
-        }, Dependency.none, .no_data) catch return;
+        }, .no_data) catch return;
 
-        _ = connection.queue_request(
-            .stackTrace,
-            default_stack_trace_args(thread.id),
-            .{ .dep = .{ .response = .threads }, .handled_when = .after_queueing },
-            .{ .stack_trace = .{
-                .thread_id = thread.id,
-                .request_scopes = false,
-                .request_variables = false,
-            } },
-        ) catch return;
+        // TODO: Is this necessary ?
+        // _ = connection.queue_request(
+        //     .stackTrace,
+        //     default_stack_trace_args(thread.id),
+        //     .{ .dep = .{ .response = .threads }, .handled_when = .after_queueing },
+        //     .{ .stack_trace = .{
+        //         .thread_id = thread.id,
+        //         .request_scopes = false,
+        //         .request_variables = false,
+        //     } },
+        // ) catch return;
     }
 }
 
@@ -461,14 +454,14 @@ pub fn set_breakpoints(data: SessionData, connection: *Connection, source_id: Se
         .breakpoints = breakpoints.values(),
         .lines = null,
         .sourceModified = null,
-    }, .none, .{ .set_breakpoints = .{ .source_id = source_id } });
+    }, .{ .set_breakpoints = .{ .source_id = source_id } });
 }
 
 pub fn set_data_breakpoints(data: *const SessionData, connection: *Connection) !void {
     try connection.queue_request(
         .setDataBreakpoints,
         protocol.SetDataBreakpointsArguments{ .breakpoints = data.data_breakpoints.keys() },
-        .none,
+
         .no_data,
     );
 }
@@ -486,7 +479,7 @@ pub fn data_breakpoint_info_variable(
         .bytes = null,
         .asAddress = null,
         .mode = null,
-    }, .none, .{
+    }, .{
         .data_breakpoint_info = .{
             .name = name,
             .thread_id = thread_id,
@@ -537,7 +530,7 @@ pub fn set_expression(
             .frameId = @intFromEnum(frame_id),
             .format = null,
         },
-        .none,
+
         .{ .set_expression = .{
             .thread_id = thread_id,
             .reference = reference,
@@ -558,7 +551,7 @@ fn protocol_set_variable(
         .name = name,
         .value = value,
         .format = null,
-    }, .none, .{
+    }, .{
         .set_variable = .{
             .thread_id = thread_id,
             .reference = reference,

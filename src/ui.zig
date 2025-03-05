@@ -949,7 +949,7 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
                         .levels = null, // request all levels
                         .format = null,
                     };
-                    _ = connection.queue_request(.stackTrace, args, .none, .{
+                    _ = connection.queue_request(.stackTrace, args, .{
                         .stack_trace = .{
                             .thread_id = thread.id,
                             .request_scopes = false,
@@ -972,7 +972,6 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
                             _ = connection.queue_request(
                                 .variables,
                                 protocol.VariablesArguments{ .variablesReference = scope.variablesReference },
-                                .none,
                                 .{ .variables = .{
                                     .thread_id = thread.id,
                                     .variables_reference = @enumFromInt(scope.variablesReference),
@@ -1344,7 +1343,6 @@ fn debug_sources(name: [:0]const u8, data: *SessionData, connection: *Connection
                             .source = source.value,
                             .sourceReference = source.value.sourceReference.?,
                         },
-                        .none,
                         .{ .source = .{ .path = source.value.path, .source_reference = source.value.sourceReference.? } },
                     ) catch return;
                 }
@@ -1643,12 +1641,12 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Initialize Adapter", .{})) {
-        try connection.queue_request_init(request.initialize_arguments(connection), .none);
+        try connection.queue_request_init(request.initialize_arguments(connection));
     }
 
     zgui.sameLine(.{});
     if (zgui.button("Send Launch Request", .{})) {
-        request.launch(state.arena(), connection, .{ .dep = .{ .response = .initialize }, .handled_when = .before_queueing }) catch |err| switch (err) {
+        request.launch(state.arena(), connection) catch |err| switch (err) {
             error.NoLaunchConfig => state.ask_for_launch_config = true,
             else => log_err(err, @src()),
         };
@@ -1656,9 +1654,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Send configurationDone Request", .{})) {
-        _ = try connection.queue_request_configuration_done(null, .{
-            .map = .{},
-        }, .{ .dep = .{ .event = .initialized }, .handled_when = .before_queueing });
+        _ = try connection.queue_request_configuration_done(null, .{ .map = .{} });
     }
 
     if (zgui.button("end connection: disconnect", .{})) {
@@ -1674,11 +1670,11 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
             // all modules
             .startModule = null,
             .moduleCount = null,
-        }, .none, .no_data);
+        }, .no_data);
     }
 
     if (zgui.button("Threads", .{})) {
-        _ = try connection.queue_request(.threads, null, .none, .no_data);
+        _ = try connection.queue_request(.threads, null, .no_data);
     }
 
     _ = zgui.inputText("source reference", .{ .buf = &static.source_buf });
@@ -1695,7 +1691,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
                     .source = s.value,
                     .sourceReference = s.value.sourceReference.?,
                 },
-                .none,
+
                 .{ .source = .{ .path = s.value.path, .source_reference = s.value.sourceReference.? } },
             );
         }
@@ -1707,7 +1703,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
             protocol.SetFunctionBreakpointsArguments{
                 .breakpoints = data.function_breakpoints.items,
             },
-            .none,
+
             .no_data,
         );
     }
@@ -2603,7 +2599,7 @@ pub const ActiveSource = struct {
                 _ = try connection.queue_request(.source, protocol.SourceArguments{
                     .source = null,
                     .sourceReference = reference,
-                }, .none, .{
+                }, .{
                     .source = .{ .path = null, .source_reference = reference },
                 });
             },
