@@ -269,7 +269,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
 
     return switch (response.command) {
         .launch => {
-            try acknowledge_only(message, connection, response.request_seq, response.command);
+            try acknowledge(message, connection, response);
             data.status = .running;
             connection.handle_response_launch();
         },
@@ -286,7 +286,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .configurationDone,
         .pause,
         .next,
-        => try acknowledge_and_handled(message, connection, response),
+        => try acknowledge(message, connection, response),
 
         .initialize => try connection.handle_response_init(message, response),
         .disconnect => try connection.handle_response_disconnect(message, response),
@@ -563,7 +563,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         },
 
         .terminate => {
-            try acknowledge_and_handled(message, connection, response);
+            try acknowledge(message, connection, response);
             data.terminated();
         },
 
@@ -650,14 +650,9 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
     }
 }
 
-fn acknowledge_and_handled(message: Connection.RawMessage, connection: *Connection, response: Connection.Response) !void {
+fn acknowledge(message: Connection.RawMessage, connection: *Connection, response: Connection.Response) !void {
     const resp = try connection.parse_validate_response(message, protocol.Response, response.request_seq, response.command);
     defer resp.deinit();
-}
-
-fn acknowledge_only(message: Connection.RawMessage, connection: *Connection, request_seq: i32, command: Connection.Command) !void {
-    const resp = try connection.parse_validate_response(message, protocol.Response, request_seq, command);
-    resp.deinit();
 }
 
 fn handle_if_malformed_message(message: Connection.RawMessage, response: Connection.Response) !void {
