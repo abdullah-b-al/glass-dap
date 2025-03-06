@@ -240,11 +240,15 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     }
 
     if (state.begin_session) {
-        state.begin_session = !(request.begin_session(state.arena(), connection, data) catch |err| blk: {
+        const result = request.begin_session(state.arena(), callbacks, connection, data) catch |err| blk: {
             log_err(err, @src());
             notify("{}", .{err}, 3000);
-            break :blk true;
-        });
+            break :blk .done;
+        };
+        state.begin_session = switch (result) {
+            .done => false,
+            .not_done => true,
+        };
     }
 
     if (state.update_active_source_to_top_of_stack) blk: {
@@ -570,12 +574,12 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
         request.scopes(connection, thread.id, frame_id, false) catch return;
 
         const static = struct {
-            fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+            fn func(_: *SessionData, _: *Connection) void {
                 state.waiting_for_scopes = false;
             }
         };
 
-        session.callback(callbacks, .success, .{ .response = .scopes }, null, static.func) catch return;
+        session.callback(callbacks, .success, .{ .response = .scopes }, static.func) catch return;
         state.waiting_for_scopes = true;
         return;
     };
@@ -1001,7 +1005,7 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
     }
 }
 
-fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *SessionData, connection: *Connection, args: Args) !void {
+fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, callbacks: *const Callbacks, data: *SessionData, connection: *Connection, args: Args) !void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -1119,14 +1123,17 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, data: *Sessio
 
     if (zgui.beginTabItem("Handled Events", .{})) {
         defer zgui.endTabItem();
-        for (connection.handled_events.items) |item| {
-            zgui.text("{s}", .{@tagName(item.event)});
-        }
+        draw_table_from_slice_of_struct(@typeName(Connection.HandledEvent), Connection.HandledEvent, connection.handled_events.items);
     }
 
     if (zgui.beginTabItem("Queued Requests", .{})) {
         defer zgui.endTabItem();
         draw_table_from_slice_of_struct(@typeName(Connection.Request), Connection.Request, connection.requests.items);
+    }
+
+    if (zgui.beginTabItem("Callbacks", .{})) {
+        defer zgui.endTabItem();
+        draw_table_from_slice_of_struct(@typeName(session.Callback), session.Callback, callbacks.items);
     }
 }
 
@@ -1521,11 +1528,9 @@ fn debug_goto_targets(name: [:0]const u8, data: SessionData, connection: *Connec
 }
 
 fn debug_ui(gpas: *const DebugAllocators, callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
-    _ = callbacks;
-
     if (!state.debug_ui) return;
 
-    try debug_general(gpas, "Debug General", data, connection, args);
+    try debug_general(gpas, "Debug General", callbacks, data, connection, args);
     debug_modules("Debug Modules", data.*);
     debug_threads("Debug Threads", data.*, connection);
     debug_stack_frames("Debug Stack Frames", data.*, connection);
@@ -1619,6 +1624,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
     }
 
     zgui.text("Adapter State: {s}", .{@tagName(connection.adapter.state)});
+    zgui.text("Adapter.Debuggee State: {s}", .{@tagName(connection.adapter.debuggee)});
     zgui.text("Debuggee Status: {s}", .{anytype_to_string(data.status, .{ .show_union_name = true })});
     zgui.text("Exit Code:", .{});
     if (data.exit_code) |code| {
@@ -1761,7 +1767,7 @@ fn draw_table_from_slice_of_struct(name: [:0]const u8, comptime Type: type, slic
                 const info = @typeInfo(field.type);
                 const field_value = @field(value, field.name);
                 _ = zgui.tableNextColumn();
-                if (info == .pointer and info.pointer.child != u8) { // assume slice
+                if (info == .pointer and info.pointer.size == .slice) {
                     for (field_value, 0..) |inner_v, i| {
                         if (i < field_value.len - 1) {
                             zgui.text("{s},", .{anytype_to_string(inner_v, .{})});
@@ -2732,12 +2738,12 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
     request.variables(connection, thread.id, reference) catch return;
 
     const static = struct {
-        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+        fn func(_: *SessionData, _: *Connection) void {
             state.waiting_for_variables = false;
         }
     };
 
-    session.callback(callbacks, .always, .{ .response = .variables }, null, static.func) catch return;
+    session.callback(callbacks, .always, .{ .response = .variables }, static.func) catch return;
     state.waiting_for_variables = true;
 }
 
@@ -2748,11 +2754,11 @@ fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const Sessi
     request.stack_trace(connection, thread.id) catch return;
 
     const static = struct {
-        fn func(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+        fn func(_: *SessionData, _: *Connection) void {
             state.waiting_for_stack_trace = false;
         }
     };
 
-    session.callback(callbacks, .always, .{ .response = .stackTrace }, null, static.func) catch return;
+    session.callback(callbacks, .always, .{ .response = .stackTrace }, static.func) catch return;
     state.waiting_for_stack_trace = true;
 }

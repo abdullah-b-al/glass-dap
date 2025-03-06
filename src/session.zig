@@ -10,7 +10,7 @@ const ui = @import("ui.zig");
 
 pub const Callbacks = std.ArrayList(Callback);
 pub const Callback = struct {
-    pub const Function = fn (data: *SessionData, connection: *Connection, message: ?Connection.RawMessage) void;
+    pub const Function = fn (data: *SessionData, connection: *Connection) void;
     pub const CallIf = enum {
         success,
         fail,
@@ -24,7 +24,6 @@ pub const Callback = struct {
     };
 
     function: *const Function,
-    message: ?Connection.RawMessage,
     call_if: CallIf,
     when_to_call: WhenToCall,
     timestamp: i128,
@@ -288,7 +287,12 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         .next,
         => try acknowledge(message, connection, response),
 
-        .initialize => try connection.handle_response_init(message, response),
+        .initialize => {
+            const resp = try connection.parse_validate_response(message, protocol.InitializeResponse, response.request_seq, .initialize);
+            defer resp.deinit();
+
+            try connection.handle_response_init(resp.value.body);
+        },
         .disconnect => try connection.handle_response_disconnect(message, response),
 
         .threads => {
@@ -608,12 +612,10 @@ pub fn callback(
     callbacks: *Callbacks,
     call_if: Callback.CallIf,
     when_to_call: Callback.WhenToCall,
-    message: ?Connection.RawMessage,
     comptime function: Callback.Function,
 ) !void {
     const cb = Callback{
         .function = function,
-        .message = message,
         .call_if = call_if,
         .when_to_call = when_to_call,
         .timestamp = std.time.nanoTimestamp(),
@@ -641,7 +643,7 @@ pub fn handle_callbacks(callbacks: *Callbacks, data: *SessionData, connection: *
             };
 
             if (handled.timestamp >= cb.timestamp and call_if and when_to_call) {
-                cb.function(data, connection, cb.message);
+                cb.function(data, connection);
                 _ = callbacks.orderedRemove(i);
             } else {
                 i += 1;

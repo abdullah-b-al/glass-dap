@@ -116,9 +116,6 @@ pub fn main() !void {
 
     var callbacks = session.Callbacks.init(gpas.connection.allocator());
     defer {
-        for (callbacks.items) |cb| {
-            if (cb.message) |m| m.deinit();
-        }
         callbacks.deinit();
     }
 

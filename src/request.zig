@@ -37,23 +37,16 @@ pub fn initialize_arguments(connection: *const Connection) protocol.InitializeRe
 
 var begin_session_state: BeginSessionState = .begin;
 const BeginSessionState = enum {
+    wait,
     begin,
     init_and_launch,
+    waiting_for_initialized,
+    launch,
     config_done,
     done,
-
-    pub fn next(s: *@This()) void {
-        s.* = switch (s.*) {
-            .begin => .init_and_launch,
-            .init_and_launch => .config_done,
-            .config_done => .done,
-            .done => .done,
-        };
-    }
 };
 
-pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *SessionData) !bool {
-    _ = arena;
+pub fn begin_session(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection, data: *SessionData) !enum { done, not_done } {
     // send and respond to initialize
     // send launch or attach
     // when the adapter is ready it'll send a initialized event
@@ -66,32 +59,35 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
             ui.state.adapter_name.clear();
         }
 
-        const id, const argv = get_id_and_argv() orelse return true;
+        const id, const argv = get_id_and_argv() orelse return .done;
         try connection.adapter.set(id, argv);
     }
 
     if (connection.adapter.process == null or ui.state.adapter_name.len == 0) {
         ui.state.ask_for_adapter = true;
-        return false;
+        return .not_done;
     }
 
     switch (data.status) {
         .terminated, .not_running => {},
         .running, .stopped => {
-            switch (connection.adapter.state) {
+            switch (connection.adapter.debuggee) {
                 .launched, .attached => {
-                    return true;
+                    return .done;
                 },
-                else => {},
+                .none => {},
             }
         },
     }
 
     switch (begin_session_state) {
-        .begin, .init_and_launch => {
+        .waiting_for_initialized,
+        .wait,
+        => {},
+        .begin, .init_and_launch, .launch => {
             if (get_launch_config() == null) {
                 ui.state.ask_for_launch_config = true;
-                return false;
+                return .not_done;
             }
         },
         .done, .config_done => {},
@@ -102,46 +98,75 @@ pub fn begin_session(arena: std.mem.Allocator, connection: *Connection, data: *S
         else => return err,
     };
 
+    const static = struct {
+        pub fn goto_launch(_: *SessionData, _: *Connection) void {
+            begin_session_state = .launch;
+        }
+        pub fn config_done(_: *SessionData, _: *Connection) void {
+            begin_session_state = .config_done;
+        }
+    };
+
     switch (begin_session_state) {
+        .wait => {},
+        .waiting_for_initialized => {
+            begin_session_state = .config_done;
+        },
+
         .begin => {
             session.begin(connection, data);
+            begin_session_state = .init_and_launch;
         },
+
         .init_and_launch => {
             try connection.queue_request_init(initialize_arguments(connection));
-            // TODO: launch
-            // launch(arena, connection, .{ .dep = .{ .response = .initialize }, .handled_when = .after_queueing }) catch |err| switch (err) {
-            //     error.NoLaunchConfig => unreachable,
-            //     else => return err,
-            // };
+            begin_session_state = .wait;
+            try session.callback(callbacks, .always, .{ .response = .initialize }, static.goto_launch);
+        },
+
+        .launch => {
+            launch(arena, connection) catch |err| switch (err) {
+                error.NoLaunchConfig => unreachable,
+                else => return err,
+            };
+
+            if (connection.adapter.state == .initialized) {
+                begin_session_state = .config_done;
+            } else {
+                begin_session_state = .waiting_for_initialized;
+            }
         },
 
         // TODO: send configurations
 
         .config_done => {
-            // TODO: configuration done
-            // _ = try connection.queue_request_configuration_done(
-            //     null,
-            //     .{},
-            //     .{ .dep = .{ .event = .initialized }, .handled_when = .any },
-            // );
+            _ = try connection.queue_request_configuration_done(null, .{});
+            begin_session_state = .done;
         },
-        .done => {},
+
+        .done => begin_session_state = .done,
     }
 
-    begin_session_state.next();
-    return begin_session_state == .done;
+    return if (begin_session_state == .done) return .done else .not_done;
 }
 
 pub fn end_session(connection: *Connection, how: enum { terminate, disconnect }) !void {
+    switch (connection.adapter.debuggee) {
+        .none => return error.SessionNotStarted,
+        .attached, .launched => {},
+    }
     switch (connection.adapter.state) {
-        .initialized,
         .partially_initialized,
         .initializing,
         .spawned,
         => return error.SessionNotStarted,
 
-        .died, .not_spawned => return error.AdapterNotSpawned,
+        .initialized => {},
 
+        .died, .not_spawned => return error.AdapterNotSpawned,
+    }
+
+    switch (connection.adapter.debuggee) {
         .attached => @panic("TODO"),
         .launched => {
             switch (how) {
@@ -164,6 +189,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
                 ),
             }
         },
+        .none => {},
     }
 
     begin_session_state = .begin;
@@ -334,12 +360,12 @@ const Step = enum {
 pub fn step(callbacks: *Callbacks, data: SessionData, connection: *Connection, step_kind: Step, granularity: protocol.SteppingGranularity) void {
     const static = struct {
         var wait = false;
-        fn stack_trace(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+        fn stack_trace(_: *SessionData, _: *Connection) void {
             ui.state.scroll_to_active_line = true;
             ui.state.update_active_source_to_top_of_stack = true;
         }
 
-        fn step(_: *SessionData, _: *Connection, _: ?Connection.RawMessage) void {
+        fn step(_: *SessionData, _: *Connection) void {
             wait = false;
         }
     };
@@ -355,13 +381,13 @@ pub fn step(callbacks: *Callbacks, data: SessionData, connection: *Connection, s
     }
 
     static.wait = true;
-    session.callback(callbacks, .success, .{ .response = .stackTrace }, null, static.stack_trace) catch return;
+    session.callback(callbacks, .success, .{ .response = .stackTrace }, static.stack_trace) catch return;
     const command: Connection.Command = switch (step_kind) {
         .next => .next,
         .in => .stepIn,
         .out => .stepOut,
     };
-    session.callback(callbacks, .always, .{ .response = command }, null, static.step) catch return;
+    session.callback(callbacks, .always, .{ .response = command }, static.step) catch return;
 }
 fn step_in(data: SessionData, connection: *Connection, granularity: protocol.SteppingGranularity) void {
     var iter = SelectedThreadsIterator.init(data, connection);

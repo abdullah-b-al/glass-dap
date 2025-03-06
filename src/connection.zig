@@ -127,6 +127,7 @@ pub fn deinit(connection: *Connection) void {
 
 pub fn begin_session(connection: *Connection) void {
     std.debug.assert(connection.adapter.state == .spawned or connection.adapter.state == .initialized);
+    std.debug.assert(connection.adapter.debuggee == .none);
     connection.free(.begin_session);
 }
 
@@ -135,7 +136,7 @@ pub fn queue_request(connection: *Connection, command: Command, arguments: anyty
     switch (connection.adapter.state) {
         .partially_initialized => {
             switch (command) {
-                .launch, .attach => {},
+                .launch, .attach, .configurationDone => {},
                 else => return error.AdapterNotDoneInitializing,
             }
         },
@@ -146,7 +147,7 @@ pub fn queue_request(connection: *Connection, command: Command, arguments: anyty
             }
         },
         .died, .not_spawned => return error.AdapterNotSpawned,
-        .initialized, .spawned, .attached, .launched => {},
+        .initialized, .spawned => {},
     }
 
     const total_requests = connection.total_requests + 1;
@@ -204,7 +205,7 @@ pub fn send_request(connection: *Connection, index: usize) !void {
             }
         },
         .died, .not_spawned => return error.AdapterNotSpawned,
-        .initialized, .spawned, .attached, .launched => {},
+        .initialized, .spawned => {},
     }
 
     const protocol_request = protocol.Request{
@@ -245,7 +246,9 @@ pub fn remove_event(connection: *Connection, seq: i32) RawMessage {
 }
 
 pub fn handled_event(connection: *Connection, message: RawMessage, event: Event) void {
+    const seq = utils.get_value(message.value, "seq", .integer) orelse -1;
     connection.handled_events.appendAssumeCapacity(.{
+        .seq = @intCast(seq),
         .event = event,
         .timestamp = std.time.nanoTimestamp(),
     });
@@ -281,18 +284,15 @@ pub fn failed_message(connection: *Connection, message: RawMessage) void {
 /// extra_arguments is a key value pair to be injected into the InitializeRequest.arguments
 pub fn queue_request_init(connection: *Connection, arguments: protocol.InitializeRequestArguments) !void {
     connection.client_capabilities = utils.bit_set_from_struct(arguments, ClientCapabilitiesSet, ClientCapabilitiesKind);
-
     try connection.queue_request(.initialize, arguments, .no_data);
     connection.adapter.state = .initializing;
 }
 
-pub fn handle_response_init(connection: *Connection, message: RawMessage, response: Response) !void {
+pub fn handle_response_init(connection: *Connection, capabilities: ?protocol.Capabilities) !void {
     std.debug.assert(connection.adapter.state == .initializing);
     const cloner = connection.create_cloner();
 
-    const resp = try connection.parse_validate_response(message, protocol.InitializeResponse, response.request_seq, .initialize);
-    defer resp.deinit();
-    if (resp.value.body) |body| {
+    if (capabilities) |body| {
         connection.adapter_capabilities.support = utils.bit_set_from_struct(body, AdapterCapabilitiesSet, AdapterCapabilitiesKind);
         connection.adapter_capabilities.completionTriggerCharacters = try utils.clone_anytype(cloner, body.completionTriggerCharacters);
         connection.adapter_capabilities.exceptionBreakpointFilters = try utils.clone_anytype(cloner, body.exceptionBreakpointFilters);
@@ -312,7 +312,7 @@ pub fn queue_request_launch(connection: *Connection, arguments: protocol.LaunchR
 }
 
 pub fn handle_response_launch(connection: *Connection) void {
-    connection.adapter.state = .launched;
+    connection.adapter.debuggee = .launched;
 }
 
 pub fn queue_request_configuration_done(connection: *Connection, arguments: ?protocol.ConfigurationDoneArguments, extra_arguments: protocol.Object) !void {
@@ -342,6 +342,7 @@ pub fn handle_event_initialized(connection: *Connection) void {
 
 pub fn handle_event_terminated(connection: *Connection) void {
     connection.adapter.state = .initialized;
+    connection.adapter.debuggee = .none;
 }
 
 pub fn check_request_capability(connection: *Connection, command: Command) !void {
@@ -404,6 +405,7 @@ pub fn check_request_capability(connection: *Connection, command: Command) !void
 
 pub fn adapter_died(connection: *Connection) void {
     connection.adapter.state = .died;
+    connection.adapter.debuggee = .none;
 }
 
 pub fn new_seq(connection: *Connection) i32 {
@@ -755,6 +757,7 @@ pub const Command = blk: {
 };
 
 pub const HandledEvent = struct {
+    seq: i32,
     event: Event,
     timestamp: i128,
 };
@@ -800,6 +803,7 @@ pub const Adapter = struct {
     process: ?std.process.Child,
     id: []const u8,
     state: State,
+    debuggee: enum { none, attached, launched },
 
     pub fn init(allocator: std.mem.Allocator) Adapter {
         return .{
@@ -808,6 +812,7 @@ pub const Adapter = struct {
             .process = null,
             .id = "",
             .state = .not_spawned,
+            .debuggee = .none,
         };
     }
 
@@ -846,8 +851,6 @@ pub const Adapter = struct {
         switch (adapter.state) {
             .died, .not_spawned => {},
 
-            .launched,
-            .attached,
             .initialized,
             .partially_initialized,
             .initializing,
@@ -867,10 +870,6 @@ pub const Adapter = struct {
     }
 
     const State = enum {
-        /// Adapter and debuggee are running
-        launched,
-        /// Adapter and debuggee are running
-        attached,
         /// Adapter is running and the initialized event has been handled
         initialized,
         /// Adapter is running and the initialize request has been responded to
@@ -895,8 +894,6 @@ pub const Adapter = struct {
         pub fn accepts_requests(state: State) bool {
             return switch (state) {
                 .initialized,
-                .launched,
-                .attached,
                 .partially_initialized,
                 .initializing,
                 .spawned,
