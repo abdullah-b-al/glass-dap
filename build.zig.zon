@@ -3,9 +3,18 @@
     .version = "0.0.1",
     .fingerprint = 0xb719b8c4c81b478d,
     .dependencies = .{
-        .zglfw = .{ .path = "./libs/zglfw" },
-        .zopengl = .{ .path = "./libs/zopengl" },
-        .zgui = .{ .path = "./libs/zgui" },
+        .zglfw = .{
+            .url = "git+https://github.com/zig-gamedev/zglfw/#4d04fdac888c0f6c1c858ba343d33b19aa499cef",
+            .hash = "zglfw-0.10.0-dev-AAAAAHCZIQDKD8WFiNvMOOz7fasj8oG6Vajcdtbv0yr9",
+        },
+        .zopengl = .{
+            .url = "git+https://github.com/zig-gamedev/zopengl/#0388fac62ea7af420587772e383439a97d978554",
+            .hash = "zopengl-0.6.0-dev-AAAAAOVOCAAMiUlq4Tq-nbabSmXc1W54IE4Qyv6KJEWX",
+        },
+        .zgui = .{
+            .url = "git+https://github.com/abdullah-b-al/zgui/#33e3dbb2e41dd8cb6ed34399076526ef8828a08e",
+            .hash = "zgui-0.6.0-dev--L6sZA6HaAAD730FctQDeFJe0eJple7XEG4w_1YYzHfM",
+        },
 
         .known_folders = .{
             .url = "git+https://github.com/ziglibs/known-folders/#aa24df42183ad415d10bc0a33e6238c437fc0f59",
