@@ -627,6 +627,10 @@ const AdapterCapabilities = struct {
     additionalModuleColumns: ?[]protocol.ColumnDescriptor = null,
     supportedChecksumAlgorithms: ?[]protocol.ChecksumAlgorithm = null,
     breakpointModes: ?[]protocol.BreakpointMode = null,
+
+    pub fn supports(capabilities: AdapterCapabilities, kind: AdapterCapabilitiesKind) bool {
+        return capabilities.support.contains(kind);
+    }
 };
 
 pub const RawMessage = std.json.Parsed(std.json.Value);

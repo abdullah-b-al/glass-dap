@@ -40,7 +40,7 @@ const BeginSessionState = enum {
     wait,
     begin,
     init_and_launch,
-    waiting_for_initialized,
+    waiting_for_next_main_loop_tick,
     launch,
     config_done,
     done,
@@ -81,7 +81,7 @@ pub fn begin_session(arena: std.mem.Allocator, callbacks: *Callbacks, connection
     }
 
     switch (begin_session_state) {
-        .waiting_for_initialized,
+        .waiting_for_next_main_loop_tick,
         .wait,
         => {},
         .begin, .init_and_launch, .launch => {
@@ -109,7 +109,7 @@ pub fn begin_session(arena: std.mem.Allocator, callbacks: *Callbacks, connection
 
     switch (begin_session_state) {
         .wait => {},
-        .waiting_for_initialized => {
+        .waiting_for_next_main_loop_tick => {
             begin_session_state = .config_done;
         },
 
@@ -133,7 +133,9 @@ pub fn begin_session(arena: std.mem.Allocator, callbacks: *Callbacks, connection
             if (connection.adapter.state == .initialized) {
                 begin_session_state = .config_done;
             } else {
-                begin_session_state = .waiting_for_initialized;
+                // by the next main loop tick the launch request would have been
+                // sent and responded to
+                begin_session_state = .waiting_for_next_main_loop_tick;
             }
         },
 
@@ -361,7 +363,7 @@ pub fn step(callbacks: *Callbacks, data: SessionData, connection: *Connection, s
     const static = struct {
         var wait = false;
         fn stack_trace(_: *SessionData, _: *Connection) void {
-            ui.state.scroll_to_active_line = true;
+            ui.state.active_source.scroll_to = .active_line;
             ui.state.update_active_source_to_top_of_stack = true;
         }
 

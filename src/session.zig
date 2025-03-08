@@ -580,12 +580,7 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
             );
             defer parsed.deinit();
 
-            for (parsed.value.body.sources) |source| {
-                data.set_source(source) catch |err| switch (err) {
-                    error.OutOfMemory => return err,
-                    error.SourceWithoutID => continue,
-                };
-            }
+            try data.set_source_from_loaded_sources(parsed.value.body.sources);
         },
 
         .attach,

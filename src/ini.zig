@@ -151,9 +151,9 @@ pub fn parse_value(arena: std.mem.Allocator, value: []const u8) !Type {
     // assume string
     var result =
         if (value[0] == '"')
-        try parse_string_until(arena, value[1..], '"') orelse return error.InvalidString
-    else
-        (try parse_string_until(arena, value, null)).?;
+            try parse_string_until(arena, value[1..], '"') orelse return error.InvalidString
+        else
+            (try parse_string_until(arena, value, null)).?;
 
     result = try escape_characters(result);
     return .{ .string = result };

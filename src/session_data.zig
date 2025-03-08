@@ -35,6 +35,9 @@ function_breakpoints: std.ArrayListUnmanaged(protocol.FunctionBreakpoint),
 source_breakpoints: std.ArrayHashMapUnmanaged(SourceID, SourceBreakpoints, SourceIDHash, false),
 data_breakpoints: std.ArrayHashMapUnmanaged(protocol.DataBreakpoint, void, DataBreakpointHash, false),
 
+/// Specifies how many sources have been retrieved from the `loadedSources` request
+loaded_sources_count: usize,
+
 all_threads_status: enum {
     stopped,
     continued,
@@ -78,6 +81,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .data_breakpoints = .empty,
         .data_breakpoints_info = .empty,
         .goto_targets = .empty,
+        .loaded_sources_count = 0,
     };
 }
 
@@ -155,6 +159,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
     data.* = .{
         .status = .not_running,
         .all_threads_status = .null,
+        .loaded_sources_count = 0,
 
         // keep
         .exit_code = data.exit_code,
@@ -422,6 +427,17 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
     }
 }
 
+pub fn set_source_from_loaded_sources(data: *SessionData, sources: []protocol.Source) !void {
+    for (sources) |source| {
+        data.set_source(source) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            error.SourceWithoutID => continue,
+        };
+    }
+
+    data.loaded_sources_count = sources.len;
+}
+
 pub fn set_source(data: *SessionData, source: protocol.Source) !void {
     const id = try data.intern_source_id(
         SourceID.from_source(source) orelse return error.SourceWithoutID,
@@ -654,11 +670,11 @@ pub fn add_data_breakpoint_info(data: *SessionData, name: []const u8, thread_id:
     const key_clone: DataBreakpointInfo.ID = blk: {
         const key: DataBreakpointInfo.ID =
             if (reference) |ref|
-            .{ .variable = .{ .reference = ref, .name = name } }
-        else if (frame_id) |frame|
-            .{ .frame_expression = .{ .frame = frame, .name = name } }
-        else
-            .{ .global_expression = name };
+                .{ .variable = .{ .reference = ref, .name = name } }
+            else if (frame_id) |frame|
+                .{ .frame_expression = .{ .frame = frame, .name = name } }
+            else
+                .{ .global_expression = name };
 
         break :blk try utils.mem_object_clone(&clone, key);
     };

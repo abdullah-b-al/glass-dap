@@ -62,10 +62,10 @@ const State = struct {
     update_active_source_to_top_of_stack: bool = false,
 
     // handled in a widget
-    scroll_to_active_line: bool = false,
     waiting_for_scopes: bool = false,
     waiting_for_variables: bool = false,
     waiting_for_stack_trace: bool = false,
+    waiting_for_loaded_sources: bool = false,
 
     pub fn arena(s: *State) std.mem.Allocator {
         return s.arena_state.allocator();
@@ -78,7 +78,7 @@ pub var state = State{
 };
 
 pub fn continue_rendering() void {
-    state.render_frames = @max(state.render_frames, 30);
+    state.render_frames = 30;
 }
 
 var zgui_mouse_cursor_pos_callback: ?glfw.CursorPosFn = null;
@@ -261,8 +261,9 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
                 const eql = utils.source_is(source, id);
 
                 if (!eql) {
-                    state.active_source.set_source(thread.id, source);
-                    state.scroll_to_active_line = true;
+                    const new_source_id = SessionData.SourceID.from_source(source) orelse break :blk;
+                    state.active_source.set_source(thread.id, new_source_id);
+                    state.active_source.scroll_to = .active_line;
                 }
             }
         }
@@ -326,9 +327,9 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     source_code("Source Code", data, connection);
     output("Output", data.*, connection);
     threads("Threads", callbacks, data, connection);
-    sources("Sources", data, connection);
+    sources("Sources", callbacks, data, connection);
     variables("Variables", callbacks, data, connection);
-    breakpoints("Breakpoints", data.*, connection);
+    breakpoints("Breakpoints", data, connection);
 
     debug_ui(gpas, callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
 
@@ -431,7 +432,7 @@ fn source_code(name: [:0]const u8, data: *SessionData, connection: *Connection) 
         const active_line = if (frame) |f| (f.line == line_number) else false;
 
         if (active_line) {
-            state.active_source.line = int_line;
+            state.active_source.active_line = int_line;
         }
 
         zgui.tableNextRow(.{});
@@ -473,6 +474,22 @@ fn source_code(name: [:0]const u8, data: *SessionData, connection: *Connection) 
             zgui.text("{s}", .{line});
         }
 
+        switch (state.active_source.scroll_to) {
+            .active_line => {
+                if (active_line) {
+                    zgui.setScrollHereY(.{ .center_y_ratio = 0.5 });
+                    state.active_source.scroll_to = .none;
+                }
+            },
+            .line => |scroll_to_line| {
+                if (scroll_to_line == line_number) {
+                    zgui.setScrollHereY(.{ .center_y_ratio = 0.5 });
+                    state.active_source.scroll_to = .none;
+                }
+            },
+            .none => {},
+        }
+
         if (active_line) {
             const f = frame.?;
             if (f.column < line.len) {
@@ -489,17 +506,11 @@ fn source_code(name: [:0]const u8, data: *SessionData, connection: *Connection) 
                     .thickness = 1,
                 });
             }
-
-            if (state.scroll_to_active_line) {
-                state.scroll_to_active_line = false;
-                zgui.setScrollHereY(.{ .center_y_ratio = 0.5 });
-            }
         }
     }
 }
 
-fn sources(name: [:0]const u8, data: *SessionData, connection: *Connection) void {
-    _ = connection;
+fn sources(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -523,7 +534,7 @@ fn sources(name: [:0]const u8, data: *SessionData, connection: *Connection) void
             if (zgui.selectable(s_name, .{})) {
                 if (entry.kind == .directory) {
                     state.files.cd(entry) catch break :files_blk;
-                    break; // cd frees the files_entries
+                    break; // cd frees the files.entries
                 } else {
                     state.files.open(data, entry) catch break :files_blk;
                 }
@@ -534,25 +545,32 @@ fn sources(name: [:0]const u8, data: *SessionData, connection: *Connection) void
     if (zgui.beginTabItem("Loaded Sources", .{})) {
         defer zgui.endTabItem();
 
-        const fn_name = @src().fn_name;
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        // only request during suspended state
+        for (data.threads.values()) |thread| {
+            if (thread.status == .stopped) {
+                request_or_wait_for_loaded_sources(connection, data, callbacks);
+                break;
+            }
+        }
 
+        const fn_name = @src().fn_name;
         for (data.sources.values()) |source| {
             const source_path = if (source.value.path) |path| tmp_shorten_path(path) else null;
             const label = if (source_path) |path|
-                std.fmt.bufPrintZ(&buf, "{s}##" ++ fn_name, .{path}) catch return
+                tmp_name("{s}##" ++ fn_name, .{path})
             else if (source.value.sourceReference) |ref|
-                std.fmt.bufPrintZ(&buf, "{s}({})##" ++ fn_name, .{ source.value.name orelse "", ref }) catch return
+                tmp_name("{s}({})##" ++ fn_name, .{ source.value.name orelse "", ref })
             else
                 return;
 
-            if (zgui.button(label, .{})) {
+            if (zgui.selectable(label, .{})) blk: {
+                const source_id = SessionData.SourceID.from_source(source.value) orelse break :blk;
                 if (thread_of_source(source.value, data.*)) |thread| {
-                    state.active_source.set_source(thread.id, source.value);
-                    state.scroll_to_active_line = true;
+                    state.active_source.set_source(thread.id, source_id);
+                    state.active_source.scroll_to = .active_line;
                 } else {
-                    state.active_source.set_source(null, source.value);
-                    state.scroll_to_active_line = true;
+                    state.active_source.set_source(null, source_id);
+                    state.active_source.scroll_to = .active_line;
                 }
             }
         }
@@ -569,18 +587,7 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     const frame = state.active_source.get_frame(data) orelse return;
     const frame_id: SessionData.FrameID = @enumFromInt(frame.id);
     const scopes = thread.scopes.get(frame_id) orelse {
-        if (state.waiting_for_scopes) return;
-
-        request.scopes(connection, thread.id, frame_id, false) catch return;
-
-        const static = struct {
-            fn func(_: *SessionData, _: *Connection) void {
-                state.waiting_for_scopes = false;
-            }
-        };
-
-        session.callback(callbacks, .success, .{ .response = .scopes }, static.func) catch return;
-        state.waiting_for_scopes = true;
+        request_or_wait_for_scopes(connection, thread, frame_id, callbacks);
         return;
     };
 
@@ -637,11 +644,11 @@ fn variables_node(
 
     const widget: enum { input_text, value, node } =
         if (state.variable_edit != null)
-        .input_text
-    else if (variable.variablesReference > 0)
-        .node
-    else
-        .value;
+            .input_text
+        else if (variable.variablesReference > 0)
+            .node
+        else
+            .value;
 
     const unique_string = tmp_name("{} {s} {s} {} {} {}", .{
         thread.id,
@@ -751,7 +758,7 @@ fn variables_node(
     }
 }
 
-fn breakpoints(name: [:0]const u8, data: SessionData, connection: *Connection) void {
+fn breakpoints(name: [:0]const u8, data: *const SessionData, connection: *Connection) void {
     _ = connection;
 
     defer zgui.end();
@@ -767,7 +774,17 @@ fn breakpoints(name: [:0]const u8, data: SessionData, connection: *Connection) v
 
         const line = item.value.breakpoint.line orelse continue;
         const n = tmp_name("{s} {?}##{}", .{ origin, line + 1, i });
-        if (zgui.selectable(n, .{})) {}
+        if (zgui.selectable(n, .{})) {
+            switch (item.value.origin) {
+                .source => |id| blk: {
+                    const source = data.sources.get(id) orelse break :blk;
+                    const thread = thread_of_source(source.value, data.*) orelse break :blk;
+                    state.active_source.set_source(thread.id, id);
+                    state.active_source.scroll_to = .{ .line = line }; // zero based
+                },
+                else => {},
+            }
+        }
     }
 }
 
@@ -780,7 +797,7 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
         if (zgui.button("Select All", .{})) {
             var iter = data.threads.iterator();
             while (iter.next()) |entry| {
-                entry.value_ptr.selected = false;
+                entry.value_ptr.selected = true;
             }
         }
 
@@ -788,7 +805,7 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
         if (zgui.button("Deselect All", .{})) {
             var iter = data.threads.iterator();
             while (iter.next()) |entry| {
-                entry.value_ptr.selected = true;
+                entry.value_ptr.selected = false;
             }
         }
 
@@ -871,9 +888,10 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
             for (thread.stack.items, 0..) |frame, i| {
                 if (zgui.selectable(tmp_name("{s}##{}", .{ frame.value.name, i }), .{})) {
-                    if (frame.value.source) |s| {
-                        state.active_source.set_source(thread.id, s);
-                        state.scroll_to_active_line = true;
+                    if (frame.value.source) |s| blk: {
+                        const id = SessionData.SourceID.from_source(s) orelse break :blk;
+                        state.active_source.set_source(thread.id, id);
+                        state.active_source.scroll_to = .active_line;
                     }
                 }
             }
@@ -2552,9 +2570,7 @@ pub const Files = struct {
 
         try data.set_source(.{ .path = path.slice() });
         // if there's no source we'll get it next frame.
-        const source = data.get_source(.{ .path = path.slice() }) orelse return;
-        state.active_source.set_source(null, source);
-        state.scroll_to_active_line = false;
+        state.active_source.set_source(null, .{ .path = path.slice() });
     }
 };
 
@@ -2562,13 +2578,20 @@ pub const ActiveSource = struct {
     pub const defualt = ActiveSource{
         .thread_id = null,
         .source = .none,
+        .scroll_to = .none,
     };
 
     thread_id: ?SessionData.ThreadID,
-    line: ?i32 = null,
+    active_line: ?i32 = null,
     source: union(enum) {
         path: Path,
         reference: i32,
+        none,
+    },
+
+    scroll_to: union(enum) {
+        active_line,
+        line: i32,
         none,
     },
 
@@ -2593,6 +2616,7 @@ pub const ActiveSource = struct {
             null;
     }
 
+    /// Request the adapter for content or read a file
     pub fn set_source_content(active: *ActiveSource, arena: std.mem.Allocator, data: *SessionData, connection: *Connection) !void {
         return switch (active.source) {
             .none => return,
@@ -2611,14 +2635,11 @@ pub const ActiveSource = struct {
         };
     }
 
-    fn set_source(active: *ActiveSource, thread_id: ?SessionData.ThreadID, source: protocol.Source) void {
-        if (source.sourceReference) |ref| {
-            active.source = .{ .reference = ref };
-        } else if (source.path) |path| {
-            active.source = .{
-                .path = Path.fromSlice(path) catch return,
-            };
-        }
+    fn set_source(active: *ActiveSource, thread_id: ?SessionData.ThreadID, source_id: SessionData.SourceID) void {
+        active.source = switch (source_id) {
+            .reference => |ref| .{ .reference = ref },
+            .path => |path| .{ .path = Path.fromSlice(path) catch return },
+        };
 
         active.thread_id = thread_id;
     }
@@ -2747,6 +2768,26 @@ fn request_or_wait_for_variables(connection: *Connection, thread: *const Session
     state.waiting_for_variables = true;
 }
 
+fn request_or_wait_for_scopes(
+    connection: *Connection,
+    thread: *const SessionData.Thread,
+    frame_id: SessionData.FrameID,
+    callbacks: *Callbacks,
+) void {
+    if (state.waiting_for_scopes) return;
+
+    request.scopes(connection, thread.id, frame_id, false) catch return;
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection) void {
+            state.waiting_for_scopes = false;
+        }
+    };
+
+    session.callback(callbacks, .success, .{ .response = .scopes }, static.func) catch return;
+    state.waiting_for_scopes = true;
+}
+
 fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks) void {
     if (state.waiting_for_stack_trace) return;
     if (thread.status != .stopped) return;
@@ -2761,4 +2802,31 @@ fn request_or_wait_for_stack_trace(connection: *Connection, thread: *const Sessi
 
     session.callback(callbacks, .always, .{ .response = .stackTrace }, static.func) catch return;
     state.waiting_for_stack_trace = true;
+}
+
+fn request_or_wait_for_loaded_sources(connection: *Connection, data: *const SessionData, callbacks: *Callbacks) void {
+    if (!connection.adapter_capabilities.supports(.supportsLoadedSourcesRequest))
+        return;
+
+    if (connection.adapter.state != .initialized) return;
+    if (state.waiting_for_loaded_sources) return;
+    if (data.loaded_sources_count > 0) return;
+
+    request.loaded_sources(connection) catch |err| switch (err) {
+        error.OutOfMemory,
+        error.AdapterNotSpawned,
+        error.AdapterNotDoneInitializing,
+        => {},
+
+        error.AdapterDoesNotSupportRequest => unreachable,
+    };
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection) void {
+            state.waiting_for_loaded_sources = false;
+        }
+    };
+
+    session.callback(callbacks, .always, .{ .response = .loadedSources }, static.func) catch return;
+    state.waiting_for_loaded_sources = true;
 }
