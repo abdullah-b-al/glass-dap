@@ -54,6 +54,15 @@ pub const Action = enum {
     next_line,
     next_statement,
     next_instruction,
+
+    step_in_line,
+    step_in_statement,
+    step_in_instruction,
+
+    step_out_line,
+    step_out_statement,
+    step_out_instruction,
+
     begin_session,
     toggle_debug_ui,
 };

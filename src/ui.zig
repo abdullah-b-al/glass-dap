@@ -2492,11 +2492,20 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
     switch (action) {
         .continue_threads => request.continue_threads(data.*, connection),
         .pause => request.pause(data.*, connection),
+        .begin_session => state.begin_session = true,
+        .toggle_debug_ui => state.debug_ui = !state.debug_ui,
+
         .next_line => request.step(callbacks, data.*, connection, .next, .line),
         .next_statement => request.step(callbacks, data.*, connection, .next, .statement),
         .next_instruction => request.step(callbacks, data.*, connection, .next, .instruction),
-        .begin_session => state.begin_session = true,
-        .toggle_debug_ui => state.debug_ui = !state.debug_ui,
+
+        .step_in_line => request.step(callbacks, data.*, connection, .in, .line),
+        .step_in_statement => request.step(callbacks, data.*, connection, .in, .statement),
+        .step_in_instruction => request.step(callbacks, data.*, connection, .in, .instruction),
+
+        .step_out_line => request.step(callbacks, data.*, connection, .out, .line),
+        .step_out_statement => request.step(callbacks, data.*, connection, .out, .statement),
+        .step_out_instruction => request.step(callbacks, data.*, connection, .out, .instruction),
     }
 }
 
