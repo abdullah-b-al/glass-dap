@@ -232,23 +232,27 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
 
     if (state.ask_for_adapter) {
-        state.ask_for_adapter = !pick(.adapter);
-    }
+        state.ask_for_adapter = pick(.adapter) == .not_done;
+    } else if (state.ask_for_launch_config) {
+        state.ask_for_launch_config = pick(.launch_config) == .not_done;
+    } else if (state.begin_session) {
+        switch (pick(.begin_session)) {
+            .cancel => state.begin_session = false,
+            .not_done => state.begin_session = true,
 
-    if (state.ask_for_launch_config) {
-        state.ask_for_launch_config = !pick(.launch_config);
-    }
+            .done => {
+                const request_result = request.begin_session(state.arena(), callbacks, connection, data) catch |err| blk: {
+                    log_err(err, @src());
+                    notify("{}", .{err}, 3000);
+                    break :blk .done;
+                };
 
-    if (state.begin_session) {
-        const result = request.begin_session(state.arena(), callbacks, connection, data) catch |err| blk: {
-            log_err(err, @src());
-            notify("{}", .{err}, 3000);
-            break :blk .done;
-        };
-        state.begin_session = switch (result) {
-            .done => false,
-            .not_done => true,
-        };
+                switch (request_result) {
+                    .done => state.begin_session = false,
+                    .not_done => {},
+                }
+            },
+        }
     }
 
     if (state.update_active_source_to_top_of_stack) blk: {
@@ -1023,7 +1027,7 @@ fn debug_threads(name: [:0]const u8, data: SessionData, connection: *Connection)
     }
 }
 
-fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, callbacks: *const Callbacks, data: *SessionData, connection: *Connection, args: Args) !void {
+fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection, args: Args) !void {
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
@@ -1099,7 +1103,7 @@ fn debug_general(gpas: *const DebugAllocators, name: [:0]const u8, callbacks: *c
 
     if (zgui.beginTabItem("Manully Send Requests", .{})) {
         defer zgui.endTabItem();
-        try manual_requests(connection, data, args);
+        try manual_requests(callbacks, connection, data, args);
     }
 
     if (zgui.beginTabItem("Adapter Capabilities", .{})) {
@@ -1622,7 +1626,7 @@ fn adapter_capabilities(connection: Connection) void {
     }
 }
 
-fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !void {
+fn manual_requests(callbacks: *Callbacks, connection: *Connection, data: *SessionData, args: Args) !void {
     _ = args;
     const static = struct {
         var name_buf: [512:0]u8 = .{0} ** 512;
@@ -1669,7 +1673,7 @@ fn manual_requests(connection: *Connection, data: *SessionData, args: Args) !voi
 
     zgui.sameLine(.{});
     if (zgui.button("Send Launch Request", .{})) {
-        request.launch(state.arena(), connection) catch |err| switch (err) {
+        request.launch(state.arena(), callbacks, connection) catch |err| switch (err) {
             error.NoLaunchConfig => state.ask_for_launch_config = true,
             else => log_err(err, @src()),
         };
@@ -2149,29 +2153,36 @@ fn draw_launch_configurations(maybe_launch: ?config.Object) void {
     }
 }
 
-fn pick(comptime widget: std.meta.Tag(PickerWidget)) bool {
+fn pick(comptime widget: std.meta.Tag(PickerWidget)) picker.PickResult {
 
     // keep the state of the widget alive between frames
     if (std.meta.activeTag(state.picker) != widget) {
         state.picker = @unionInit(PickerWidget, @tagName(widget), .{});
     }
-    const done = state.picker.pick();
-
-    if (done) {
-        state.picker.done();
-        state.picker = .none;
+    const result = state.picker.pick();
+    switch (result) {
+        .done => {
+            state.picker.done();
+            state.picker = .none;
+        },
+        .cancel => {
+            state.picker = .none;
+        },
+        .not_done => {},
     }
-    return done;
+
+    return result;
 }
 
 pub const PickerWidget = union(enum) {
     none,
     launch_config: PickerLaunchConfig,
     adapter: PickerAdapter,
+    begin_session: PickerBeginSession,
 
-    pub fn pick(widget: *PickerWidget) bool {
+    pub fn pick(widget: *PickerWidget) picker.PickResult {
         return switch (widget.*) {
-            .none => true,
+            .none => .done,
             inline else => |*w| w.pick(),
         };
     }
@@ -2211,6 +2222,12 @@ pub const picker = struct {
                 .col = zgui.colorConvertFloat4ToU32(color),
             });
         }
+    };
+
+    pub const PickResult = enum {
+        done,
+        cancel,
+        not_done,
     };
 
     pub fn begin_window(name: [:0]const u8) bool {
@@ -2255,8 +2272,10 @@ pub const picker = struct {
 };
 
 pub const PickerAdapter = struct {
-    pub fn pick(_: *PickerAdapter) bool {
-        if (!picker.begin_window("Pick Adapter")) return false;
+    pub fn pick(_: *PickerAdapter) picker.PickResult {
+        if (!picker.begin_window("Pick Adapter")) {
+            return .cancel;
+        }
         defer picker.end_window();
 
         for (config.app.adapters.keys(), config.app.adapters.values()) |name, entries| {
@@ -2294,14 +2313,14 @@ pub const PickerAdapter = struct {
             if (zgui.selectable(tmp_name("{s}: {s}", .{ name, cmd }), .{})) {
                 state.adapter_name = String64.fromSlice(name) catch {
                     notify("Adapter command too long: {s}", .{name}, 3000);
-                    return false;
+                    return .not_done;
                 };
 
-                return true;
+                return .done;
             }
         }
 
-        return false;
+        return .not_done;
     }
 
     pub fn done(_: *PickerAdapter) void {}
@@ -2314,12 +2333,12 @@ pub const PickerLaunchConfig = struct {
     show_table_for: std.AutoArrayHashMapUnmanaged(u32, void) = .empty,
     hash_of_selected: u32 = 0,
 
-    pub fn pick(widget: *PickerLaunchConfig) bool {
-        if (!picker.begin_window("Pick Launch configuration")) return false;
+    pub fn pick(widget: *PickerLaunchConfig) picker.PickResult {
+        if (!picker.begin_window("Pick Launch configuration")) return .cancel;
         defer picker.end_window();
 
         defer zgui.endTabBar();
-        if (!zgui.beginTabBar("PickerLaunchConfig Tab Bar", .{})) return false;
+        if (!zgui.beginTabBar("PickerLaunchConfig Tab Bar", .{})) return .cancel;
 
         for (config.app.projects.keys(), config.app.projects.values()) |project_name, configs| {
             if (zgui.beginTabItem(tmp_name("{s}##{s}", .{ project_name, @typeName(PickerLaunchConfig) }), .{})) {
@@ -2334,13 +2353,13 @@ pub const PickerLaunchConfig = struct {
 
                     const result = widget.show_config(hash, conf);
                     if (widget.handle(result, hash, project_name, i)) {
-                        return true;
+                        return .done;
                     }
                 }
             }
         }
 
-        return false;
+        return .not_done;
     }
 
     pub fn done(_: *PickerLaunchConfig) void {
@@ -2460,6 +2479,30 @@ pub const PickerLaunchConfig = struct {
 
         return .none;
     }
+};
+
+pub const PickerBeginSession = struct {
+    var adapter: PickerAdapter = .{};
+    var launch_config: PickerLaunchConfig = .{};
+    pub fn pick(_: *PickerBeginSession) picker.PickResult {
+        if (state.adapter_name.len == 0) {
+            switch (adapter.pick()) {
+                .not_done, .cancel => |v| return v,
+                .done => {},
+            }
+        }
+
+        if (state.launch_config == null) {
+            switch (launch_config.pick()) {
+                .not_done, .cancel => |v| return v,
+                .done => return .done,
+            }
+        }
+
+        return .done;
+    }
+
+    pub fn done(_: *PickerBeginSession) void {}
 };
 
 fn log_err(err: anyerror, src: std.builtin.SourceLocation) void {

@@ -125,7 +125,7 @@ pub fn begin_session(arena: std.mem.Allocator, callbacks: *Callbacks, connection
         },
 
         .launch => {
-            launch(arena, connection) catch |err| switch (err) {
+            launch(arena, callbacks, connection) catch |err| switch (err) {
                 error.NoLaunchConfig => unreachable,
                 else => return err,
             };
@@ -197,7 +197,7 @@ pub fn end_session(connection: *Connection, how: enum { terminate, disconnect })
     begin_session_state = .begin;
 }
 
-pub fn launch(arena: std.mem.Allocator, connection: *Connection) !void {
+pub fn launch(arena: std.mem.Allocator, callbacks: *Callbacks, connection: *Connection) !void {
     const launch_config = get_launch_config() orelse return error.NoLaunchConfig;
 
     var extra = protocol.Object{};
@@ -211,7 +211,13 @@ pub fn launch(arena: std.mem.Allocator, connection: *Connection) !void {
 
     _ = try connection.queue_request_launch(.{}, extra);
 
-    ui.state.launch_config = null;
+    session.callback(callbacks, .always, .{ .response = .launch }, struct {
+        fn func(_: *SessionData, _: *Connection) void {
+            ui.state.launch_config = null;
+        }
+    }.func) catch {
+        ui.state.launch_config = null;
+    };
 }
 
 // Causes a chain of requests to get the state
