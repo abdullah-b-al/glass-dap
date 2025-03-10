@@ -36,6 +36,7 @@ const State = struct {
     notifications: Notifications,
 
     render_frames: u8 = 4,
+    active_thread: ?SessionData.ThreadID = null,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
     debug_ui: bool = @import("builtin").mode == .Debug,
@@ -62,6 +63,8 @@ const State = struct {
     update_active_source_to_top_of_stack: bool = false,
 
     // handled in a widget
+    force_open_active_thread: bool = false,
+
     waiting_for_scopes: bool = false,
     waiting_for_variables: bool = false,
     waiting_for_stack_trace: bool = false,
@@ -256,18 +259,22 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     }
 
     if (state.update_active_source_to_top_of_stack) blk: {
-        state.update_active_source_to_top_of_stack = false;
-        // TODO: Check if the thread of the active_source is invalid if so update it
-        if (state.active_source.get_thread(data)) |thread| {
+        const thread_id = state.active_thread orelse break :blk;
+        if (data.threads.getPtr(thread_id)) |thread| {
+            if (thread.requested_stack) {
+                state.update_active_source_to_top_of_stack = false;
+            } else {
+                request_or_wait_for_stack_trace(connection, thread, callbacks);
+            }
             if (thread.stack.items.len > 0) {
                 const source = thread.stack.items[0].value.source orelse break :blk;
-                const id = state.active_source.get_id() orelse break :blk;
-                const eql = utils.source_is(source, id);
+                const new_source_id = SessionData.SourceID.from_source(source) orelse break :blk;
+                state.active_source.set_source(new_source_id);
 
-                if (!eql) {
-                    const new_source_id = SessionData.SourceID.from_source(source) orelse break :blk;
-                    state.active_source.set_source(thread.id, new_source_id);
-                    state.active_source.scroll_to = .active_line;
+                if (state.active_source.get_id()) |id| {
+                    if (!utils.source_is(source, id)) {
+                        state.active_source.scroll_to = .active_line;
+                    }
                 }
             }
         }
@@ -340,6 +347,12 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     zgui.backend.draw();
 
     window.swapBuffers();
+}
+
+pub fn thread_has_stopped(thread_id: ?SessionData.ThreadID) void {
+    state.active_thread = thread_id;
+    state.update_active_source_to_top_of_stack = true;
+    state.force_open_active_thread = true;
 }
 
 fn notifications() void {
@@ -569,13 +582,8 @@ fn sources(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
             if (zgui.selectable(label, .{})) blk: {
                 const source_id = SessionData.SourceID.from_source(source.value) orelse break :blk;
-                if (thread_of_source(source.value, data.*)) |thread| {
-                    state.active_source.set_source(thread.id, source_id);
-                    state.active_source.scroll_to = .active_line;
-                } else {
-                    state.active_source.set_source(null, source_id);
-                    state.active_source.scroll_to = .active_line;
-                }
+                state.active_source.set_source(source_id);
+                state.active_source.scroll_to = .active_line;
             }
         }
     }
@@ -585,10 +593,10 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     defer zgui.end();
     if (!zgui.begin(name, .{})) return;
 
-    const thread = state.active_source.get_thread(data) orelse return;
+    const thread = data.threads.getPtr(state.active_thread orelse return) orelse return;
     if (thread.status != .stopped) return;
 
-    const frame = state.active_source.get_frame(data) orelse return;
+    const frame = state.active_source.get_frame(thread.id, data) orelse return;
     const frame_id: SessionData.FrameID = @enumFromInt(frame.id);
     const scopes = thread.scopes.get(frame_id) orelse {
         request_or_wait_for_scopes(connection, thread, frame_id, callbacks);
@@ -780,10 +788,8 @@ fn breakpoints(name: [:0]const u8, data: *const SessionData, connection: *Connec
         const n = tmp_name("{s} {?}##{}", .{ origin, line + 1, i });
         if (zgui.selectable(n, .{})) {
             switch (item.value.origin) {
-                .source => |id| blk: {
-                    const source = data.sources.get(id) orelse break :blk;
-                    const thread = thread_of_source(source.value, data.*) orelse break :blk;
-                    state.active_source.set_source(thread.id, id);
+                .source => |id| {
+                    state.active_source.set_source(id);
                     state.active_source.scroll_to = .{ .line = line }; // zero based
                 },
                 else => {},
@@ -863,9 +869,6 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
         }
     } // buttons
 
-    _ = zgui.beginChild("Code View", .{});
-    defer zgui.endChild();
-
     var iter = data.threads.iterator();
     while (iter.next()) |entry| {
         const thread = entry.value_ptr;
@@ -880,7 +883,18 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
         };
         zgui.text("{s}", .{thread_status});
         zgui.sameLine(.{});
-        if (zgui.treeNode(tmp_name("{s} #{}", .{ thread.name, thread.id }))) {
+
+        const is_active = thread.id == state.active_thread;
+        if (is_active and state.force_open_active_thread) {
+            state.force_open_active_thread = false;
+            zgui.setNextItemOpen(.{ .is_open = true, .cond = .always });
+        }
+        if (zgui.treeNodeFlags(
+            tmp_name("{s} #{}", .{ thread.name, thread.id }),
+            .{
+                .selected = is_active,
+            },
+        )) {
             defer zgui.treePop();
 
             if (!thread.requested_stack) {
@@ -894,7 +908,7 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
                 if (zgui.selectable(tmp_name("{s}##{}", .{ frame.value.name, i }), .{})) {
                     if (frame.value.source) |s| blk: {
                         const id = SessionData.SourceID.from_source(s) orelse break :blk;
-                        state.active_source.set_source(thread.id, id);
+                        state.active_source.set_source(id);
                         state.active_source.scroll_to = .active_line;
                     }
                 }
@@ -2622,18 +2636,16 @@ pub const Files = struct {
 
         try data.set_source(.{ .path = path.slice() });
         // if there's no source we'll get it next frame.
-        state.active_source.set_source(null, .{ .path = path.slice() });
+        state.active_source.set_source(.{ .path = path.slice() });
     }
 };
 
 pub const ActiveSource = struct {
     pub const defualt = ActiveSource{
-        .thread_id = null,
         .source = .none,
         .scroll_to = .none,
     };
 
-    thread_id: ?SessionData.ThreadID,
     active_line: ?i32 = null,
     source: union(enum) {
         path: Path,
@@ -2687,31 +2699,16 @@ pub const ActiveSource = struct {
         };
     }
 
-    fn set_source(active: *ActiveSource, thread_id: ?SessionData.ThreadID, source_id: SessionData.SourceID) void {
+    fn set_source(active: *ActiveSource, source_id: SessionData.SourceID) void {
         active.source = switch (source_id) {
             .reference => |ref| .{ .reference = ref },
             .path => |path| .{ .path = Path.fromSlice(path) catch return },
         };
-
-        active.thread_id = thread_id;
     }
 
-    fn get_thread(active: *ActiveSource, data: *SessionData) ?*SessionData.Thread {
-        return data.threads.getPtr(active.thread_id orelse return null) orelse return null;
-        // const source_id = state.active_source.id() orelse return null;
-        // for (th.stack.items) |frame| {
-        //     const source = frame.source orelse continue;
-        //     if (utils.source_is(source, source_id)) {
-        //         return th;
-        //     }
-        // }
-
-        // return null;
-    }
-
-    fn get_frame(active: *ActiveSource, data: *SessionData) ?protocol.StackFrame {
-        const thread = active.get_thread(data) orelse return null;
-        const id = active.get_id().?;
+    fn get_frame(active: *ActiveSource, thread_id: SessionData.ThreadID, data: *SessionData) ?protocol.StackFrame {
+        const thread = data.threads.getPtr(thread_id) orelse return null;
+        const id = active.get_id() orelse return null;
         for (thread.stack.items) |frame| {
             const source = frame.value.source orelse continue;
             if (utils.source_is(source, id)) {

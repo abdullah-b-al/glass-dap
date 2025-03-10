@@ -177,6 +177,8 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
             defer parsed.deinit();
 
             try data.set_stopped(parsed.value);
+            const thread_id: ?SessionData.ThreadID = if (parsed.value.body.threadId) |id| @enumFromInt(id) else null;
+            ui.thread_has_stopped(thread_id);
         },
         .continued => {
             const parsed = try connection.parse_event(message, protocol.ContinuedEvent, .continued);
