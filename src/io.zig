@@ -109,9 +109,7 @@ pub fn read_all(allocator: std.mem.Allocator, header: Header, reader: anytype) !
 }
 
 pub fn open_file_as_source_content(allocator: std.mem.Allocator, path: []const u8) !struct { SessionData.SourceID, SessionData.SourceContent } {
-    std.debug.assert(std.fs.path.isAbsolute(path));
-
-    const file = try std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
     defer file.close();
     return .{
         .{ .path = path },
