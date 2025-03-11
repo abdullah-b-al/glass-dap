@@ -37,6 +37,7 @@ const State = struct {
 
     render_frames: u8 = 4,
     active_thread: ?SessionData.ThreadID = null,
+    active_frame: ?SessionData.FrameID = null,
     active_source: ActiveSource = .defualt,
     icons_solid: zgui.Font = undefined,
     debug_ui: bool = @import("builtin").mode == .Debug,
@@ -66,6 +67,7 @@ const State = struct {
     force_open_active_thread: bool = false,
 
     waiting_for_scopes: bool = false,
+    waiting_for_evaluate: bool = false,
     waiting_for_variables: bool = false,
     waiting_for_stack_trace: bool = false,
     waiting_for_loaded_sources: bool = false,
@@ -259,14 +261,14 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     }
 
     if (state.update_active_source_to_top_of_stack) blk: {
-        const thread_id = state.active_thread orelse break :blk;
-        if (data.threads.getPtr(thread_id)) |thread| {
+        if (data.threads.getPtr(state.active_thread orelse break :blk)) |thread| {
             if (thread.requested_stack) {
                 state.update_active_source_to_top_of_stack = false;
             } else {
                 request_or_wait_for_stack_trace(connection, thread, callbacks);
             }
             if (thread.stack.items.len > 0) {
+                set_active_frame(thread, @enumFromInt(thread.stack.items[0].value.id));
                 const source = thread.stack.items[0].value.source orelse break :blk;
                 const new_source_id = SessionData.SourceID.from_source(source) orelse break :blk;
                 state.active_source.set_source(new_source_id);
@@ -301,18 +303,22 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
 
         var id_source = top_left;
         const id_output = zgui.dockBuilderSplitNode(id_source, .down, 0.30, null, &id_source);
-        const id_threads = zgui.dockBuilderSplitNode(id_source, .right, 0.30, null, &id_source);
+        var id_threads = zgui.dockBuilderSplitNode(id_source, .right, 0.30, null, &id_source);
+        const id_watch = zgui.dockBuilderSplitNode(id_threads, .down, 0.30, null, &id_threads);
 
         // tabbed, right of Source Code (top right)
         zgui.dockBuilderDockWindow("Threads", id_threads);
         zgui.dockBuilderDockWindow("Sources", id_threads);
-        zgui.dockBuilderDockWindow("Variables", id_threads);
         zgui.dockBuilderDockWindow("Breakpoints", id_threads);
+
+        // down threads
+        zgui.dockBuilderDockWindow("Watch", id_watch);
+        zgui.dockBuilderDockWindow("Variables", id_watch);
 
         // left of Threads (top left)
         zgui.dockBuilderDockWindow("Source Code", id_source);
 
-        // below source code
+        // down source code
         zgui.dockBuilderDockWindow("Output", id_output);
 
         zgui.dockBuilderDockWindow("Debug General", id_source);
@@ -340,6 +346,7 @@ pub fn ui_tick(gpas: *DebugAllocators, window: *glfw.Window, callbacks: *Callbac
     threads("Threads", callbacks, data, connection);
     sources("Sources", callbacks, data, connection);
     variables("Variables", callbacks, data, connection);
+    watch("Watch", callbacks, data, connection);
     breakpoints("Breakpoints", data, connection);
 
     debug_ui(gpas, callbacks, connection, data, argv) catch |err| std.log.err("{}", .{err});
@@ -629,6 +636,151 @@ fn variables(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, conn
     }
 }
 
+fn watch(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connection: *Connection) void {
+    defer zgui.end();
+    if (!zgui.begin(name, .{})) return;
+
+    const static = struct {
+        var buf: [512:0]u8 = .{0} ** 512;
+    };
+
+    if (zgui.inputText("##Watch Window Add", .{
+        .buf = &static.buf,
+        .flags = .{
+            .enter_returns_true = true,
+        },
+    })) {
+        const len = std.mem.indexOfScalar(u8, &static.buf, 0) orelse 0;
+        const expr = static.buf[0..len];
+        data.add_watched_variable(expr) catch return;
+        static.buf[0] = 0; // clear
+    }
+
+    const thread = data.threads.getPtr(state.active_thread orelse return) orelse return;
+    const frame_id = state.active_frame orelse blk: {
+        if (thread.stack.items.len == 0) return;
+        set_active_frame(thread, @enumFromInt(thread.stack.items[0].value.id));
+        break :blk state.active_frame.?;
+    };
+
+    for (thread.stack.items, 0..) |item, i| {
+        if (item.value.id == @intFromEnum(frame_id)) {
+            zgui.text("Frame: {s}[{}]", .{ item.value.name, thread.stack.items.len - i - 1 });
+        }
+    }
+
+    var to_remove: ?usize = null;
+    if (zgui.beginTable("Watch Table", .{
+        .column = 2,
+        .flags = .{ .resizable = false, .sizing = .fixed_fit },
+    })) {
+        defer zgui.endTable();
+        zgui.tableSetupColumn("##Action", .{ .flags = .{ .width_fixed = true } });
+        zgui.tableSetupColumn("##Watch Result", .{ .flags = .{ .width_stretch = true } });
+        for (data.watched_variables.items, 0..) |watched, watched_i| {
+            zgui.tableNextRow(.{});
+            _ = zgui.tableSetColumnIndex(0);
+            if (zgui.button(tmp_name("Remove##{s} {}", .{ watched.expression, watched_i }), .{})) {
+                to_remove = watched_i;
+            }
+
+            _ = zgui.tableSetColumnIndex(1);
+            const evaluated = thread.evaluated.get(.{
+                .frame_id = frame_id,
+                .expression = watched.expression,
+            }) orelse {
+                request_or_wait_for_evaluate(
+                    connection,
+                    callbacks,
+                    thread.id,
+                    frame_id,
+                    watched.expression,
+                    .watch,
+                );
+                continue;
+            };
+
+            const eval = evaluated.value;
+            if (eval.variablesReference > 0) {
+                const node_opened = zgui.treeNode(tmp_name("{s}##{} {}", .{ watched.expression, frame_id, watched_i }));
+                variable_type(eval.type, true);
+                if (!node_opened) continue;
+                defer zgui.treePop();
+
+                variables_tree_show_children(callbacks, connection, thread, @enumFromInt(eval.variablesReference));
+            } else {
+                zgui.text("{s}", .{watched.expression});
+                variable_type(eval.type, true);
+                zgui.sameLine(.{});
+                show_evaluated_result(
+                    tmp_name("{s} {}", .{ watched.expression, watched_i }),
+                    eval.result,
+                );
+            }
+        }
+    }
+
+    if (to_remove) |i| {
+        const watched = data.watched_variables.items[i];
+        data.remove_watched_variable(watched);
+    }
+}
+
+fn show_evaluated_result(unique_id: [:0]const u8, result: []const u8) void {
+    if (std.mem.count(u8, result, "\n") > 0) {
+        const id = tmp_name("{s} {s} {s}", .{ result, unique_id, anytype_to_string(@src(), .{}) });
+        _ = zgui.beginChild(id, .{
+            .w = zgui.getContentRegionAvail()[0],
+            .h = zgui.getTextLineHeightWithSpacing(),
+
+            .child_flags = .{ .border = true, .resize_y = true },
+        });
+        defer zgui.endChild();
+        zgui.text("{s}", .{result});
+    } else {
+        zgui.text("{s}", .{result});
+    }
+}
+
+pub fn variable_type(var_type: ?[]const u8, same_line: bool) void {
+    const style = zgui.getStyle();
+    if (var_type) |t| {
+        if (same_line) {
+            zgui.sameLine(.{ .spacing = 0 });
+        }
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(.text_disabled) });
+        defer zgui.popStyleColor(.{ .count = 1 });
+        zgui.text(": {s}", .{t});
+    }
+}
+
+fn variables_tree_show_children(
+    callbacks: *Callbacks,
+    connection: *Connection,
+    thread: *const SessionData.Thread,
+    reference: SessionData.VariableReference,
+) void {
+    const vars_mo = thread.variables.get(reference) orelse {
+        request_or_wait_for_variables(connection, thread, callbacks, reference);
+        return;
+    };
+
+    for (vars_mo.value) |v| {
+        if (v.variablesReference > 0) {
+            const node_opened = zgui.treeNode(tmp_name("{s}##{s}", .{ v.name, anytype_to_string(@src(), .{}) }));
+            variable_type(v.type, true);
+            if (!node_opened) continue;
+            defer zgui.treePop();
+            variables_tree_show_children(callbacks, connection, thread, @enumFromInt(v.variablesReference));
+        } else {
+            zgui.text("{s}", .{v.name});
+            variable_type(v.type, true);
+            zgui.sameLine(.{});
+            zgui.text("{s}", .{v.value});
+        }
+    }
+}
+
 fn variables_node(
     connection: *Connection,
     data: *SessionData,
@@ -640,20 +792,6 @@ fn variables_node(
     frame_id: SessionData.FrameID,
     index: usize,
 ) void {
-    const static = struct {
-        pub fn variable_type(v: protocol.Variable, same_line: bool) void {
-            const style = zgui.getStyle();
-            if (v.type) |t| {
-                if (same_line) {
-                    zgui.sameLine(.{ .spacing = 0 });
-                }
-                zgui.pushStyleColor4f(.{ .idx = .text, .c = style.getColor(.text_disabled) });
-                defer zgui.popStyleColor(.{ .count = 1 });
-                zgui.text(": {s}", .{t});
-            }
-        }
-    };
-
     const widget: enum { input_text, value, node } =
         if (state.variable_edit != null)
             .input_text
@@ -678,7 +816,7 @@ fn variables_node(
                 continue :widget .value;
             } else {
                 zgui.text("{s}", .{variable.name});
-                static.variable_type(variable, true);
+                variable_type(variable.type, true);
 
                 zgui.sameLine(.{});
                 zgui.setNextItemWidth(zgui.getContentRegionMax()[0]);
@@ -726,13 +864,13 @@ fn variables_node(
 
             zgui.sameLine(.{});
             zgui.text("{s}", .{variable.name});
-            static.variable_type(variable, true);
+            variable_type(variable.type, true);
             zgui.sameLine(.{});
             zgui.text("{s}", .{variable.value});
         },
         .node => {
             const node_opened = zgui.treeNode(tmp_name("{s}##Node {s}", .{ variable.name, unique_string }));
-            static.variable_type(variable, true);
+            variable_type(variable.type, true);
 
             if (!node_opened) return;
             defer zgui.treePop();
@@ -906,6 +1044,7 @@ fn threads(name: [:0]const u8, callbacks: *Callbacks, data: *SessionData, connec
 
             for (thread.stack.items, 0..) |frame, i| {
                 if (zgui.selectable(tmp_name("{s}##{}", .{ frame.value.name, i }), .{})) {
+                    set_active_frame(thread, @enumFromInt(frame.value.id));
                     if (frame.value.source) |s| blk: {
                         const id = SessionData.SourceID.from_source(s) orelse break :blk;
                         state.active_source.set_source(id);
@@ -2566,6 +2705,19 @@ fn handle_action(action: config.Action, callbacks: *Callbacks, data: *SessionDat
     }
 }
 
+fn set_active_frame(thread: *const SessionData.Thread, frame_id: SessionData.FrameID) void {
+    state.active_thread = thread.id;
+    state.active_frame = frame_id;
+
+    for (thread.stack.items) |frame| {
+        if (frame.value.id == @intFromEnum(frame_id)) {
+            return;
+        }
+    }
+
+    @panic("active_frame doesn't exist in thread");
+}
+
 pub const Files = struct {
     allocator: std.mem.Allocator,
     dir: Path = Path.init(0) catch unreachable,
@@ -2803,6 +2955,7 @@ fn frame_id_of_variable(data: *const SessionData, thread_id: SessionData.ThreadI
 // As right now they block all requests of the same type
 
 fn request_or_wait_for_variables(connection: *Connection, thread: *const SessionData.Thread, callbacks: *Callbacks, reference: SessionData.VariableReference) void {
+    std.debug.assert(@intFromEnum(reference) > 0);
     if (state.waiting_for_variables) return;
 
     request.variables(connection, thread.id, reference) catch return;
@@ -2833,7 +2986,7 @@ fn request_or_wait_for_scopes(
         }
     };
 
-    session.callback(callbacks, .success, .{ .response = .scopes }, static.func) catch return;
+    session.callback(callbacks, .always, .{ .response = .scopes }, static.func) catch return;
     state.waiting_for_scopes = true;
 }
 
@@ -2878,4 +3031,19 @@ fn request_or_wait_for_loaded_sources(connection: *Connection, data: *const Sess
 
     session.callback(callbacks, .always, .{ .response = .loadedSources }, static.func) catch return;
     state.waiting_for_loaded_sources = true;
+}
+
+fn request_or_wait_for_evaluate(connection: *Connection, callbacks: *Callbacks, thread_id: SessionData.ThreadID, frame_id: SessionData.FrameID, expression: []const u8, context: request.EvaluateContext) void {
+    if (state.waiting_for_evaluate) return;
+
+    request.evaluate(connection, thread_id, frame_id, expression, context) catch return;
+
+    const static = struct {
+        fn func(_: *SessionData, _: *Connection) void {
+            state.waiting_for_evaluate = false;
+        }
+    };
+
+    session.callback(callbacks, .always, .{ .response = .evaluate }, static.func) catch return;
+    state.waiting_for_evaluate = true;
 }

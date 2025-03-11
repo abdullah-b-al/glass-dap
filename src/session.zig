@@ -118,6 +118,7 @@ pub fn handle_response_message(message: Connection.RawMessage, response: Connect
         error.UnknownField,
         error.MissingField,
         error.RequestFailed,
+        error.EmptyCommandForResponse,
         => {
             return handle_failed_message_if_error(message, response);
         },
@@ -266,8 +267,6 @@ pub fn handle_event(message: Connection.RawMessage, callbacks: *Callbacks, data:
 }
 
 pub fn handle_response(message: Connection.RawMessage, data: *SessionData, connection: *Connection, response: Connection.Response) !void {
-    try handle_if_malformed_message(message, response);
-
     return switch (response.command) {
         .launch => {
             try acknowledge(message, connection, response);
@@ -517,21 +516,41 @@ pub fn handle_response(message: Connection.RawMessage, data: *SessionData, conne
         },
 
         .evaluate => {
-            const parsed = try connection.parse_validate_response(
+            const err_parsed = connection.parse_validate_response(
                 message,
                 protocol.EvaluateResponse,
                 response.request_seq,
                 response.command,
             );
-            defer parsed.deinit();
+
             const retained = response.request_data.evaluate;
 
-            try data.set_evaluted(
-                retained.thread_id,
-                retained.frame_id,
-                retained.expression,
-                parsed.value.body,
-            );
+            if (err_parsed) |parsed| {
+                defer parsed.deinit();
+
+                try data.set_evaluted(
+                    retained.thread_id,
+                    retained.frame_id,
+                    retained.expression,
+                    parsed.value.body,
+                );
+            } else |err| {
+                const msg = utils.get_value(message.value, "message", .string) orelse "";
+
+                const failed_eval = SessionData.Evaluated{
+                    .result = msg,
+                    .variablesReference = 0,
+                };
+
+                try data.set_evaluted(
+                    retained.thread_id,
+                    retained.frame_id,
+                    retained.expression,
+                    failed_eval,
+                );
+
+                return err;
+            }
         },
 
         .stepInTargets => {
@@ -675,6 +694,8 @@ fn handle_if_malformed_message(message: Connection.RawMessage, response: Connect
 }
 
 fn handle_failed_message_if_error(message: Connection.RawMessage, response: Connection.Response) Connection.ResponseStatus {
+    handle_if_malformed_message(message, response) catch return .failure;
+
     if (utils.get_value(message.value, "message", .string)) |string| {
         ui.notify("command.{s}\n{s}", .{ @tagName(response.command), string }, 5000);
         log.err("command.{s}\n{s}", .{ @tagName(response.command), string });

@@ -547,6 +547,7 @@ fn parse_message(connection: *Connection, message: RawMessage, comptime T: type)
 fn validate_response(resp: anytype, request_seq: i32, command: Command) !void {
     if (!resp.success) return error.RequestFailed;
     if (resp.request_seq != request_seq) return error.RequestResponseMismatchedRequestSeq;
+    if (resp.command.len == 0) return error.EmptyCommandForResponse;
     if (!std.mem.eql(u8, resp.command, @tagName(command))) return error.WrongCommandForResponse;
 }
 

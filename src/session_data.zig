@@ -21,6 +21,7 @@ breakpoints: std.ArrayListUnmanaged(MemObject(Breakpoint)),
 sources: std.ArrayHashMapUnmanaged(SourceID, MemObject(protocol.Source), SourceIDHash, false),
 sources_content: std.ArrayHashMapUnmanaged(SourceID, SourceContent, SourceIDHash, false),
 goto_targets: std.ArrayHashMapUnmanaged(GotoTargetID, MemObject([]protocol.GotoTarget), GotoTargetHash, false),
+watched_variables: std.ArrayListUnmanaged(Watched),
 
 // Output needs to be available for the whole session so MemObject isn't needed.
 output: std.ArrayListUnmanaged(Output),
@@ -81,6 +82,7 @@ pub fn init(allocator: mem.Allocator) SessionData {
         .data_breakpoints = .empty,
         .data_breakpoints_info = .empty,
         .goto_targets = .empty,
+        .watched_variables = .empty,
         .loaded_sources_count = 0,
     };
 }
@@ -133,6 +135,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
         &data.modules,
         &data.breakpoints,
         &data.sources,
+        &data.watched_variables,
     };
 
     inline for (to_free) |ptr| {
@@ -162,6 +165,7 @@ pub fn free(data: *SessionData, reason: enum { deinit, begin_session }) void {
         .loaded_sources_count = 0,
 
         // keep
+        .watched_variables = data.watched_variables,
         .exit_code = data.exit_code,
         .allocator = data.allocator,
         .arena = data.arena,
@@ -408,23 +412,6 @@ pub fn set_stack(data: *SessionData, thread_id: ThreadID, clear: bool, response:
     }
 
     thread.requested_stack = true;
-
-    // Clear evaluated variables that don't exist anymore
-    var iter = thread.evaluated.iterator();
-    next_frame: while (iter.next()) |entry| {
-        const frame_id: ID = @intFromEnum(entry.key_ptr.frame_id orelse continue);
-
-        for (thread.stack.items) |mo| {
-            if (mo.value.id == frame_id) {
-                continue :next_frame;
-            }
-        }
-
-        // not found
-        var kv = thread.evaluated.fetchOrderedRemove(entry.key_ptr.*).?;
-        kv.value.deinit();
-        iter = thread.evaluated.iterator();
-    }
 }
 
 pub fn set_source_from_loaded_sources(data: *SessionData, sources: []protocol.Source) !void {
@@ -523,6 +510,20 @@ pub fn set_variables(data: *SessionData, thread_id: ThreadID, variables_referenc
     // This will sort the variables from non-structured to structured.
     mem.sort(protocol.Variable, cloned.value, {}, ctx.less_than);
     gop.value_ptr.* = cloned;
+}
+
+pub fn add_watched_variable(data: *SessionData, non_owned_expression: []const u8) !void {
+    const expr = try data.intern_string(non_owned_expression);
+    try data.watched_variables.append(data.allocator, .{ .expression = expr });
+}
+
+pub fn remove_watched_variable(data: *SessionData, watched: Watched) void {
+    for (data.watched_variables.items, 0..) |item, i| {
+        if (std.mem.eql(u8, item.expression, watched.expression)) {
+            _ = data.watched_variables.orderedRemove(i);
+            return;
+        }
+    }
 }
 
 pub fn set_variable_value(data: *SessionData, thread_id: ThreadID, reference: VariableReference, name: []const u8, response: protocol.SetVariableResponse) !void {
@@ -900,6 +901,13 @@ pub const Thread = struct {
         thread.clear_variables();
         thread.clear_scopes();
         thread.clear_stack();
+
+        var iter = thread.evaluated.iterator();
+        while (iter.next()) |entry| {
+            var kv = thread.evaluated.fetchOrderedRemove(entry.key_ptr.*).?;
+            kv.value.deinit();
+            iter = thread.evaluated.iterator();
+        }
     }
 
     fn clear_stack(thread: *Thread) void {
@@ -964,7 +972,7 @@ pub const Thread = struct {
     }
 };
 
-const Evaluated = utils.get_field_type(protocol.EvaluateResponse, "body");
+pub const Evaluated = utils.get_field_type(protocol.EvaluateResponse, "body");
 
 pub const EvaluatedID = struct {
     frame_id: ?FrameID,
@@ -1172,4 +1180,8 @@ pub const DataBreakpointInfo = struct {
             }
         }
     };
+};
+
+pub const Watched = struct {
+    expression: []const u8,
 };
